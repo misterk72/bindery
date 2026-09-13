@@ -62,6 +62,12 @@ When you click **Search** on an unlinked series, Bindery first attempts an autom
 
 If that evidence is missing, Bindery shows candidates for manual selection instead of linking automatically.
 
+## How the Catalog Diff Binds Local Books
+
+The diff pairs each local book in the series with at most one catalog entry, in two passes. A local book whose provider ID matches a catalog entry binds to it first, whatever the library order. Only then are the remaining local books matched by title, and a title match is never allowed across positions: a book the series files at position 4 cannot bind to catalog volume 9 however similar the titles are. Two local rows at the same position (a duplicate import) compete for that one catalog entry and the loser is listed as Local only.
+
+Every binding decision is logged at DEBUG as `series diff: local book bound to catalogue entry` with the local and catalog IDs, positions and whether it was matched by identity or title, so a wrong pairing can be read straight out of the log.
+
 ## Missing-Book Fill
 
 Missing-book fill uses the linked Hardcover catalog as the source of truth for missing entries. Bindery skips catalog books that already exist locally as excluded titles, so excluded books are not silently re-added. That skip applies to the excluded title itself, not to other books whose titles it happens to contain, so an excluded box set does not stand in the way of the volume it is named after.

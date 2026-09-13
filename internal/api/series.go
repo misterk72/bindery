@@ -1274,11 +1274,37 @@ func buildHardcoverDiff(ctx context.Context, books *db.BookRepo, userID int64, s
 	// LocalOnly when it has none. First local seen wins the tie, matching the
 	// order this loop has always used.
 	matchedCatalog := make(map[int]struct{})
-	for _, local := range series.Books {
+	// Identities bind first (#2553). Assigning in library order let an
+	// earlier local's fuzzy title match claim the catalogue slot that a later
+	// local owned by foreign ID: "He Who Fights with Monsters 4" took volume
+	// 9 at 0.87, and the real volume 9, carrying volume 9's exact foreign ID,
+	// was left Local only. An explicit identity is never outranked by a title
+	// heuristic, so it must not be outrun by one either.
+	identity := make(map[int]catalogMatch, len(series.Books))
+	for li, local := range series.Books {
+		if local.Book == nil || local.Book.ForeignID == "" {
+			continue
+		}
+		for ci, candidate := range catalog.Books {
+			if _, taken := matchedCatalog[ci]; taken {
+				continue
+			}
+			if local.Book.ForeignID == candidate.ForeignID || local.Book.ForeignID == candidate.Book.ForeignID {
+				identity[li] = catalogMatch{index: ci, score: 100, foreignID: true}
+				matchedCatalog[ci] = struct{}{}
+				break
+			}
+		}
+	}
+	for li, local := range series.Books {
 		if local.Book == nil {
 			continue
 		}
-		match := bestCatalogMatch(local, catalog.Books, matchedCatalog)
+		match, byIdentity := identity[li]
+		if !byIdentity {
+			match = bestCatalogMatch(local, catalog.Books, matchedCatalog)
+		}
+		logDiffDecision(series.ID, local, catalog.Books, match)
 		localItem := localDiffBook(local)
 		if match.index < 0 {
 			diff.LocalOnly = append(diff.LocalOnly, localItem)
@@ -1318,6 +1344,32 @@ func buildHardcoverDiff(ctx context.Context, books *db.BookRepo, userID int64, s
 	diff.PresentCount = len(diff.Present)
 	diff.MissingCount = len(diff.Missing)
 	return diff
+}
+
+// logDiffDecision records which catalogue entry a local series book bound
+// to, and how. The diff matcher had no logging at all, so a wrong binding
+// could only be diagnosed by rebuilding the library in a scratch container
+// (#2553, where magrhino had DEBUG on and found nothing to read).
+func logDiffDecision(seriesID int64, local models.SeriesBook, books []metadata.SeriesCatalogBook, match catalogMatch) {
+	if local.Book == nil {
+		return
+	}
+	if match.index < 0 {
+		slog.Debug("series diff: local book matched no catalogue entry",
+			"seriesID", seriesID, "localBookID", local.Book.ID, "localTitle", local.Book.Title,
+			"localPosition", local.PositionInSeries)
+		return
+	}
+	c := books[match.index]
+	matchedBy := "title"
+	if match.foreignID {
+		matchedBy = "identity"
+	}
+	slog.Debug("series diff: local book bound to catalogue entry",
+		"seriesID", seriesID, "localBookID", local.Book.ID, "localTitle", local.Book.Title,
+		"localForeignID", local.Book.ForeignID, "localPosition", local.PositionInSeries,
+		"catalogTitle", firstNonEmpty(c.Title, c.Book.Title), "catalogForeignID", firstNonEmpty(c.ForeignID, c.Book.ForeignID),
+		"catalogPosition", c.Position, "matchedBy", matchedBy, "score", match.score)
 }
 
 type catalogMatch struct {
@@ -1362,6 +1414,18 @@ func bestCatalogMatch(local models.SeriesBook, books []metadata.SeriesCatalogBoo
 			// Only on the title path. A foreign-ID match is an explicit
 			// identity and outranks any title heuristic.
 			if seriesmatch.DifferentVolumes(local.Book.Title, candidateTitle) {
+				continue
+			}
+			// A book this series already files at one position cannot be the
+			// catalogue's entry at another, however the titles score (#2553).
+			// "He Who Fights with Monsters 4" scored 0.87 against catalogue
+			// volume 9 and "He Who Fights with Monsters 12: A LitRPG
+			// Adventure" 0.90 against volume 1, and neither title carries a
+			// marker DifferentVolumes can compare. The stored position is the
+			// evidence that does separate them. Same rule the add path
+			// applies (#2538).
+			if local.PositionInSeries != "" && candidate.Position != "" &&
+				!seriesmatch.SamePosition(local.PositionInSeries, candidate.Position) {
 				continue
 			}
 			score = seriesmatch.TitleScore(local.Book.Title, candidateTitle)

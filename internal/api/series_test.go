@@ -3915,3 +3915,62 @@ func TestSeriesMembershipRejectsMalformedIDs(t *testing.T) {
 		})
 	}
 }
+
+// TestHardcoverDiffBindsIdentityFirstAndRespectsPositions reproduces #2553
+// (He Who Fights with Monsters, hc-series:12723). The library holds volumes
+// 1, 4, 9 and two rows for 12, each at its stored position, and volume 9
+// carries the catalogue's own foreign ID. Assigned in library order, fuzzy
+// titles bound volume 12 to catalogue 1, volume 1 to catalogue 4, and volume
+// 4 to catalogue 9, which left the real volume 9 Local only. Locals are fed
+// in an adversarial order on purpose: the answer must not depend on it.
+func TestHardcoverDiffBindsIdentityFirstAndRespectsPositions(t *testing.T) {
+	cat := func(pos, fid, title string) metadata.SeriesCatalogBook {
+		return metadata.SeriesCatalogBook{ForeignID: fid, Title: title, Position: pos, Book: models.Book{ForeignID: fid, Title: title}}
+	}
+	catalog := &metadata.SeriesCatalog{
+		ForeignID: "hc-series:12723",
+		Title:     "He Who Fights with Monsters",
+		Books: []metadata.SeriesCatalogBook{
+			cat("1", "hc:he-who-fights-with-monsters-2021", "He Who Fights with Monsters"),
+			cat("4", "hc:he-who-fights-with-monsters-4-he-who-fights-with-monsters-book-4-2021", "He Who Fights with Monsters 4: He Who Fights with Monsters, Book 4"),
+			cat("9", "hc:he-who-fights-with-monsters-9", "He Who Fights with Monsters 9: A LitRPG Adventure (He Who Fights with Monsters, Book 9)"),
+			cat("12", "hc:he-who-fights-with-monsters-12", "He Who Fights with Monsters 12: A LitRPG Adventure"),
+		},
+	}
+	local := func(id int64, pos, fid, title string) models.SeriesBook {
+		return models.SeriesBook{SeriesID: 7, BookID: id, PositionInSeries: pos,
+			Book: &models.Book{ID: id, ForeignID: fid, Title: title, Status: models.BookStatusImported}}
+	}
+	series := &models.Series{ID: 7, Title: "He Who Fights with Monsters", Books: []models.SeriesBook{
+		local(9, "12", "abs:hwfwm-12-a", "He Who Fights with Monsters 12: A LitRPG Adventure"),
+		local(125, "12", "abs:hwfwm-12-b", "He Who Fights with Monsters 12: A LitRPG Adventure"),
+		local(114, "1", "abs:hwfwm-1", "He Who Fights with Monsters: A LitRPG Adventure"),
+		local(117, "4", "abs:hwfwm-4", "He Who Fights with Monsters 4"),
+		local(122, "9", "hc:he-who-fights-with-monsters-9", "He Who Fights with Monsters 9"),
+	}}
+
+	diff := buildHardcoverDiff(context.Background(), nil, 0, series, nil, catalog)
+
+	boundTo := map[int64]string{}
+	for _, row := range append(append([]seriesHardcoverDiffBook{}, diff.Present...), diff.Uncertain...) {
+		if row.LocalBookID != nil {
+			boundTo[*row.LocalBookID] = row.Position
+		}
+	}
+	for id, want := range map[int64]string{114: "1", 117: "4", 122: "9"} {
+		if got := boundTo[id]; got != want {
+			t.Errorf("local %d bound to catalogue position %q, want %q (bindings %v)", id, got, want, boundTo)
+		}
+	}
+	if boundTo[9] != "12" && boundTo[125] != "12" {
+		t.Errorf("neither volume 12 row bound to catalogue 12 (bindings %v)", boundTo)
+	}
+	if len(diff.Missing) != 0 {
+		t.Errorf("missing = %+v, want none: every catalogue volume is held", diff.Missing)
+	}
+	for _, row := range diff.LocalOnly {
+		if row.LocalBookID != nil && *row.LocalBookID == 122 {
+			t.Errorf("volume 9 is Local only despite carrying catalogue 9's foreign ID")
+		}
+	}
+}
