@@ -77,7 +77,10 @@ export default function AccountMenu({
   }
 
   const onTriggerKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+    if ((e.key === 'Enter' || e.key === ' ') && open) {
+      e.preventDefault()
+      close(true)
+    } else if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
       openMenu('first')
     } else if (e.key === 'ArrowUp') {

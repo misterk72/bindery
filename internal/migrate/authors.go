@@ -59,10 +59,30 @@ func noMatchReason(o metadata.SearchOutcome) string {
 // results never have one, and one used to reach authors.Create with an empty
 // foreign_id labelled openlibrary. resolveGoodreadsByTitleAuthor applies the
 // same rule to book results.
-func firstLinkableAuthor(matches []models.Author) *models.Author {
-	for i := range matches {
-		if strings.TrimSpace(matches[i].ForeignID) != "" {
-			return &matches[i]
+//
+// The top match is taken as it stands, as it always was. A later match is
+// only taken in its place when it names the same person as the top match or
+// as the name searched for: the aggregator folds same name records together
+// before ranking, so any linkable record still below a name only one is a
+// different author. Importing "Andy Weir" with only Google Books knowing that
+// name and OpenLibrary answering "Andrew Weir" would otherwise create Andrew
+// Weir and count it as added.
+func firstLinkableAuthor(name string, matches []models.Author) *models.Author {
+	if len(matches) == 0 {
+		return nil
+	}
+	if strings.TrimSpace(matches[0].ForeignID) != "" {
+		return &matches[0]
+	}
+	want := map[string]bool{
+		metadata.CanonicalAuthorKey(name):            true,
+		metadata.CanonicalAuthorKey(matches[0].Name): true,
+	}
+	delete(want, "")
+	for i := range matches[1:] {
+		m := &matches[i+1]
+		if strings.TrimSpace(m.ForeignID) != "" && want[metadata.CanonicalAuthorKey(m.Name)] {
+			return m
 		}
 	}
 	return nil
@@ -98,7 +118,7 @@ func resolveAndCreateAuthor(
 		res.fail(name, "metadata lookup failed: "+err.Error())
 		return nil
 	}
-	match := firstLinkableAuthor(matches)
+	match := firstLinkableAuthor(name, matches)
 	if match == nil {
 		switch {
 		case outcome.PrimaryFailed:

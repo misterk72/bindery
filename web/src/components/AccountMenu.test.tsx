@@ -68,6 +68,16 @@ describe('AccountMenu', () => {
     expect(trigger).toHaveFocus()
   })
 
+  it('toggles from the trigger with Enter', () => {
+    render(<AccountMenu username="akadmin" version="1.36.0" onSignOut={onSignOut} />)
+    const trigger = screen.getByRole('button', { name: 'Signed in as akadmin' })
+    fireEvent.keyDown(trigger, { key: 'Enter' })
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    fireEvent.keyDown(trigger, { key: 'Enter' })
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+  })
+
   it('closes on a press outside', () => {
     render(<div><AccountMenu username="akadmin" onSignOut={onSignOut} /><p>outside</p></div>)
     fireEvent.click(screen.getByRole('button', { name: 'Signed in as akadmin' }))

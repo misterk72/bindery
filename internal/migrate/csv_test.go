@@ -476,6 +476,41 @@ func TestImportCSVAuthors_NameOnlyMatchIsNotLinked(t *testing.T) {
 	assertNoAuthorBound(t, repo, dnbAuthorID)
 }
 
+// TestImportCSVAuthors_NameOnlyMatchDoesNotFallToAnotherAuthor: only
+// Google Books knows the name searched for, and OpenLibrary answers with a
+// different person who has an id. The importer used to skip past the name
+// only record to that one and create the wrong author as added.
+func TestImportCSVAuthors_NameOnlyMatchDoesNotFallToAnotherAuthor(t *testing.T) {
+	repo := db.NewAuthorRepo(newTestDB(t))
+	const otherID = "OL999A"
+	other := func(id string) models.Author {
+		return models.Author{ForeignID: id, Name: "Andrew Weir", SortName: "Weir, Andrew"}
+	}
+	openLibrary := &stubProvider{
+		name: "openlibrary",
+		searchAuthorsFn: func(context.Context, string) ([]models.Author, error) {
+			return []models.Author{other(otherID)}, nil
+		},
+		getAuthorFn: func(_ context.Context, id string) (*models.Author, error) {
+			a := other(id)
+			return &a, nil
+		},
+	}
+	agg := metadata.NewAggregator(openLibrary, googleBooksNameOnly())
+
+	res, err := ImportCSVAuthors(context.Background(), strings.NewReader(guardAuthorName+"\n"), repo, nil, agg, nil)
+	if err != nil {
+		t.Fatalf("ImportCSVAuthors: %v", err)
+	}
+	if res.Added != 0 || res.Errors != 1 {
+		t.Errorf("Added=%d Errors=%d; want 0/1 (failures=%v)", res.Added, res.Errors, res.Failures)
+	}
+	if msg := res.Failures[guardAuthorName]; !strings.HasPrefix(msg, "no linkable match on ") {
+		t.Errorf("failure reason = %q, want it to say no linkable match", msg)
+	}
+	assertNoAuthorBound(t, repo, otherID)
+}
+
 // TestImportCSVAuthors_PrimaryDownNoMatchSaysRetry: with the primary down and
 // nothing else matching, the row's reason must say the primary did not
 // answer. "no OpenLibrary match" reads as a verdict on the name.
