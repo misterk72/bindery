@@ -342,3 +342,120 @@ func mustOpenFixture(t *testing.T) *Reader {
 	}
 	return r
 }
+
+// openWALWriter switches the fixture's metadata.db to WAL mode and returns a
+// pinned connection with automatic checkpointing disabled, so anything
+// written through it stays in metadata.db-wal for as long as the connection
+// is open. This is the shape a long running Calibre (content server,
+// Calibre-Web-Automated) leaves the library in between checkpoints.
+func openWALWriter(t *testing.T, root string) *sql.Conn {
+	t.Helper()
+	ctx := context.Background()
+	w, err := sql.Open("sqlite", filepath.Join(root, metadataDB))
+	if err != nil {
+		t.Fatalf("open writer: %v", err)
+	}
+	t.Cleanup(func() { w.Close() })
+	conn, err := w.Conn(ctx)
+	if err != nil {
+		t.Fatalf("pin writer conn: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	for _, p := range []string{"PRAGMA journal_mode=WAL", "PRAGMA wal_autocheckpoint=0"} {
+		if _, err := conn.ExecContext(ctx, p); err != nil {
+			t.Fatalf("%s: %v", p, err)
+		}
+	}
+	return conn
+}
+
+// TestReader_SeesUncheckpointedWAL is the regression for #2631: a row that
+// Calibre has committed but not yet checkpointed must be visible to the
+// reader. Opening with immutable=1 made SQLite ignore the -wal file, so
+// Bindery read a snapshot as of the last checkpoint.
+func TestReader_SeesUncheckpointedWAL(t *testing.T) {
+	root := buildFixtureLibrary(t)
+	ctx := context.Background()
+	w := openWALWriter(t, root)
+	if _, err := w.ExecContext(ctx, `INSERT INTO books (id, title, sort, path) VALUES (4, 'Book Four', 'Book Four', 'Alice Author/Book Four (4)')`); err != nil {
+		t.Fatalf("insert into wal: %v", err)
+	}
+	if st, err := os.Stat(filepath.Join(root, metadataDB+"-wal")); err != nil || st.Size() == 0 {
+		t.Fatalf("precondition: expected a non-empty metadata.db-wal, stat err=%v", err)
+	}
+
+	r, err := OpenReader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	n, err := r.Count(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 4 {
+		t.Errorf("Count = %d, want 4 (row committed to the WAL but not checkpointed is invisible)", n)
+	}
+}
+
+// TestOpenReader_ReadOnlyDirFallsBackToImmutable covers the one case where
+// a plain `mode=ro` open cannot work: a WAL mode metadata.db in a directory
+// Bindery cannot write to, with no -shm file present (Calibre not running).
+// SQLite refuses that open outright, so the reader must fall back to
+// immutable=1 rather than fail the import.
+func TestOpenReader_ReadOnlyDirFallsBackToImmutable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	root := buildFixtureLibrary(t)
+	w, err := sql.Open("sqlite", filepath.Join(root, metadataDB))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		t.Fatal(err)
+	}
+	// Closing the last connection checkpoints and removes -wal and -shm.
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, metadataDB+"-shm")); !os.IsNotExist(err) {
+		t.Fatalf("precondition: -shm should be absent, stat err=%v", err)
+	}
+	if err := os.Chmod(filepath.Join(root, metadataDB), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(root, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(root, 0o755) })
+
+	r, err := OpenReader(root)
+	if err != nil {
+		t.Fatalf("OpenReader should fall back to immutable=1, got: %v", err)
+	}
+	defer r.Close()
+	n, err := r.Count(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Errorf("Count = %d, want 3", n)
+	}
+}
+
+func TestIsReadOnlyWALFailure(t *testing.T) {
+	cases := map[string]bool{
+		"attempt to write a readonly database (1544)": true,
+		"unable to open database file (14)":           true,
+		"attempt to write a readonly database (8)":    true,
+		"no such table: books (1)":                    false,
+		"database disk image is malformed (11)":       false,
+		"plain error without a code":                  false,
+	}
+	for msg, want := range cases {
+		if got := isReadOnlyWALFailure(errors.New(msg)); got != want {
+			t.Errorf("isReadOnlyWALFailure(%q) = %v, want %v", msg, got, want)
+		}
+	}
+}

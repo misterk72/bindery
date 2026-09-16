@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,9 +72,11 @@ type CalibreFormat struct {
 }
 
 // Reader opens a Calibre library's metadata.db read-only and returns
-// populated CalibreBook records. It never mutates the Calibre database —
-// we explicitly use `mode=ro&immutable=1` so a concurrent `calibredb`
-// invocation from the same Bindery instance cannot deadlock us.
+// populated CalibreBook records. It never mutates the Calibre database:
+// the handle is opened with `mode=ro`, so a concurrent `calibredb`
+// invocation from the same Bindery instance cannot deadlock us, and
+// SQLite's normal WAL handling still applies so rows Calibre has committed
+// but not yet checkpointed are visible (#2631).
 type Reader struct {
 	libraryPath string
 	db          *sql.DB
@@ -96,14 +100,95 @@ func OpenReader(libraryPath string) (*Reader, error) {
 		}
 		return nil, fmt.Errorf("stat %s: %w", dbPath, err)
 	}
-	// immutable=1 tells SQLite the file will not change under us, letting
-	// it skip locking and rollback journal checks — safe here because we
-	// only read, and Calibre's WAL is only active while its own GUI runs.
-	conn, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&immutable=1")
+	conn, err := openReadOnly(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	return &Reader{libraryPath: abs, db: conn}, nil
+}
+
+// openReadOnly opens dbPath with `mode=ro` and verifies a read actually
+// works. Plain read-only is what we want: SQLite honours the -wal file, so
+// edits made by a long running Calibre, Calibre-Web-Automated or a
+// `calibredb` call that have not been checkpointed into metadata.db yet
+// are still visible (#2631). The reader used to add `immutable=1`, which
+// tells SQLite the file cannot change and makes it skip the WAL entirely;
+// that silently served a snapshot as of the last checkpoint, and any
+// author or book the user had just fixed in Calibre came back on the next
+// import.
+//
+// The one thing `mode=ro` needs that `immutable=1` does not is the
+// metadata.db-shm file (or the ability to create it) next to the database.
+// If the library directory is mounted read-only into the container and
+// Calibre is not currently running, that file may be absent and SQLite
+// refuses to open a WAL database at all. Rather than fail the import we
+// fall back to `immutable=1` and warn, naming the consequence, so the
+// stale read is at least no longer silent.
+func openReadOnly(dbPath string) (*sql.DB, error) {
+	// OpenReader has no context parameter and its one caller runs the
+	// import in the background, so bound the probe locally: a metadata.db
+	// that cannot answer a trivial query in this long is broken, not busy.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	conn, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", dbPath, err)
 	}
-	return &Reader{libraryPath: abs, db: conn}, nil
+	// sql.Open is lazy; the -shm requirement only surfaces on the first
+	// read transaction, so probe with a real query rather than Ping.
+	probeErr := probeRead(ctx, conn)
+	if probeErr == nil {
+		return conn, nil
+	}
+	_ = conn.Close()
+	if !isReadOnlyWALFailure(probeErr) {
+		return nil, fmt.Errorf("open %s: %w", dbPath, probeErr)
+	}
+	slog.Warn("calibre: cannot open metadata.db read-only with WAL support; falling back to an immutable open. "+
+		"Edits made in Calibre will not be visible to Bindery until Calibre checkpoints its WAL. "+
+		"Make the library directory writable to Bindery, or make sure metadata.db-shm exists, to fix this.",
+		"path", dbPath, "error", probeErr)
+	conn, err = sql.Open("sqlite", "file:"+dbPath+"?mode=ro&immutable=1")
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", dbPath, err)
+	}
+	if err := probeRead(ctx, conn); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("open %s: %w", dbPath, err)
+	}
+	return conn, nil
+}
+
+// probeRead runs the cheapest query that forces SQLite to actually open
+// the database file and, in WAL mode, its -shm.
+func probeRead(ctx context.Context, conn *sql.DB) error {
+	var n int
+	return conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master`).Scan(&n)
+}
+
+// isReadOnlyWALFailure reports whether err is the error SQLite returns when
+// a read-only handle cannot set up WAL shared memory: a primary result code
+// of SQLITE_READONLY (8; seen as the 1544 SQLITE_READONLY_DIRECTORY extended
+// code when the library directory is not writable) or SQLITE_CANTOPEN (14).
+// modernc.org/sqlite does not expose a typed error, but every message it
+// produces ends with the extended result code in parentheses, so parse
+// that and mask it down to the primary code.
+func isReadOnlyWALFailure(err error) bool {
+	msg := strings.TrimSpace(err.Error())
+	open := strings.LastIndex(msg, "(")
+	if open < 0 || !strings.HasSuffix(msg, ")") {
+		return false
+	}
+	code, convErr := strconv.Atoi(msg[open+1 : len(msg)-1])
+	if convErr != nil {
+		return false
+	}
+	switch code & 0xff {
+	case 8, 14: // SQLITE_READONLY, SQLITE_CANTOPEN
+		return true
+	}
+	return false
 }
 
 // Close releases the SQLite handle. Safe to call on a nil receiver so the
