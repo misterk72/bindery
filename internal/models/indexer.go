@@ -77,12 +77,18 @@ type Indexer struct {
 	// this indexer was a refusal". LastErrorCode is the Newznab code when the
 	// indexer itself rejected us (1xx needs a human, 5xx clears on its own) and
 	// nil for a transport-level failure.
-	LastError     *string    `json:"lastError,omitempty"`
-	LastErrorCode *int       `json:"lastErrorCode,omitempty"`
-	LastFailureAt *time.Time `json:"lastFailureAt,omitempty"`
-	LastSuccessAt *time.Time `json:"lastSuccessAt,omitempty"`
-	CreatedAt     time.Time  `json:"createdAt"`
-	UpdatedAt     time.Time  `json:"updatedAt"`
+	// CooldownUntil and CooldownReason are response-only: the API fills them
+	// from the searcher when it is holding off on this indexer after a rate
+	// limit (#1934, #2635), so the Indexers tab can say when searches resume.
+	// Never persisted; anything a client sends in them is ignored.
+	CooldownUntil  *time.Time `json:"cooldownUntil,omitempty"`
+	CooldownReason *string    `json:"cooldownReason,omitempty"`
+	LastError      *string    `json:"lastError,omitempty"`
+	LastErrorCode  *int       `json:"lastErrorCode,omitempty"`
+	LastFailureAt  *time.Time `json:"lastFailureAt,omitempty"`
+	LastSuccessAt  *time.Time `json:"lastSuccessAt,omitempty"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
 }
 
 // NeedsAttention reports whether the last search against this indexer failed

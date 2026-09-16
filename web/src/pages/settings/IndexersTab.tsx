@@ -293,7 +293,23 @@ export default function IndexersTab({ indexers, setIndexers, prowlarrInstances, 
                   anything. A rate limit is deliberately amber rather than red:
                   it clears on its own and the indexer is already benched for
                   it (#1934). */}
-              {idx.lastError && (
+              {/* A live cooldown outranks the stored failure below: it says
+                  when searches resume, which is the question a rate limit
+                  raises, and the stored error is the same message. */}
+              {idx.cooldownUntil ? (
+                <div
+                  role="status"
+                  className="mt-2 px-3 py-2 rounded text-xs flex items-center gap-2 bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300"
+                >
+                  <span className="inline-block w-2 h-2 rounded-full flex-shrink-0 bg-amber-500" />
+                  <span>
+                    {t('settings.indexers.cooldown', {
+                      until: new Date(idx.cooldownUntil).toLocaleString(),
+                      error: idx.cooldownReason ?? '',
+                    })}
+                  </span>
+                </div>
+              ) : idx.lastError && (
                 <div
                   role="status"
                   className={`mt-2 px-3 py-2 rounded text-xs flex items-center gap-2 ${

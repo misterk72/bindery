@@ -50,6 +50,9 @@ func (s *lastDebugStore) get(userID int64) *indexer.SearchDebug {
 type indexerSearcher interface {
 	SearchBookWithDebug(ctx context.Context, indexers []models.Indexer, c indexer.MatchCriteria) ([]newznab.SearchResult, *indexer.SearchDebug)
 	SearchQuery(ctx context.Context, indexers []models.Indexer, query string) []newznab.SearchResult
+	// Cooldown reports whether the searcher is holding off on idx after a
+	// rate limit, and until when.
+	Cooldown(idx models.Indexer) (until time.Time, reason string, held bool)
 }
 
 type IndexerHandler struct {
@@ -127,6 +130,7 @@ const indexerQueryWindow = 24 * time.Hour
 // leaves the field nil, which renders as "no usage known" rather than failing
 // the whole list request over a decoration.
 func (h *IndexerHandler) withQueryUsage(ctx context.Context, idxs []models.Indexer) []models.Indexer {
+	idxs = h.withCooldown(idxs)
 	capped := false
 	for _, idx := range idxs {
 		if idx.DailyQueryLimit != nil && *idx.DailyQueryLimit > 0 {
@@ -148,6 +152,25 @@ func (h *IndexerHandler) withQueryUsage(ctx context.Context, idxs []models.Index
 		}
 		used := usage[idxs[i].ID]
 		idxs[i].DailyQueriesUsed = &used
+	}
+	return idxs
+}
+
+// withCooldown fills the response-only CooldownUntil and CooldownReason on
+// every indexer the searcher is holding off on, so a rate limit is visible on
+// the Indexers tab rather than only in a search's details panel. The state
+// lives in the searcher's memory, so it is exact and costs no query.
+func (h *IndexerHandler) withCooldown(idxs []models.Indexer) []models.Indexer {
+	if h.searcher == nil {
+		return idxs
+	}
+	for i := range idxs {
+		until, reason, held := h.searcher.Cooldown(idxs[i])
+		if !held {
+			continue
+		}
+		idxs[i].CooldownUntil = &until
+		idxs[i].CooldownReason = &reason
 	}
 	return idxs
 }

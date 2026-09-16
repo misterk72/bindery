@@ -340,3 +340,113 @@ func TestCooldownIgnoresAPlain503(t *testing.T) {
 		t.Error("a plain 503 recorded a cooldown")
 	}
 }
+
+// TestCooldownEscalatesOnRepeatedRateLimits: an indexer that keeps refusing
+// is left alone for longer each time, up the same ladder Sonarr and Radarr
+// climb, and stays at the top rather than wrapping.
+func TestCooldownEscalatesOnRepeatedRateLimits(t *testing.T) {
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	c := &indexerCooldowns{now: func() time.Time { return now }}
+	idx := models.Indexer{ID: 1, Name: "NZB.life"}
+	err := &newznab.HTTPStatusError{Status: 429, Snippet: "error code: 1015"}
+
+	want := []time.Duration{time.Hour, 3 * time.Hour, 6 * time.Hour, 12 * time.Hour, 24 * time.Hour, 24 * time.Hour}
+	for i, d := range want {
+		if !c.note(idx, err) {
+			t.Fatalf("limit %d: no cooldown recorded", i+1)
+		}
+		if got := c.entries[idx.ID].until.Sub(now); got != d {
+			t.Errorf("limit %d: cooldown = %s, want %s", i+1, got, d)
+		}
+		// Wait it out, so the next limit is the first request after it.
+		now = c.entries[idx.ID].until.Add(time.Second)
+		if _, held := c.active(idx); held {
+			t.Fatalf("limit %d: still held after the cooldown expired", i+1)
+		}
+	}
+}
+
+// TestCooldownRelaxesOnSuccess: a search the indexer answers steps the ladder
+// down one rung, so a limit that clears and comes back a week later costs an
+// hour again rather than a day.
+func TestCooldownRelaxesOnSuccess(t *testing.T) {
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	c := &indexerCooldowns{now: func() time.Time { return now }}
+	idx := models.Indexer{ID: 1, Name: "NZB.life"}
+	err := &newznab.IndexerError{Code: 500, Description: "Request limit reached."}
+
+	c.note(idx, err) // 1h, level now 1
+	c.note(idx, err) // 3h, level now 2
+	c.relax(idx)     // level 1
+	c.note(idx, err)
+	if got := c.entries[idx.ID].until.Sub(now); got != 3*time.Hour {
+		t.Errorf("after one success the next limit = %s, want 3h", got)
+	}
+	c.relax(idx)
+	c.relax(idx)
+	c.relax(idx) // cannot go below the first rung
+	c.note(idx, err)
+	if got := c.entries[idx.ID].until.Sub(now); got != time.Hour {
+		t.Errorf("after several successes the next limit = %s, want 1h", got)
+	}
+}
+
+// TestCooldownHintOutranksLadder: the indexer's own deadline is what it
+// asked for, whichever rung the ladder is on.
+func TestCooldownHintOutranksLadder(t *testing.T) {
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	c := &indexerCooldowns{now: func() time.Time { return now }}
+	idx := models.Indexer{ID: 1, Name: "NZB.life"}
+	for range 3 {
+		c.note(idx, &newznab.HTTPStatusError{Status: 429})
+	}
+	c.note(idx, &newznab.HTTPStatusError{Status: 429, RetryAfter: 20 * time.Minute})
+	if got := c.entries[idx.ID].until.Sub(now); got != 20*time.Minute {
+		t.Errorf("Retry-After on rung 4 gave %s, want 20m", got)
+	}
+	c.note(idx, &newznab.IndexerError{Code: 500, Description: "Request limit reached. Retry in 485 minutes."})
+	if got := c.entries[idx.ID].until.Sub(now); got != 485*time.Minute {
+		t.Errorf("text hint on rung 5 gave %s, want 485m", got)
+	}
+}
+
+// TestCooldownEditResetsLadder: editing the indexer forgets the rung along
+// with the entry; a new key or account starts over at an hour.
+func TestCooldownEditResetsLadder(t *testing.T) {
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	c := &indexerCooldowns{now: func() time.Time { return now }}
+	idx := models.Indexer{ID: 1, Name: "NZB.life"}
+	err := &newznab.HTTPStatusError{Status: 429}
+	c.note(idx, err)
+	c.note(idx, err)
+	idx.UpdatedAt = now.Add(time.Minute)
+	if _, held := c.active(idx); held {
+		t.Fatal("still held after the indexer was edited")
+	}
+	c.note(idx, err)
+	if got := c.entries[idx.ID].until.Sub(now); got != time.Hour {
+		t.Errorf("first limit after an edit = %s, want 1h", got)
+	}
+}
+
+// TestSearcherReportsCooldownForTheIndexersTab: the exported view the API
+// fills into the indexer list.
+func TestSearcherReportsCooldownForTheIndexersTab(t *testing.T) {
+	srv, _ := cloudflareBlockedIndexer(t, "")
+	s := newTestSearcher()
+	idxs := []models.Indexer{{ID: 1, Name: "NZB.life", URL: srv.URL, Enabled: true, Categories: []int{7020}}}
+	if _, _, held := s.Cooldown(idxs[0]); held {
+		t.Fatal("held before any search")
+	}
+	s.SearchBook(context.Background(), idxs, MatchCriteria{Title: "Redshirts", Author: "John Scalzi", MediaType: models.MediaTypeEbook})
+	until, reason, held := s.Cooldown(idxs[0])
+	if !held {
+		t.Fatal("not held after a 429")
+	}
+	if d := time.Until(until); d < 59*time.Minute || d > 61*time.Minute {
+		t.Errorf("until is %s away, want about an hour", d)
+	}
+	if !strings.Contains(reason, "HTTP 429") {
+		t.Errorf("reason = %q, want the indexer's message", reason)
+	}
+}

@@ -241,6 +241,17 @@ you are trying to diagnose a quiet indexer. Raising the search interval is not
 an alternative: it changes how often the burst happens, not how big one burst
 is.
 
+**Rate limits.** When an indexer refuses a search because a request limit
+was reached, whether as a Newznab "request limit reached" error or as an HTTP
+429 from the host in front of it (Cloudflare's "error code: 1015"), Bindery
+stops searching that indexer for the time the indexer asked for, or for an hour
+when it gave no time. An indexer that limits again after that is left alone
+for longer each time: three hours, then six, twelve and a day, and every search
+it answers brings it back down a step. The Indexers tab shows a held indexer
+with the time searches resume; editing the indexer clears the hold, and so does
+a restart. A daily query limit stops the burst before the indexer has to refuse
+it; the hold is what happens when it refuses anyway.
+
 **Decision.** Each release is checked against your quality profile (allowed
 formats), delay profile, blocklist, size limits, and language filter.
 On indexers marked *freeleech only*, non-freeleech releases are not discarded

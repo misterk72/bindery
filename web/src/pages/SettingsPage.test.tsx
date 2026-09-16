@@ -1539,6 +1539,26 @@ describe('SettingsPage', () => {
     })
   })
 
+  it('shows when a rate limited indexer resumes, in place of the stored failure', async () => {
+    renderSettings({
+      indexers: [
+        makeIndexer({
+          id: 26, name: 'Held',
+          cooldownUntil: '2026-09-16T15:00:00Z', cooldownReason: 'HTTP 429: error code: 1015',
+          lastError: 'HTTP 429: error code: 1015', lastFailureAt: '2026-09-16T12:00:00Z',
+        }),
+        makeIndexer({ id: 27, name: 'Failed', lastError: 'connection refused', lastFailureAt: '2026-09-16T12:00:00Z' }),
+      ],
+    })
+    await openIndexersTab()
+
+    const held = await screen.findByText('settings.indexers.cooldown')
+    expect(held.parentElement?.className).toContain('amber')
+    // The held indexer shows the resume line only; the other one keeps the
+    // stored failure line.
+    expect(screen.getAllByText(/settings\.indexers\.healthFail/)).toHaveLength(1)
+  })
+
   it('shows daily query usage on a capped indexer, and says so once the cap is reached', async () => {
     renderSettings({
       indexers: [

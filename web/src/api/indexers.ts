@@ -45,6 +45,11 @@ export interface Indexer {
   // when the indexer itself rejected us: 1xx (100 bad credentials, 101 account
   // suspended, 102 VPN forbidden) needs a human, 5xx is a rate limit that
   // clears on its own, and absent means a transport failure.
+  // Set while the backend is holding off on this indexer after a rate limit
+  // (#1934, #2635): when searches resume, and the indexer's own message.
+  // Absent otherwise.
+  cooldownUntil?: string | null
+  cooldownReason?: string | null
   lastError?: string | null
   lastErrorCode?: number | null
   lastFailureAt?: string | null

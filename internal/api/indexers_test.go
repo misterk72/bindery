@@ -31,6 +31,9 @@ type mockIndexerSearcher struct {
 	// read back is whichever leg happened to finish last.
 	mu       sync.Mutex
 	lastCrit indexer.MatchCriteria
+
+	cooldownUntil  time.Time
+	cooldownReason string
 }
 
 // criteria returns the criteria from the most recent call, safe to read after
@@ -39,6 +42,14 @@ func (m *mockIndexerSearcher) criteria() indexer.MatchCriteria {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.lastCrit
+}
+
+// cooldown, when set, is what Cooldown reports for every indexer.
+func (m *mockIndexerSearcher) Cooldown(models.Indexer) (time.Time, string, bool) {
+	if m.cooldownUntil.IsZero() {
+		return time.Time{}, "", false
+	}
+	return m.cooldownUntil, m.cooldownReason, true
 }
 
 func (m *mockIndexerSearcher) SearchBookWithDebug(_ context.Context, _ []models.Indexer, c indexer.MatchCriteria) ([]newznab.SearchResult, *indexer.SearchDebug) {
@@ -514,6 +525,10 @@ func (s *slowSearcher) SearchBookWithDebug(_ context.Context, _ []models.Indexer
 	}
 }
 
+func (s *slowSearcher) Cooldown(models.Indexer) (time.Time, string, bool) {
+	return time.Time{}, "", false
+}
+
 func (s *slowSearcher) SearchQuery(_ context.Context, _ []models.Indexer, _ string) []newznab.SearchResult {
 	return nil
 }
@@ -602,6 +617,10 @@ func (debugSearcher) SearchBookWithDebug(_ context.Context, _ []models.Indexer, 
 			Categories:  cats,
 		}},
 	}
+}
+
+func (debugSearcher) Cooldown(models.Indexer) (time.Time, string, bool) {
+	return time.Time{}, "", false
 }
 
 func (debugSearcher) SearchQuery(_ context.Context, _ []models.Indexer, _ string) []newznab.SearchResult {
@@ -1219,5 +1238,41 @@ func TestIndexerDailyQueryUsage_SurvivesASave(t *testing.T) {
 	}
 	if updated.DailyQueriesUsed == nil || *updated.DailyQueriesUsed != 950 {
 		t.Errorf("update response DailyQueriesUsed = %v, want 950", updated.DailyQueriesUsed)
+	}
+}
+
+// TestIndexerList_ReportsCooldown: an indexer the searcher is holding off on
+// says so in the list, so the Indexers tab can show when searches resume
+// without anyone opening a search's details panel.
+func TestIndexerList_ReportsCooldown(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	until := time.Now().Add(3 * time.Hour).UTC().Truncate(time.Second)
+	mock := &mockIndexerSearcher{cooldownUntil: until, cooldownReason: "HTTP 429: error code: 1015"}
+	h := NewIndexerHandler(db.NewIndexerRepo(database), db.NewBookRepo(database), db.NewAuthorRepo(database),
+		db.NewMetadataProfileRepo(database), mock, db.NewSettingsRepo(database), db.NewBlocklistRepo(database))
+
+	idx := &models.Indexer{Name: "NZB.life", URL: "https://nzb.life", Type: "newznab", Enabled: true}
+	if err := db.NewIndexerRepo(database).Create(context.Background(), idx); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	h.List(rec, httptest.NewRequest(http.MethodGet, "/indexer", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var out []models.Indexer
+	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].CooldownUntil == nil || out[0].CooldownReason == nil {
+		t.Fatalf("cooldown missing from the list: %+v", out)
+	}
+	if !out[0].CooldownUntil.Equal(until) || *out[0].CooldownReason != "HTTP 429: error code: 1015" {
+		t.Errorf("cooldown = %s %q, want %s", out[0].CooldownUntil, *out[0].CooldownReason, until)
 	}
 }

@@ -184,7 +184,9 @@ func (s *Searcher) WithHealthNotifier(n healthEventNotifier) *Searcher {
 	return s
 }
 
-// noteIndexerSuccess clears stored health after an indexer answers.
+// noteIndexerSuccess clears stored health after an indexer answers, and
+// steps its rate-limit ladder down a rung.
 func (s *Searcher) noteIndexerSuccess(ctx context.Context, idx models.Indexer) {
 	s.health.recordSuccess(ctx, idx)
+	s.cooldowns.relax(idx)
 }

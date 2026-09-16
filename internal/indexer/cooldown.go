@@ -26,6 +26,16 @@ const (
 	maxRateLimitCooldown     = 24 * time.Hour
 )
 
+// cooldownLadder is the cooldown applied to each successive rate limit an
+// indexer sends without a hint of its own: an hour the first time, then
+// longer, the same steps Sonarr and Radarr use. A tracker whose window is
+// longer than an hour would otherwise get one refused request every hour
+// until it cleared, and on trackers that count refused requests that keeps
+// the window from clearing at all. A search the indexer answers steps the
+// ladder back down one rung, so a one-off limit costs one hour and a
+// tracker that keeps refusing is left alone for a day at a time.
+var cooldownLadder = []time.Duration{time.Hour, 3 * time.Hour, 6 * time.Hour, 12 * time.Hour, 24 * time.Hour}
+
 // retryHintRe matches the "Retry in 485 minutes" clause indexers append to a
 // Newznab 500 description. Case-insensitive, tolerant of the unit being
 // singular or plural, and anchored on nothing — the clause appears mid-sentence
@@ -95,6 +105,10 @@ type cooldownEntry struct {
 type indexerCooldowns struct {
 	mu      sync.Mutex
 	entries map[int64]cooldownEntry
+	// levels is each indexer's rung on cooldownLadder. It outlives the entry,
+	// so the next rate limit after an expired cooldown is longer than the
+	// last, and is stepped down by relax and cleared by an indexer edit.
+	levels map[int64]int
 	// now is injectable so tests can advance time without sleeping. nil means
 	// time.Now.
 	now func() time.Time
@@ -120,7 +134,17 @@ func (c *indexerCooldowns) note(idx models.Indexer, err error) bool {
 		return false
 	}
 
-	d := defaultRateLimitCooldown
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = make(map[int64]cooldownEntry)
+		c.levels = make(map[int64]int)
+	}
+
+	// The indexer's own deadline, from a Retry-After header or a "Retry in N"
+	// clause, outranks the ladder: it is what the server asked for.
+	level := min(c.levels[idx.ID], len(cooldownLadder)-1)
+	d := cooldownLadder[level]
 	var he *newznab.HTTPStatusError
 	if errors.As(err, &he) && he.RetryAfter > 0 {
 		d = he.RetryAfter
@@ -128,18 +152,13 @@ func (c *indexerCooldowns) note(idx models.Indexer, err error) bool {
 		d = hinted
 	}
 	d = max(min(d, maxRateLimitCooldown), minRateLimitCooldown)
+	c.levels[idx.ID] = level + 1
 
 	now := c.clock()
 	entry := cooldownEntry{
 		until:      now.Add(d),
 		reason:     err.Error(),
 		recordedAt: now,
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.entries == nil {
-		c.entries = make(map[int64]cooldownEntry)
 	}
 	c.entries[idx.ID] = entry
 	slog.Info("indexer rate-limited; holding off further searches",
@@ -157,23 +176,8 @@ func (c *indexerCooldowns) note(idx models.Indexer, err error) bool {
 // would be the wrong answer. The loops already hold the full models.Indexer, so
 // this needs no extra wiring back into the handlers.
 func (c *indexerCooldowns) active(idx models.Indexer) (string, bool) {
-	if idx.ID == 0 {
-		return "", false
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	entry, ok := c.entries[idx.ID]
+	entry, now, ok := c.current(idx)
 	if !ok {
-		return "", false
-	}
-	if !idx.UpdatedAt.IsZero() && idx.UpdatedAt.After(entry.recordedAt) {
-		delete(c.entries, idx.ID)
-		return "", false
-	}
-	now := c.clock()
-	if !now.Before(entry.until) {
-		delete(c.entries, idx.ID)
 		return "", false
 	}
 	remaining := entry.until.Sub(now).Round(time.Minute)
@@ -181,6 +185,58 @@ func (c *indexerCooldowns) active(idx models.Indexer) (string, bool) {
 		remaining = time.Minute
 	}
 	return fmt.Sprintf("rate limited, retrying in %s (%s)", remaining, entry.reason), true
+}
+
+// current returns idx's live cooldown entry and the clock reading it was
+// judged against, dropping an entry that has expired or that belongs to a
+// configuration the user has since edited. An edit also forgets the ladder
+// rung: a new key or account starts over.
+func (c *indexerCooldowns) current(idx models.Indexer) (cooldownEntry, time.Time, bool) {
+	if idx.ID == 0 {
+		return cooldownEntry{}, time.Time{}, false
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[idx.ID]
+	if !ok {
+		return cooldownEntry{}, time.Time{}, false
+	}
+	if !idx.UpdatedAt.IsZero() && idx.UpdatedAt.After(entry.recordedAt) {
+		delete(c.entries, idx.ID)
+		delete(c.levels, idx.ID)
+		return cooldownEntry{}, time.Time{}, false
+	}
+	now := c.clock()
+	if !now.Before(entry.until) {
+		delete(c.entries, idx.ID)
+		return cooldownEntry{}, time.Time{}, false
+	}
+	return entry, now, true
+}
+
+// relax steps idx one rung down the ladder after a search it answered, so an
+// indexer that limited once and then recovered is back to an hour, while one
+// that keeps refusing stays near the top.
+func (c *indexerCooldowns) relax(idx models.Indexer) {
+	if idx.ID == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.levels[idx.ID] > 0 {
+		c.levels[idx.ID]--
+	}
+}
+
+// Cooldown reports whether the searcher is holding off on idx, and until when
+// and why, for the Indexers tab. The reason is the indexer's own message.
+func (s *Searcher) Cooldown(idx models.Indexer) (until time.Time, reason string, held bool) {
+	entry, _, ok := s.cooldowns.current(idx)
+	if !ok {
+		return time.Time{}, "", false
+	}
+	return entry.until, entry.reason, true
 }
 
 // cooldownActive reports whether the searcher is currently holding off on idx.

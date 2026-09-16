@@ -653,7 +653,8 @@
       "quotaUsage": "{{used}} of {{limit}} queries in the last 24 hours",
       "quotaReached": "Daily query limit of {{limit}} reached. This indexer is being skipped until the oldest hour of queries falls out of the window.",
       "healthAuthFail": "This indexer rejected the last search and will keep rejecting until someone fixes it: {{error}}",
-      "healthFail": "Last search failed: {{error}}"
+      "healthFail": "Last search failed: {{error}}",
+      "cooldown": "Rate limited. Searches resume at {{until}}: {{error}}"
     },
     "prowlarr": {
       "heading": "Prowlarr",

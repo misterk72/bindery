@@ -1,0 +1,3 @@
+### Changed
+- **A rate limited indexer is left alone for longer each time it refuses**: the hold after a request limit was always one hour unless the indexer named a time, so a tracker whose window is longer than that got one refused request every hour until it cleared, and trackers that count refused requests never cleared. Repeated limits now step up through three hours, six, twelve and a day, the same steps Sonarr and Radarr use, and every search the indexer answers steps back down. The indexer's own Retry-After or "retry in" time still wins when it sends one.
+- **The Indexers tab shows a held indexer and when its searches resume**: until now the hold was only visible in a search's details panel, so an indexer that had been benched for a day looked idle in Settings.
