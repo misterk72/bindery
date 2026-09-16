@@ -1,2 +1,0 @@
-### Fixed
-- **An Audiobookshelf import no longer re-monitors books you unmonitored** (#2632): every book an import matched to an existing Bindery record was set back to monitored, whatever you had chosen, so one run could take a curated library from a few hundred monitored books to nearly every book it holds, and Bindery then went searching indexers for all of them. The update path now leaves Monitored as you set it; only a book the import creates is monitored. Same decision as the list syncer fix in v1.33.0. Reported by Broomfundel.
