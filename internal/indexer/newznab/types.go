@@ -4,6 +4,9 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
+	"time"
 )
 
 // IndexerError is a structured error returned by a Newznab/Torznab indexer via
@@ -45,15 +48,64 @@ func IsAuthError(err error) bool {
 	return ie.Code >= 100 && ie.Code <= 199
 }
 
-// IsRateLimitError reports whether the error is a rate-limit rejection
-// (Newznab 5xx code range: 500 = request limit reached, 520 = maximum
-// grabs reached, etc.).
+// HTTPStatusError is a non-200 response that carried no Newznab <error>
+// document: a Cloudflare block page, a maintenance page, a proxy error. It
+// keeps the status so a rate limit applied at the HTTP layer classifies the
+// same way as one the indexer reports in XML (#2635), and the Retry-After
+// header when the server sent one.
+type HTTPStatusError struct {
+	Status int
+	// RetryAfter is the parsed Retry-After header, or 0 when it was absent or
+	// unreadable.
+	RetryAfter time.Duration
+	// Snippet is the start of the response body, for the log line.
+	Snippet string
+}
+
+func (e *HTTPStatusError) Error() string {
+	if e.Snippet == "" {
+		return fmt.Sprintf("HTTP %d", e.Status)
+	}
+	return fmt.Sprintf("HTTP %d: %s", e.Status, e.Snippet)
+}
+
+// parseRetryAfter reads a Retry-After header, which is either a delay in
+// seconds or an HTTP date. Returns 0 for anything else, including a date in
+// the past.
+func parseRetryAfter(value string, now time.Time) time.Duration {
+	if value == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(value); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if at, err := http.ParseTime(value); err == nil {
+		if d := at.Sub(now); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
+// IsRateLimitError reports whether the error is a rate-limit rejection: a
+// Newznab 5xx code (500 = request limit reached, 520 = maximum grabs reached,
+// etc.), an HTTP 429, or an HTTP 503 that names a Retry-After. A 503 on its
+// own stays a transient error: it is usually maintenance, and the tier
+// fall-through and the next search should still try (#2635).
 func IsRateLimitError(err error) bool {
 	var ie *IndexerError
-	if !errors.As(err, &ie) {
-		return false
+	if errors.As(err, &ie) {
+		return ie.Code >= 500 && ie.Code <= 599
 	}
-	return ie.Code >= 500 && ie.Code <= 599
+	var he *HTTPStatusError
+	if errors.As(err, &he) {
+		return he.Status == http.StatusTooManyRequests ||
+			(he.Status == http.StatusServiceUnavailable && he.RetryAfter > 0)
+	}
+	return false
 }
 
 // IsHardIndexerError reports whether err is an error that the indexer itself

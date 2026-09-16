@@ -899,7 +899,15 @@ func (c *Client) fetchXML(ctx context.Context, rawURL string) ([]byte, error) {
 		if len(snippet) > 512 {
 			snippet = snippet[:512]
 		}
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, snippet)
+		// Typed rather than fmt.Errorf so a rate limit applied at the HTTP
+		// layer (Cloudflare 429, error code 1015) reaches IsRateLimitError
+		// and the searcher's cooldown the same way a Newznab <error
+		// code="500"> does (#2635).
+		return nil, &HTTPStatusError{
+			Status:     resp.StatusCode,
+			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()),
+			Snippet:    snippet,
+		}
 	}
 
 	return body, nil

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1682,5 +1683,79 @@ func TestBookSearch_NonHardErrorFallsThrough(t *testing.T) {
 	// Must have issued requests for more than 1 tier (proving fall-through happened).
 	if len(queries) < 2 {
 		t.Errorf("expected multiple tiers issued, got %d: %v", len(queries), queries)
+	}
+}
+
+// TestFetchXML_TypesNon200 pins #2635: a non-200 response with no Newznab
+// <error> body must come back as an *HTTPStatusError carrying the status and
+// the Retry-After header, and a 429 must classify as a rate limit while a
+// plain 503 stays a soft error.
+func TestFetchXML_TypesNon200(t *testing.T) {
+	cases := []struct {
+		name          string
+		status        int
+		retryAfter    string
+		wantRateLimit bool
+		wantRetry     bool
+	}{
+		{"cloudflare 429", http.StatusTooManyRequests, "", true, false},
+		{"429 with Retry-After seconds", http.StatusTooManyRequests, "120", true, true},
+		{"429 with Retry-After date", http.StatusTooManyRequests, time.Now().Add(10 * time.Minute).UTC().Format(http.TimeFormat), true, true},
+		{"plain 503", http.StatusServiceUnavailable, "", false, false},
+		{"503 with Retry-After", http.StatusServiceUnavailable, "60", true, true},
+		{"502", http.StatusBadGateway, "", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tc.retryAfter != "" {
+					w.Header().Set("Retry-After", tc.retryAfter)
+				}
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte("error code: 1015"))
+			}))
+			defer srv.Close()
+
+			c := testNew(srv.URL, "key")
+			_, err := c.Search(context.Background(), "anything", nil)
+			var he *HTTPStatusError
+			if !errors.As(err, &he) {
+				t.Fatalf("err = %v (%T), want *HTTPStatusError", err, err)
+			}
+			if he.Status != tc.status {
+				t.Errorf("Status = %d, want %d", he.Status, tc.status)
+			}
+			if (he.RetryAfter > 0) != tc.wantRetry {
+				t.Errorf("RetryAfter = %s, want set=%v", he.RetryAfter, tc.wantRetry)
+			}
+			if got := IsRateLimitError(err); got != tc.wantRateLimit {
+				t.Errorf("IsRateLimitError = %v, want %v", got, tc.wantRateLimit)
+			}
+			if !strings.Contains(err.Error(), fmt.Sprintf("HTTP %d: error code: 1015", tc.status)) {
+				t.Errorf("Error() = %q, want the status and the body snippet", err.Error())
+			}
+		})
+	}
+}
+
+// TestBookSearch_HTTP429AbortsFallThrough: once the host in front of the
+// indexer has refused a request, the remaining tiers would only be refused
+// too, and each one costs a request some trackers count against the quota.
+func TestBookSearch_HTTP429AbortsFallThrough(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte("error code: 1015"))
+	}))
+	defer srv.Close()
+
+	c := testNew(srv.URL, "key")
+	_, err := c.BookSearch(context.Background(), "Dark Matter", "Blake Crouch", []int{7020})
+	if !IsRateLimitError(err) {
+		t.Fatalf("err = %v, want a rate limit", err)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("BookSearch sent %d requests after a 429, want 1", got)
 	}
 }

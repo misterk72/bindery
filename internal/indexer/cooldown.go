@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -74,7 +75,9 @@ type cooldownEntry struct {
 // when.
 //
 // A Newznab 500 ("Request limit reached. Retry in 485 minutes.") is an explicit
-// instruction, and before #1934 Bindery discarded it: the classification in
+// instruction, and so is an HTTP 429 from the host in front of the indexer
+// (Cloudflare's "error code: 1015", which carries no <error> element and was
+// missed until #2635). Before #1934 Bindery discarded the first: the classification in
 // newznab.IsRateLimitError was consulted only to abort tier fall-through within
 // a single search, so the next search — and every search for the next eight
 // hours — sent another request the indexer had already refused. On indexers
@@ -118,7 +121,10 @@ func (c *indexerCooldowns) note(idx models.Indexer, err error) bool {
 	}
 
 	d := defaultRateLimitCooldown
-	if hinted, ok := parseRetryHint(err.Error()); ok {
+	var he *newznab.HTTPStatusError
+	if errors.As(err, &he) && he.RetryAfter > 0 {
+		d = he.RetryAfter
+	} else if hinted, ok := parseRetryHint(err.Error()); ok {
 		d = hinted
 	}
 	d = max(min(d, maxRateLimitCooldown), minRateLimitCooldown)

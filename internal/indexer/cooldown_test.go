@@ -253,3 +253,90 @@ func TestCooldownIsSharedAcrossSearchPaths(t *testing.T) {
 		t.Errorf("auto-grab and freeform search sent %d more request(s) to a held indexer", got-first)
 	}
 }
+
+// cloudflareBlockedIndexer serves the HTTP 429 that Cloudflare answers with
+// when a tracker's rate limit trips (error code 1015): a text body, no
+// Newznab <error> element. It counts how many times it was asked.
+func cloudflareBlockedIndexer(t *testing.T, retryAfter string) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		if retryAfter != "" {
+			w.Header().Set("Retry-After", retryAfter)
+		}
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte("error code: 1015"))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &hits
+}
+
+// TestSearchBookStopsQueryingAnHTTP429Indexer is #2635's pin: a rate limit
+// applied by the host in front of the indexer must bench it the same way a
+// Newznab <error code="500"> does. Before the fix the 429 was an untyped
+// error, no cooldown was recorded, and every search in a sweep of thousands
+// of books sent the indexer another request it had already refused.
+func TestSearchBookStopsQueryingAnHTTP429Indexer(t *testing.T) {
+	srv, hits := cloudflareBlockedIndexer(t, "")
+	s := newTestSearcher()
+	idxs := []models.Indexer{{ID: 1, Name: "NZB.life", URL: srv.URL, Enabled: true, Categories: []int{7020}}}
+	crit := MatchCriteria{Title: "Redshirts", Author: "John Scalzi", MediaType: models.MediaTypeEbook}
+
+	s.SearchBook(context.Background(), idxs, crit)
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("the first search sent %d requests, want 1: a 429 must also stop tier fall-through", got)
+	}
+	for range 5 {
+		s.SearchBook(context.Background(), idxs, crit)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("the indexer was queried %d more time(s) while in cooldown", got-1)
+	}
+	reason, held := s.cooldowns.active(idxs[0])
+	if !held {
+		t.Fatal("no cooldown recorded for the 429")
+	}
+	if !strings.Contains(reason, "HTTP 429") {
+		t.Errorf("cooldown reason = %q, want it to carry the HTTP status", reason)
+	}
+}
+
+// TestCooldownHonoursRetryAfter: a Retry-After header is the server's own
+// deadline and outranks the default hour, within the usual clamp.
+func TestCooldownHonoursRetryAfter(t *testing.T) {
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	idx := models.Indexer{ID: 7, Name: "abNZB"}
+	cases := []struct {
+		name string
+		err  error
+		want time.Duration
+	}{
+		{"seconds", &newznab.HTTPStatusError{Status: 429, RetryAfter: 20 * time.Minute}, 20 * time.Minute},
+		{"absent falls back to the default", &newznab.HTTPStatusError{Status: 429}, defaultRateLimitCooldown},
+		{"clamped to the maximum", &newznab.HTTPStatusError{Status: 429, RetryAfter: 72 * time.Hour}, maxRateLimitCooldown},
+		{"503 with Retry-After", &newznab.HTTPStatusError{Status: 503, RetryAfter: 5 * time.Minute}, 5 * time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &indexerCooldowns{now: func() time.Time { return now }}
+			if !c.note(idx, tc.err) {
+				t.Fatalf("%v did not record a cooldown", tc.err)
+			}
+			if got := c.entries[idx.ID].until.Sub(now); got != tc.want {
+				t.Errorf("cooldown = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCooldownIgnoresAPlain503: a 503 with no Retry-After is maintenance or
+// a proxy hiccup, not an instruction to stay away, so the next search may
+// try again.
+func TestCooldownIgnoresAPlain503(t *testing.T) {
+	c := &indexerCooldowns{}
+	idx := models.Indexer{ID: 3, Name: "NZB Finder"}
+	if c.note(idx, &newznab.HTTPStatusError{Status: 503, Snippet: "maintenance"}) {
+		t.Error("a plain 503 recorded a cooldown")
+	}
+}
