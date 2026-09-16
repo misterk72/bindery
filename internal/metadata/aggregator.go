@@ -985,27 +985,22 @@ func (a *Aggregator) GetBookFromProvider(ctx context.Context, providerName, fore
 	return nil, ErrProviderNotConfigured
 }
 
-// ResolveBookByISBN walks every provider (primary first, then enrichers) and
-// returns the first hit whose author carries a usable foreignAuthorId. Used
-// at add-time when the user picked a search result from a provider that
-// doesn't expose author IDs (notably DNB), so we can fall back to a stronger
-// provider for the author identity rather than synthesising an ID locally.
+// ResolveBookByISBNWithOutcome walks every provider (primary first, then
+// enrichers) and returns the first hit whose author carries a usable
+// foreignAuthorId. Used at add time when the user picked a search result from
+// a provider that doesn't expose author IDs (notably DNB), and by the
+// Goodreads importer.
 //
-// Returns (nil, nil) when no provider has the ISBN — the caller should treat
-// that as "couldn't resolve" and surface a friendly error to the user.
-// A provider error on one source is logged at debug level and treated as a
-// miss, so a single flaky provider doesn't block resolution.
-func (a *Aggregator) ResolveBookByISBN(ctx context.Context, isbn string) (*models.Book, error) {
-	book, _, err := a.ResolveBookByISBNWithOutcome(ctx, isbn)
-	return book, err
-}
-
-// ResolveBookByISBNWithOutcome is ResolveBookByISBN plus which providers
-// failed during the walk. The walk steps past a provider that errors, so a
-// timed out primary hands the lookup to the next provider and its hit is
-// indistinguishable from one the primary genuinely lacked. A caller that
-// persists the returned author's identity must consult
-// SearchOutcome.SafeToBind(book.Author.ForeignID) first (#2271, #2332).
+// Returns a nil book when no provider has the ISBN; the caller should treat
+// that as "couldn't resolve". A provider error on one source is logged at
+// debug level and treated as a miss, so a single flaky provider doesn't block
+// resolution. That is also why the outcome exists: the walk steps past a
+// provider that errors, so a timed out primary hands the lookup to the next
+// provider and its hit is indistinguishable from one the primary genuinely
+// lacked. A caller that persists the returned author's identity must consult
+// SearchOutcome.SafeToBind(book.Author.ForeignID) first (#2271, #2332). The
+// plain ResolveBookByISBN that dropped the outcome is gone because its last
+// caller, AddBook, bound through it unguarded (#2612).
 //
 // Only providers consulted up to the hit are reported, as failed or answered:
 // the walk stops there, so a later provider did neither.

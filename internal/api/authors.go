@@ -3133,9 +3133,21 @@ func (h *AuthorHandler) AddBook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.ForeignAuthorID == "" {
-		resolved, err := h.resolveAuthorForBook(ctx, req.ForeignBookID)
+		resolved, outcome, err := h.resolveAuthorForBook(ctx, req.ForeignBookID)
 		if err != nil {
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+		// The ISBN walk steps past a primary that timed out, so a fallback's
+		// record can win here only because the primary never answered. Adding
+		// it makes that provider the author's permanent link, and the same
+		// person is duplicated once the primary is back (#2117, #2612). Nothing
+		// has been written yet, so refuse and let a retry do the resolving.
+		if resolved != nil && !outcome.SafeToBind(resolved.Author.ForeignID) {
+			slog.Warn("AddBook: refusing to bind author to a fallback provider",
+				"foreignBookId", req.ForeignBookID, "primary", outcome.Primary,
+				"failed", outcome.FailureSummary(), "wouldHaveLinked", resolved.Author.ForeignID)
+			writePrimaryProviderUnavailableForAdd(w)
 			return
 		}
 		if resolved != nil {
@@ -3166,9 +3178,18 @@ func (h *AuthorHandler) AddBook(w http.ResponseWriter, r *http.Request) {
 			// have this book.
 			if existing := h.findLibraryAuthorByName(ctx, req.AuthorName); existing != nil {
 				req.ForeignAuthorID = existing.ForeignID
-			} else if canonical, cErr := h.meta.ResolveCanonicalAuthor(ctx, req.AuthorName); cErr == nil && canonical != nil {
+			} else if canonical, cErr := h.meta.ResolveCanonicalAuthor(ctx, req.AuthorName); cErr == nil && canonical != nil && outcome.SafeToBind(canonical.ForeignID) {
+				// The canonical lookup is OpenLibrary's, which is a fallback
+				// when another provider is primary, so the same guard applies.
 				req.ForeignAuthorID = canonical.ForeignID
 			}
+		}
+		if req.ForeignAuthorID == "" && outcome.PrimaryFailed {
+			// No provider placed the author, but the primary never answered,
+			// so "add the author manually" is the wrong advice: the primary
+			// may well know this book.
+			writePrimaryProviderUnavailableForAdd(w)
+			return
 		}
 		if req.ForeignAuthorID == "" {
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
@@ -3536,13 +3557,20 @@ func (h *AuthorHandler) cleanupOrphanIfNoBooks(author *models.Author, bookCreate
 // when no ISBN is found or no provider can place the author. This is the
 // fallback path for AddBook when the search result didn't carry a
 // foreignAuthorId — currently the case for every DNB result.
-func (h *AuthorHandler) resolveAuthorForBook(ctx context.Context, foreignBookID string) (*models.Book, error) {
+//
+// The returned outcome pools every ISBN lookup. The editions are alternative
+// ways of asking for the same book, so a primary that failed on one of them
+// taints the result whichever edition finally matched, as in the Goodreads
+// importer. The caller must check SafeToBind on the resolved author before
+// rewriting the request to its ids (#2612).
+func (h *AuthorHandler) resolveAuthorForBook(ctx context.Context, foreignBookID string) (*models.Book, metadata.SearchOutcome, error) {
+	var outcome metadata.SearchOutcome
 	primaryBook, err := h.meta.GetBook(ctx, foreignBookID)
 	if err != nil {
-		return nil, fmt.Errorf("look up book metadata: %w", err)
+		return nil, outcome, fmt.Errorf("look up book metadata: %w", err)
 	}
 	if primaryBook == nil {
-		return nil, nil
+		return nil, outcome, nil
 	}
 	for _, ed := range primaryBook.Editions {
 		var isbn string
@@ -3555,16 +3583,29 @@ func (h *AuthorHandler) resolveAuthorForBook(ctx context.Context, foreignBookID 
 		if isbn == "" {
 			continue
 		}
-		resolved, err := h.meta.ResolveBookByISBN(ctx, isbn)
+		resolved, isbnOutcome, err := h.meta.ResolveBookByISBNWithOutcome(ctx, isbn)
+		if !outcome.PrimaryFailed {
+			outcome = isbnOutcome
+		}
 		if err != nil {
 			slog.Debug("resolveAuthorForBook: provider lookup failed", "isbn", isbn, "error", err)
 			continue
 		}
 		if resolved != nil {
-			return resolved, nil
+			return resolved, outcome, nil
 		}
 	}
-	return nil, nil
+	return nil, outcome, nil
+}
+
+// writePrimaryProviderUnavailableForAdd answers an AddBook refused because the
+// primary metadata provider did not answer. 503 for the relink endpoint's
+// reason: nothing upstream gave a bad answer, and retrying shortly is the
+// correct action. The Add Book dialog shows the error text as it stands.
+func writePrimaryProviderUnavailableForAdd(w http.ResponseWriter) {
+	writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+		"error": "The primary metadata provider did not answer, so the book was not added rather than linked to another provider's record. Please try again shortly.",
+	})
 }
 
 // saveAlternateNames persists any latin-script OL alternate names from

@@ -770,7 +770,7 @@ func TestAggregator_GetEditionsFromProvider_RoutesUnprefixedID(t *testing.T) {
 // regression test for #608: prior to the DNB-author-foreign-id fix, the
 // aggregator silently dropped DNB-only ISBN hits because Author.ForeignID
 // was empty. Now that DNB populates a synthetic "dnb:gnd:" (or
-// "dnb:author:") ForeignID, ResolveBookByISBN must accept it.
+// "dnb:author:") ForeignID, ResolveBookByISBNWithOutcome must accept it.
 func TestAggregator_ResolveBookByISBN_AcceptsDNBWithSyntheticAuthorID(t *testing.T) {
 	primary := &mockProvider{name: "openlibrary"} // OL doesn't have this ISBN.
 	dnb := &mockProvider{name: "dnb", getByISBN: &models.Book{
@@ -785,9 +785,9 @@ func TestAggregator_ResolveBookByISBN_AcceptsDNBWithSyntheticAuthorID(t *testing
 	}}
 	agg := newTestAggregator(primary, dnb)
 
-	got, err := agg.ResolveBookByISBN(context.Background(), "9783453198975")
+	got, _, err := agg.ResolveBookByISBNWithOutcome(context.Background(), "9783453198975")
 	if err != nil {
-		t.Fatalf("ResolveBookByISBN: %v", err)
+		t.Fatalf("ResolveBookByISBNWithOutcome: %v", err)
 	}
 	if got == nil {
 		t.Fatal("expected DNB result with synthetic author ForeignID to be accepted, got nil")
@@ -809,9 +809,9 @@ func TestAggregator_ResolveBookByISBN_StillSkipsResultsWithoutAuthorID(t *testin
 	}}
 	agg := newTestAggregator(primary)
 
-	got, err := agg.ResolveBookByISBN(context.Background(), "9780000000000")
+	got, _, err := agg.ResolveBookByISBNWithOutcome(context.Background(), "9780000000000")
 	if err != nil {
-		t.Fatalf("ResolveBookByISBN: %v", err)
+		t.Fatalf("ResolveBookByISBNWithOutcome: %v", err)
 	}
 	if got != nil {
 		t.Errorf("expected nil when no provider has an author ForeignID, got %+v", got)
