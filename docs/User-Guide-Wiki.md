@@ -177,11 +177,13 @@ step (metadata profile, root folder, media type, monitor mode, auto-grab), a
 book row to the single-book step (cover, identifiers, format, search on add).
 Rows that already match something in your library say **In your library** with
 an **Open** link instead of Select, and adding one anyway is refused with a
-link to the existing record. A book row whose result carries no author id
-(DNB results, for example) has its author looked up by ISBN across your
-metadata providers; if the primary provider does not answer during that
-lookup, the add is refused with a message to try again shortly, rather than
-linking the book and its author to another provider's record for good.
+link to the existing record. An ISBN search, and adding a book row whose
+result carries no author id (DNB results, for example), look the ISBN up
+across your metadata providers. If the primary provider does not answer during
+that lookup, the search or the add is refused with a message to try again once
+it responds, rather than offering another provider's record and linking the
+book and its author to it for good. A primary that answers without the ISBN
+still lets another provider's record through.
 Searches run against the metadata providers only
 when you press Enter or Search, never as you type; the header library search is
 the one that reacts to keystrokes, because it only reads your own catalogue.

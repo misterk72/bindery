@@ -3147,7 +3147,7 @@ func (h *AuthorHandler) AddBook(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("AddBook: refusing to bind author to a fallback provider",
 				"foreignBookId", req.ForeignBookID, "primary", outcome.Primary,
 				"failed", outcome.FailureSummary(), "wouldHaveLinked", resolved.Author.ForeignID)
-			writePrimaryProviderUnavailableForAdd(w)
+			writePrimaryProviderUnavailable(w, outcome.Primary)
 			return
 		}
 		if resolved != nil {
@@ -3188,7 +3188,7 @@ func (h *AuthorHandler) AddBook(w http.ResponseWriter, r *http.Request) {
 			// No provider placed the author, but the primary never answered,
 			// so "add the author manually" is the wrong advice: the primary
 			// may well know this book.
-			writePrimaryProviderUnavailableForAdd(w)
+			writePrimaryProviderUnavailable(w, outcome.Primary)
 			return
 		}
 		if req.ForeignAuthorID == "" {
@@ -3598,13 +3598,20 @@ func (h *AuthorHandler) resolveAuthorForBook(ctx context.Context, foreignBookID 
 	return nil, outcome, nil
 }
 
-// writePrimaryProviderUnavailableForAdd answers an AddBook refused because the
-// primary metadata provider did not answer. 503 for the relink endpoint's
-// reason: nothing upstream gave a bad answer, and retrying shortly is the
-// correct action. The Add Book dialog shows the error text as it stands.
-func writePrimaryProviderUnavailableForAdd(w http.ResponseWriter) {
+// primaryProviderUnavailableMessage is the user facing reason for refusing a
+// fallback provider's record because the primary did not answer (#2612).
+func primaryProviderUnavailableMessage(primary string) string {
+	return fmt.Sprintf("The primary metadata provider (%s) did not answer, so no record from another provider was used. Please try again once it responds.", primary)
+}
+
+// writePrimaryProviderUnavailable answers an Add Book or ISBN lookup refused
+// because the primary metadata provider did not answer. 503 for the relink
+// endpoint's reason: nothing upstream gave a bad answer, and retrying shortly
+// is the correct action. The Add Book dialog shows the error text as it
+// stands.
+func writePrimaryProviderUnavailable(w http.ResponseWriter, primary string) {
 	writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-		"error": "The primary metadata provider did not answer, so the book was not added rather than linked to another provider's record. Please try again shortly.",
+		"error": primaryProviderUnavailableMessage(primary),
 	})
 }
 

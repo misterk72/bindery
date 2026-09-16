@@ -225,9 +225,18 @@ func (h *SearchHandler) Lookup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *SearchHandler) lookupByISBN(w http.ResponseWriter, r *http.Request, isbn string) {
-	book, err := h.meta.GetBookByISBN(r.Context(), isbn)
+	book, outcome, err := h.meta.GetBookByISBNWithOutcome(r.Context(), isbn)
 	if err != nil {
 		writeUpstreamError(w, err)
+		return
+	}
+	// This lookup feeds the Add Book dialog, and adding what it returns makes
+	// the record's provider permanent for the book and its author. A fallback
+	// that only won because the primary never answered is refused, the rule
+	// #2610 applies to the importers. A primary that answered without the ISBN
+	// still lets the fallback through (#2237).
+	if book != nil && !outcome.SafeToBind(book.ForeignID) {
+		writePrimaryProviderUnavailable(w, outcome.Primary)
 		return
 	}
 	if book == nil {

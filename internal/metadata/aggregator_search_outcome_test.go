@@ -269,3 +269,39 @@ func TestResolveBookByISBNWithOutcomeReportsPrimaryFailure(t *testing.T) {
 		})
 	}
 }
+
+// TestGetBookByISBN_DoesNotCacheFallbackTakenWhilePrimaryDown: the ISBN lookup
+// cached whatever it returned, so a fallback's record taken while the primary
+// timed out kept being served after the primary came back, and the Add Book
+// dialog kept offering it (#2612). The next lookup must ask the primary again.
+func TestGetBookByISBN_DoesNotCacheFallbackTakenWhilePrimaryDown(t *testing.T) {
+	const isbn = "9783844935776"
+	const description = "A description long enough that the ISBN lookup does not try to enrich it."
+	primary := &mockProvider{name: "openlibrary", getByISBNErr: errors.New("openlibrary: context deadline exceeded")}
+	dnb := &mockProvider{name: "dnb", getByISBN: &models.Book{
+		ForeignID: "dnb:1305873874", Title: "Der war's", Description: description,
+		Author: &models.Author{ForeignID: "dnb:gnd:123120802", Name: "Juli Zeh"},
+	}}
+	agg := newTestAggregator(primary, dnb)
+
+	first, err := agg.GetBookByISBN(context.Background(), isbn)
+	if err != nil {
+		t.Fatalf("first lookup: %v", err)
+	}
+	if first == nil || first.ForeignID != "dnb:1305873874" {
+		t.Fatalf("first lookup = %+v, want the fallback's record while the primary is down", first)
+	}
+
+	primary.getByISBNErr = nil
+	primary.getByISBN = &models.Book{
+		ForeignID: "OL45804W", Title: "Der war's", Description: description,
+		Author: &models.Author{ForeignID: "OL1A", Name: "Juli Zeh"},
+	}
+	second, err := agg.GetBookByISBN(context.Background(), isbn)
+	if err != nil {
+		t.Fatalf("second lookup: %v", err)
+	}
+	if second == nil || second.ForeignID != "OL45804W" {
+		t.Errorf("second lookup = %+v, want the primary's OL45804W rather than the cached fallback", second)
+	}
+}

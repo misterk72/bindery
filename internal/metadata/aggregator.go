@@ -864,18 +864,53 @@ func (a *Aggregator) GetEditionsFromProvider(ctx context.Context, providerName, 
 	return nil, ErrProviderNotConfigured
 }
 
+// GetBookByISBN is GetBookByISBNWithOutcome for callers that only display or
+// match the record. A caller that shows the record for the user to add, or
+// writes its ids, needs the outcome instead.
 func (a *Aggregator) GetBookByISBN(ctx context.Context, isbn string) (*models.Book, error) {
+	book, _, err := a.GetBookByISBNWithOutcome(ctx, isbn)
+	return book, err
+}
+
+// GetBookByISBNWithOutcome looks the ISBN up across the providers, preferring
+// the primary's record, and reports which providers failed on the way. A
+// provider that errors is stepped past, so with the primary timing out a
+// fallback's record comes back looking like the answer. The Add Book dialog
+// must not offer that record: adding it makes the fallback the book's and the
+// author's permanent provider (#2612). Check SafeToBind(book.ForeignID).
+//
+// Such a record is also not cached, so the next lookup asks the primary again
+// instead of serving the fallback's answer for the life of the cache entry. A
+// cache hit therefore never carries a primary failure.
+func (a *Aggregator) GetBookByISBNWithOutcome(ctx context.Context, isbn string) (*models.Book, SearchOutcome, error) {
 	isbn = isbnutil.Normalize(isbn)
 	key := "isbn:" + isbn
+	primaryName := a.PrimaryProviderName()
 	if cached, ok := a.cache.get(key); ok {
-		return cached.(*models.Book), nil
+		return cached.(*models.Book), SearchOutcome{Primary: primaryName}, nil
 	}
 
-	var errs []error
+	var (
+		errs             []error
+		failed, answered []string
+	)
 	skippedUnconfigured := false
 	providers := a.providers()
 	var primaryFallback *models.Book
 	var firstFallback *models.Book
+	finish := func(book *models.Book) (*models.Book, SearchOutcome, error) {
+		var firstErr error
+		if len(errs) > 0 {
+			firstErr = errs[0]
+		}
+		outcome := newSearchOutcome(primaryName, failed, answered, firstErr)
+		if !outcome.SafeToBind(book.ForeignID) {
+			slog.Warn("isbn lookup: primary metadata provider failed, not caching the fallback's record",
+				"isbn", isbn, "primary", outcome.Primary, "failed", outcome.FailureSummary(), "fallback", book.ForeignID)
+			return a.cacheISBNBook(ctx, key, book, false), outcome, nil
+		}
+		return a.cacheISBNBook(ctx, key, book, true), outcome, nil
+	}
 	for idx, provider := range providers {
 		if provider == nil {
 			continue
@@ -888,19 +923,20 @@ func (a *Aggregator) GetBookByISBN(ctx context.Context, isbn string) (*models.Bo
 				continue
 			}
 			errs = append(errs, fmt.Errorf("%s: %w", provider.Name(), err))
+			failed = append(failed, normalizedProviderName(providerName(provider)))
 			slog.Debug("isbn lookup provider failed", "provider", provider.Name(), "error", err)
 			continue
 		}
+		answered = append(answered, normalizedProviderName(providerName(provider)))
 		if book == nil {
 			continue
 		}
 		if canonical, status := a.lookupCanonicalPrimaryBook(ctx, isbn, *book); status != canonicalPrimaryBookNoMatch {
 			if status == canonicalPrimaryBookMatched {
-				book = canonical
-				return a.cacheISBNBook(ctx, key, book), nil
+				return finish(canonical)
 			}
 			if idx > 0 || len(providers) == 1 {
-				return a.cacheISBNBook(ctx, key, book), nil
+				return finish(book)
 			}
 		}
 		if firstFallback == nil {
@@ -913,27 +949,31 @@ func (a *Aggregator) GetBookByISBN(ctx context.Context, isbn string) (*models.Bo
 		if primaryFallback != nil {
 			continue
 		}
-		return a.cacheISBNBook(ctx, key, book), nil
+		return finish(book)
 	}
 
 	if primaryFallback != nil {
-		return a.cacheISBNBook(ctx, key, primaryFallback), nil
+		return finish(primaryFallback)
 	}
 	if firstFallback != nil {
-		return a.cacheISBNBook(ctx, key, firstFallback), nil
+		return finish(firstFallback)
 	}
 
+	outcome := newSearchOutcome(primaryName, failed, answered, nil)
 	if len(errs) > 0 {
-		return nil, errors.Join(errs...)
+		outcome.FirstErr = errs[0]
+		return nil, outcome, errors.Join(errs...)
 	}
 	var noBook *models.Book
 	if !skippedUnconfigured {
 		a.cache.set(key, noBook)
 	}
-	return nil, nil
+	return nil, outcome, nil
 }
 
-func (a *Aggregator) cacheISBNBook(ctx context.Context, key string, book *models.Book) *models.Book {
+// cacheISBNBook fills in a thin ISBN record and, when store is true, caches it
+// under key.
+func (a *Aggregator) cacheISBNBook(ctx context.Context, key string, book *models.Book, store bool) *models.Book {
 	if book != nil && len(book.Description) < 50 {
 		// Try fetching the full record from the provider before falling back to
 		// enrichers. ISBN search results are often lightweight (title + ForeignID
@@ -964,7 +1004,9 @@ func (a *Aggregator) cacheISBNBook(ctx context.Context, key string, book *models
 			a.enrichBook(ctx, book)
 		}
 	}
-	a.cache.set(key, book)
+	if store {
+		a.cache.set(key, book)
+	}
 	return book
 }
 
