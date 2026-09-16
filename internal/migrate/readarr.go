@@ -98,6 +98,7 @@ func importReadarrAuthors(ctx context.Context, src *sql.DB, repo *db.AuthorRepo,
 	defer rows.Close()
 
 	var newlyAdded []*models.Author
+	outage := &primaryOutage{}
 
 	for rows.Next() {
 		var name string
@@ -111,7 +112,7 @@ func importReadarrAuthors(ctx context.Context, src *sql.DB, repo *db.AuthorRepo,
 		}
 		res.Requested++
 
-		full := resolveAndCreateAuthor(ctx, "readarr", name, monitored, repo, settings, agg, res)
+		full := resolveAndCreateAuthor(ctx, "readarr", name, monitored, repo, settings, agg, outage, res)
 		if full == nil {
 			continue
 		}

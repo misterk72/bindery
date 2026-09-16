@@ -107,7 +107,9 @@ func (r *Result) fail(name, reason string) {
 // created, carrying the provider its foreign ID belongs to. Duplicates (same
 // foreign ID already in DB) are skipped rather than errored. A match that
 // only won because the primary provider failed is reported as a failure for
-// that row instead of being bound (#2332).
+// that row instead of being bound (#2332), and once the primary has failed
+// primaryOutageThreshold lookups in a row the remaining rows fail with the
+// same reason without being looked up (#2613).
 //
 // onCatalogueFetch is invoked for EVERY newly-created author so the catalogue
 // is always populated (mirrors the Readarr migrate path and the AddAuthor UI).
@@ -140,6 +142,7 @@ func ImportCSVAuthors(
 	res.Requested = len(rows)
 
 	var newlyAdded []*models.Author
+	outage := &primaryOutage{}
 
 	for _, row := range rows {
 		name := row.name
@@ -147,7 +150,7 @@ func ImportCSVAuthors(
 			continue
 		}
 
-		full := resolveAndCreateAuthor(ctx, "csv", name, row.monitored, authors, settings, agg, res)
+		full := resolveAndCreateAuthor(ctx, "csv", name, row.monitored, authors, settings, agg, outage, res)
 		if full == nil {
 			continue
 		}

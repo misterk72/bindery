@@ -135,7 +135,10 @@ type goodreadsResolver interface {
 //
 // pacing is the minimum gap between provider lookups; pass 0 in tests to run
 // without delay. Rows skipped by the shelf filter or already-tracked rows
-// cost no provider call.
+// cost no provider call. Once the primary provider has failed
+// primaryOutageThreshold lookups in a row, the remaining in-scope rows come
+// back unresolved with the primary down reason and cost no call either
+// (#2613).
 func ResolveGoodreadsRows(
 	ctx context.Context,
 	rows []GoodreadsRow,
@@ -146,6 +149,7 @@ func ResolveGoodreadsRows(
 ) []GoodreadsResolvedRow {
 	shelves := opts.shelfSet()
 	out := make([]GoodreadsResolvedRow, 0, len(rows))
+	outage := &primaryOutage{}
 
 	var ticker *time.Ticker
 	if pacing > 0 {
@@ -184,8 +188,18 @@ func ResolveGoodreadsRows(
 			continue
 		}
 
+		// The primary stopped answering earlier in this run. Asking again
+		// costs about a minute per ISBN lookup, and nothing it returned
+		// could bind while the primary was failing (#2613).
+		if outage.down() {
+			resolved.Outcome = outcomeUnresolved
+			resolved.Reason = outage.reason()
+			out = append(out, resolved)
+			continue
+		}
+
 		pace()
-		book, matchedBy, outcome := resolveGoodreadsRow(ctx, row, resolver)
+		book, matchedBy, outcome := resolveGoodreadsRow(ctx, row, resolver, outage)
 		if book == nil {
 			resolved.Outcome = outcomeUnresolved
 			resolved.Reason = goodreadsUnresolvedReason(row, outcome)
@@ -238,7 +252,12 @@ func ResolveGoodreadsRows(
 // a record the primary would have returned for the ISBN is just as missing
 // when the title search is what answers. The providers that answered are
 // pooled across the lookups, for the reason an unmatched row is given.
-func resolveGoodreadsRow(ctx context.Context, row GoodreadsRow, resolver goodreadsResolver) (*models.Book, string, metadata.SearchOutcome) {
+//
+// Each lookup feeds the run's outage streak, and a streak that trips part way
+// through the row ends it there: the lookup that tripped it already marked
+// the row's outcome PrimaryFailed, so it comes back with the primary down
+// reason (#2613).
+func resolveGoodreadsRow(ctx context.Context, row GoodreadsRow, resolver goodreadsResolver, outage *primaryOutage) (*models.Book, string, metadata.SearchOutcome) {
 	var (
 		outcome  metadata.SearchOutcome
 		answered []string
@@ -253,6 +272,7 @@ func resolveGoodreadsRow(ctx context.Context, row GoodreadsRow, resolver goodrea
 			outcome = o
 		}
 		outcome.Answered = answered
+		outage.observe("goodreads", o)
 	}
 	if isbn := strings.TrimSpace(row.ISBN13); isbn != "" {
 		book, o, err := resolver.ResolveBookByISBNWithOutcome(ctx, isbn)
@@ -263,7 +283,7 @@ func resolveGoodreadsRow(ctx context.Context, row GoodreadsRow, resolver goodrea
 			return book, "isbn13", outcome
 		}
 	}
-	if isbn := strings.TrimSpace(row.ISBN); isbn != "" {
+	if isbn := strings.TrimSpace(row.ISBN); isbn != "" && !outage.down() {
 		book, o, err := resolver.ResolveBookByISBNWithOutcome(ctx, isbn)
 		note(o)
 		if err != nil {
@@ -271,6 +291,9 @@ func resolveGoodreadsRow(ctx context.Context, row GoodreadsRow, resolver goodrea
 		} else if book != nil {
 			return book, "isbn10", outcome
 		}
+	}
+	if outage.down() {
+		return nil, "", outcome
 	}
 	// Title+author fallback, the path that carries most ISBN sparse exports.
 	book, o := resolveGoodreadsByTitleAuthor(ctx, row, resolver)

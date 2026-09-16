@@ -99,7 +99,9 @@ func firstLinkableAuthor(name string, matches []models.Author) *models.Author {
 // The CSV and Readarr importers carried identical copies of this block until
 // #2366, which is why #2332 is fixed here once rather than in each.
 //
-// source is the importer's name, used only in log lines.
+// source is the importer's name, used only in log lines. outage is the run's
+// primary outage streak: once it trips, the name fails at once rather than
+// waiting out another primary timeout it could not bind after anyway (#2613).
 // Returns nil when the name was skipped or failed; res already carries why.
 func resolveAndCreateAuthor(
 	ctx context.Context,
@@ -108,11 +110,18 @@ func resolveAndCreateAuthor(
 	authors *db.AuthorRepo,
 	settings *db.SettingsRepo,
 	agg *metadata.Aggregator,
+	outage *primaryOutage,
 	res *Result,
 ) *models.Author {
+	if outage.down() {
+		res.fail(name, outage.reason())
+		return nil
+	}
+
 	// Search every provider. The first match that carries a foreign id wins,
 	// subject to the guard below.
 	matches, outcome, err := agg.SearchAuthorsWithOutcome(ctx, name)
+	outage.observe(source, outcome)
 	if err != nil {
 		slog.Warn(source+" import: search failed", "name", name, "error", err)
 		res.fail(name, "metadata lookup failed: "+err.Error())
