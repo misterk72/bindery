@@ -444,18 +444,55 @@ func TestOpenReader_ReadOnlyDirFallsBackToImmutable(t *testing.T) {
 	}
 }
 
-func TestIsReadOnlyWALFailure(t *testing.T) {
-	cases := map[string]bool{
-		"attempt to write a readonly database (1544)": true,
-		"unable to open database file (14)":           true,
-		"attempt to write a readonly database (8)":    true,
-		"no such table: books (1)":                    false,
-		"database disk image is malformed (11)":       false,
-		"plain error without a code":                  false,
+// TestOpenReader_NetworkFSProbeFailureFallsBack simulates a library on NFS
+// or SMB, where the plain read-only open of a WAL database fails with an
+// IOERR_SHM family code rather than READONLY or CANTOPEN. Any probe failure
+// must retry immutable, which then reads the last checkpoint: the row still
+// sitting in the WAL is invisible, proving the immutable handle was used.
+func TestOpenReader_NetworkFSProbeFailureFallsBack(t *testing.T) {
+	root := buildFixtureLibrary(t)
+	ctx := context.Background()
+	w := openWALWriter(t, root)
+	if _, err := w.ExecContext(ctx, `INSERT INTO books (id, title, sort, path) VALUES (4, 'Book Four', 'Book Four', 'Alice Author/Book Four (4)')`); err != nil {
+		t.Fatalf("insert into wal: %v", err)
 	}
-	for msg, want := range cases {
-		if got := isReadOnlyWALFailure(errors.New(msg)); got != want {
-			t.Errorf("isReadOnlyWALFailure(%q) = %v, want %v", msg, got, want)
+
+	var probed []bool
+	probe := func(ctx context.Context, conn *sql.DB, immutable bool) error {
+		probed = append(probed, immutable)
+		if !immutable {
+			return errors.New("disk I/O error (4618)")
 		}
+		return probeRead(ctx, conn, immutable)
+	}
+	conn, err := openReadOnlyWith(filepath.Join(root, metadataDB), probe)
+	if err != nil {
+		t.Fatalf("expected immutable fallback, got: %v", err)
+	}
+	defer conn.Close()
+	if len(probed) != 2 || probed[0] || !probed[1] {
+		t.Fatalf("probe calls (immutable flag) = %v, want [false true]", probed)
+	}
+	var n int
+	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM books`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Errorf("Count = %d, want 3 (immutable handle ignores the WAL row)", n)
+	}
+}
+
+// TestOpenReader_NotASQLiteFile makes sure the widened fallback does not
+// swallow real breakage: a metadata.db that is not a database fails both
+// probes and OpenReader returns an error.
+func TestOpenReader_NotASQLiteFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, metadataDB), []byte("this is not a sqlite database, just some text padding it out past the header size"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := OpenReader(root)
+	if err == nil {
+		r.Close()
+		t.Fatal("expected an error opening a non SQLite metadata.db")
 	}
 }

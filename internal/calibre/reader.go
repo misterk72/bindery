@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -117,14 +116,27 @@ func OpenReader(libraryPath string) (*Reader, error) {
 // author or book the user had just fixed in Calibre came back on the next
 // import.
 //
-// The one thing `mode=ro` needs that `immutable=1` does not is the
-// metadata.db-shm file (or the ability to create it) next to the database.
-// If the library directory is mounted read-only into the container and
-// Calibre is not currently running, that file may be absent and SQLite
-// refuses to open a WAL database at all. Rather than fail the import we
-// fall back to `immutable=1` and warn, naming the consequence, so the
-// stale read is at least no longer silent.
+// A WAL database opened without `immutable=1` needs working shared memory
+// for its metadata.db-shm index. Two common layouts cannot provide it: a
+// library directory mounted read-only with no -shm present (SQLite cannot
+// create one), and a library on NFS or SMB, where SQLite's WAL shared
+// memory does not work at all. Those fail with a spread of result codes
+// (READONLY, CANTOPEN, the IOERR_SHM family, BUSY), so rather than try to
+// classify them, any probe failure on the plain open retries with
+// `immutable=1` and warns, naming the consequence. That keeps such
+// libraries importable, as they were before, without the stale read being
+// silent. Only when the immutable open cannot read either (not a SQLite
+// file, unreadable, corrupt) does the error reach the caller.
 func openReadOnly(dbPath string) (*sql.DB, error) {
+	return openReadOnlyWith(dbPath, probeRead)
+}
+
+// probeFunc checks that conn can serve a read. immutable says which of the
+// two opens is being probed; the production probe ignores it, and tests use
+// it to fail only the plain open.
+type probeFunc func(ctx context.Context, conn *sql.DB, immutable bool) error
+
+func openReadOnlyWith(dbPath string, probe probeFunc) (*sql.DB, error) {
 	// OpenReader has no context parameter and its one caller runs the
 	// import in the background, so bound the probe locally: a metadata.db
 	// that cannot answer a trivial query in this long is broken, not busy.
@@ -137,58 +149,33 @@ func openReadOnly(dbPath string) (*sql.DB, error) {
 	}
 	// sql.Open is lazy; the -shm requirement only surfaces on the first
 	// read transaction, so probe with a real query rather than Ping.
-	probeErr := probeRead(ctx, conn)
+	probeErr := probe(ctx, conn, false)
 	if probeErr == nil {
 		return conn, nil
 	}
 	_ = conn.Close()
-	if !isReadOnlyWALFailure(probeErr) {
-		return nil, fmt.Errorf("open %s: %w", dbPath, probeErr)
-	}
-	slog.Warn("calibre: cannot open metadata.db read-only with WAL support; falling back to an immutable open. "+
-		"Edits made in Calibre will not be visible to Bindery until Calibre checkpoints its WAL. "+
-		"Make the library directory writable to Bindery, or make sure metadata.db-shm exists, to fix this.",
-		"path", dbPath, "error", probeErr)
+
 	conn, err = sql.Open("sqlite", "file:"+dbPath+"?mode=ro&immutable=1")
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", dbPath, err)
 	}
-	if err := probeRead(ctx, conn); err != nil {
+	if err := probe(ctx, conn, true); err != nil {
 		_ = conn.Close()
-		return nil, fmt.Errorf("open %s: %w", dbPath, err)
+		return nil, fmt.Errorf("open %s: %w (read-only open failed first with: %w)", dbPath, err, probeErr)
 	}
+	slog.Warn("calibre: cannot read metadata.db with WAL support, so it was opened immutable instead. "+
+		"Edits made in Calibre will not be visible to Bindery until Calibre checkpoints its WAL. "+
+		"Usual causes: the library directory is not writable to Bindery and metadata.db-shm does not exist, "+
+		"or the library is on a network filesystem (NFS, SMB) that cannot share the WAL index.",
+		"path", dbPath, "error", probeErr)
 	return conn, nil
 }
 
 // probeRead runs the cheapest query that forces SQLite to actually open
 // the database file and, in WAL mode, its -shm.
-func probeRead(ctx context.Context, conn *sql.DB) error {
+func probeRead(ctx context.Context, conn *sql.DB, _ bool) error {
 	var n int
 	return conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master`).Scan(&n)
-}
-
-// isReadOnlyWALFailure reports whether err is the error SQLite returns when
-// a read-only handle cannot set up WAL shared memory: a primary result code
-// of SQLITE_READONLY (8; seen as the 1544 SQLITE_READONLY_DIRECTORY extended
-// code when the library directory is not writable) or SQLITE_CANTOPEN (14).
-// modernc.org/sqlite does not expose a typed error, but every message it
-// produces ends with the extended result code in parentheses, so parse
-// that and mask it down to the primary code.
-func isReadOnlyWALFailure(err error) bool {
-	msg := strings.TrimSpace(err.Error())
-	open := strings.LastIndex(msg, "(")
-	if open < 0 || !strings.HasSuffix(msg, ")") {
-		return false
-	}
-	code, convErr := strconv.Atoi(msg[open+1 : len(msg)-1])
-	if convErr != nil {
-		return false
-	}
-	switch code & 0xff {
-	case 8, 14: // SQLITE_READONLY, SQLITE_CANTOPEN
-		return true
-	}
-	return false
 }
 
 // Close releases the SQLite handle. Safe to call on a nil receiver so the

@@ -334,12 +334,15 @@ to the records. Things worth knowing before you judge the results:
   Calibre's write-ahead log, so an author you merged or a book you deleted in
   Calibre, Calibre-Web-Automated or `calibredb` is gone from the next import
   even before Calibre has checkpointed it back into `metadata.db` (#2631).
-  The one exception is a library directory mounted read-only into the
+  There are two exceptions. A library directory mounted read-only into the
   container with no `metadata.db-shm` file beside the database (Calibre not
-  running): SQLite cannot open a write-ahead-log database that way, so
-  Bindery falls back to reading the last checkpoint and logs a warning
-  saying Calibre edits will not show until Calibre checkpoints. Mount the
-  library writable, or keep Calibre running, to avoid that.
+  running), and a library on a network filesystem such as NFS or SMB, where
+  SQLite cannot share the write-ahead-log index. In both cases Bindery
+  falls back to reading the last checkpoint and logs a warning saying
+  Calibre edits will not show until Calibre checkpoints. For the first,
+  mount the library writable or keep Calibre running; for a network mount
+  there is no workaround on the Bindery side, and Calibre itself does not
+  recommend keeping a library on one.
 - The scan only matches files whose **author already exists** in Bindery, by
   normalised name — `B. Sanderson/` on disk won't match a "Brandon Sanderson"
   author row.
