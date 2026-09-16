@@ -1028,7 +1028,10 @@ func (i *Importer) applyBookFields(ctx context.Context, book *models.Book, autho
 	}
 	// observedMediaType, not deriveMediaType — see applyABSFormatFields (#2169).
 	book.MediaType = mergeMediaType(book.MediaType, observedMediaType(item))
-	book.Monitored = true
+	// Monitored is deliberately not touched (#2632): this is the update path
+	// for a book the user already has, and re-monitoring it undid deliberate
+	// unmonitoring across a whole library in one run. Only the create paths
+	// stamp Monitored, same decision as the list syncer in #2221.
 	if book.Status == "" {
 		book.Status = models.BookStatusWanted
 	}
