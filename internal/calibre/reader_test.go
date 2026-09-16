@@ -1,9 +1,11 @@
 package calibre
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -494,5 +496,46 @@ func TestOpenReader_NotASQLiteFile(t *testing.T) {
 	if err == nil {
 		r.Close()
 		t.Fatal("expected an error opening a non SQLite metadata.db")
+	}
+}
+
+// TestOpenReadOnlyWaitsOutABusyLock is the v1.36.2 review finding on #2631:
+// the mode=ro open carried no busy timeout, so a probe that landed while
+// Calibre held a lock got SQLITE_BUSY at once and the run fell back to
+// immutable=1, the stale read #2631 fixed. With the timeout the probe waits
+// for the lock and no fallback happens, which the fallback's warning shows.
+func TestOpenReadOnlyWaitsOutABusyLock(t *testing.T) {
+	root := buildFixtureLibrary(t)
+	ctx := context.Background()
+	w, err := sql.Open("sqlite", filepath.Join(root, metadataDB))
+	if err != nil {
+		t.Fatalf("open writer: %v", err)
+	}
+	t.Cleanup(func() { w.Close() })
+	conn, err := w.Conn(ctx)
+	if err != nil {
+		t.Fatalf("pin writer conn: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	if _, err := conn.ExecContext(ctx, "BEGIN EXCLUSIVE"); err != nil {
+		t.Fatalf("begin exclusive: %v", err)
+	}
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		_, _ = conn.ExecContext(ctx, "COMMIT")
+	}()
+
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	r, err := OpenReader(root)
+	if err != nil {
+		t.Fatalf("OpenReader: %v", err)
+	}
+	defer r.Close()
+	if logs.Len() > 0 {
+		t.Errorf("the reader fell back while Calibre held a lock for 300ms: %s", logs.String())
 	}
 }

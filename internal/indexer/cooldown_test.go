@@ -375,13 +375,19 @@ func TestCooldownRelaxesOnSuccess(t *testing.T) {
 	idx := models.Indexer{ID: 1, Name: "NZB.life"}
 	err := &newznab.IndexerError{Code: 500, Description: "Request limit reached."}
 
+	// Each limit lands after the previous hold has expired: a limit during a
+	// running hold is the same burst and does not climb.
+	expire := func() { now = c.entries[idx.ID].until.Add(time.Second) }
 	c.note(idx, err) // 1h, level now 1
+	expire()
 	c.note(idx, err) // 3h, level now 2
-	c.relax(idx)     // level 1
+	expire()
+	c.relax(idx) // level 1
 	c.note(idx, err)
 	if got := c.entries[idx.ID].until.Sub(now); got != 3*time.Hour {
 		t.Errorf("after one success the next limit = %s, want 3h", got)
 	}
+	expire()
 	c.relax(idx)
 	c.relax(idx)
 	c.relax(idx) // cannot go below the first rung
@@ -399,11 +405,13 @@ func TestCooldownHintOutranksLadder(t *testing.T) {
 	idx := models.Indexer{ID: 1, Name: "NZB.life"}
 	for range 3 {
 		c.note(idx, &newznab.HTTPStatusError{Status: 429})
+		now = c.entries[idx.ID].until.Add(time.Second)
 	}
 	c.note(idx, &newznab.HTTPStatusError{Status: 429, RetryAfter: 20 * time.Minute})
 	if got := c.entries[idx.ID].until.Sub(now); got != 20*time.Minute {
 		t.Errorf("Retry-After on rung 4 gave %s, want 20m", got)
 	}
+	now = c.entries[idx.ID].until.Add(time.Second)
 	c.note(idx, &newznab.IndexerError{Code: 500, Description: "Request limit reached. Retry in 485 minutes."})
 	if got := c.entries[idx.ID].until.Sub(now); got != 485*time.Minute {
 		t.Errorf("text hint on rung 5 gave %s, want 485m", got)
@@ -448,5 +456,54 @@ func TestSearcherReportsCooldownForTheIndexersTab(t *testing.T) {
 	}
 	if !strings.Contains(reason, "HTTP 429") {
 		t.Errorf("reason = %q, want the indexer's message", reason)
+	}
+}
+
+// TestCooldownBurstClimbsOneRung is the v1.36.2 review finding: searches
+// already in flight when an indexer starts refusing each get a 429 and each
+// call note. The burst must count once, or a first ever limit with two
+// sweep searches running held the indexer for three hours.
+func TestCooldownBurstClimbsOneRung(t *testing.T) {
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	c := &indexerCooldowns{now: func() time.Time { return now }}
+	idx := models.Indexer{ID: 1, Name: "NZB.life"}
+	err := &newznab.HTTPStatusError{Status: 429, Snippet: "error code: 1015"}
+
+	for range 4 {
+		if !c.note(idx, err) {
+			t.Fatal("a 429 during a hold was not reported as a rate limit")
+		}
+	}
+	if got := c.entries[idx.ID].until.Sub(now); got != time.Hour {
+		t.Errorf("four 429s in one burst held for %s, want 1h", got)
+	}
+
+	// Once that hold has expired, the next limit is the second rung.
+	now = now.Add(time.Hour + time.Second)
+	c.note(idx, err)
+	if got := c.entries[idx.ID].until.Sub(now); got != 3*time.Hour {
+		t.Errorf("the next limit after the burst = %s, want 3h", got)
+	}
+}
+
+// TestCooldownHintDoesNotClimb: a limit that names its own time takes that
+// time and leaves the ladder where it was, and never shortens a running hold.
+func TestCooldownHintDoesNotClimb(t *testing.T) {
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	c := &indexerCooldowns{now: func() time.Time { return now }}
+	idx := models.Indexer{ID: 1, Name: "Prowlarr"}
+
+	c.note(idx, &newznab.HTTPStatusError{Status: 503, RetryAfter: 90 * time.Second})
+	now = now.Add(2 * time.Minute)
+	c.note(idx, &newznab.HTTPStatusError{Status: 503, RetryAfter: 90 * time.Second})
+	now = now.Add(2 * time.Minute)
+	c.note(idx, &newznab.HTTPStatusError{Status: 429})
+	if got := c.entries[idx.ID].until.Sub(now); got != time.Hour {
+		t.Errorf("a plain 429 after two hinted limits = %s, want 1h (hints must not climb)", got)
+	}
+
+	c.note(idx, &newznab.HTTPStatusError{Status: 429, RetryAfter: 5 * time.Minute})
+	if got := c.entries[idx.ID].until.Sub(now); got != time.Hour {
+		t.Errorf("a 5m Retry-After during a 1h hold left %s, want the 1h hold kept", got)
 	}
 }

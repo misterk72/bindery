@@ -141,24 +141,49 @@ func (c *indexerCooldowns) note(idx models.Indexer, err error) bool {
 		c.levels = make(map[int64]int)
 	}
 
+	now := c.clock()
+	held, holding := c.entries[idx.ID]
+	holding = holding && now.Before(held.until)
+
 	// The indexer's own deadline, from a Retry-After header or a "Retry in N"
-	// clause, outranks the ladder: it is what the server asked for.
-	level := min(c.levels[idx.ID], len(cooldownLadder)-1)
-	d := cooldownLadder[level]
+	// clause, outranks the ladder: it is what the server asked for, so it
+	// neither takes a rung nor climbs one.
+	var hinted time.Duration
+	hasHint := false
 	var he *newznab.HTTPStatusError
 	if errors.As(err, &he) && he.RetryAfter > 0 {
-		d = he.RetryAfter
-	} else if hinted, ok := parseRetryHint(err.Error()); ok {
+		hinted, hasHint = he.RetryAfter, true
+	} else if d, ok := parseRetryHint(err.Error()); ok {
+		hinted, hasHint = d, true
+	}
+
+	var d time.Duration
+	switch {
+	case hasHint:
 		d = hinted
+	case holding:
+		// A limit that lands while a hold is already running is the same
+		// burst: searches already in flight when the first refusal arrived
+		// each get their own. Climbing a rung for every one of them turned a
+		// first ever limit into three hours with two searches running, or
+		// twelve with four. Keep the hold as it is.
+		return true
+	default:
+		level := min(c.levels[idx.ID], len(cooldownLadder)-1)
+		d = cooldownLadder[level]
+		c.levels[idx.ID] = level + 1
 	}
 	d = max(min(d, maxRateLimitCooldown), minRateLimitCooldown)
-	c.levels[idx.ID] = level + 1
 
-	now := c.clock()
 	entry := cooldownEntry{
 		until:      now.Add(d),
 		reason:     err.Error(),
 		recordedAt: now,
+	}
+	if holding && held.until.After(entry.until) {
+		// Never shorten a running hold because a later reply named a
+		// sooner time.
+		entry.until = held.until
 	}
 	c.entries[idx.ID] = entry
 	slog.Info("indexer rate-limited; holding off further searches",
