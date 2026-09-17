@@ -12,11 +12,11 @@ import (
 	"github.com/vavallee/bindery/internal/db"
 )
 
-// TestGetConfig_APIKeyOnlyForStoredAdmins is defence in depth behind the
-// middleware fix: whatever stamped the admin role on the context, the API key
-// is returned only when the request names no user (the install itself) or a
-// user whose stored role is admin.
-func TestGetConfig_APIKeyOnlyForStoredAdmins(t *testing.T) {
+// TestGetConfig_APIKeyNeverForRequesters is defence in depth behind the
+// middleware fix: whatever stamped the admin role on the context, a request
+// naming a user whose stored role is requester does not get the API key.
+// Admin and user behave as before: the key follows the context role.
+func TestGetConfig_APIKeyNeverForRequesters(t *testing.T) {
 	database, err := db.OpenMemory()
 	if err != nil {
 		t.Fatal(err)
@@ -44,7 +44,7 @@ func TestGetConfig_APIKeyOnlyForStoredAdmins(t *testing.T) {
 		{"install request, no user", 0, auth.RoleAdmin, true},
 		{"admin session", admin.ID, auth.RoleAdmin, true},
 		{"requester stamped admin", reader.ID, auth.RoleAdmin, false},
-		{"user stamped admin", plain.ID, auth.RoleAdmin, false},
+		{"user stamped admin", plain.ID, auth.RoleAdmin, true},
 		{"requester", reader.ID, auth.RoleRequester, false},
 		{"user", plain.ID, auth.RoleUser, false},
 	}

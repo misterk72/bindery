@@ -343,6 +343,10 @@ func TestRequesterGuard_ModeNeverElevatesARequester(t *testing.T) {
 	if rec := f.doFrom(http.MethodGet, "/api/v1/indexer", f.userCookie, "127.0.0.1:5555"); rec.Code != http.StatusNoContent {
 		t.Errorf("local-only, role user cookie from 127.0.0.1, admin route: status %d, want 204 (grant unchanged)", rec.Code)
 	}
+	// ...and still sees the API key it is able to regenerate, as on main.
+	if rec := f.doFrom(http.MethodGet, "/api/v1/auth/config", f.userCookie, "127.0.0.1:5555"); !strings.Contains(rec.Body.String(), "k-requester-test") {
+		t.Errorf("local-only, role user cookie from 127.0.0.1, /auth/config: %s, want the API key", rec.Body.String())
+	}
 	// With no cookie at all the local client is still the admin.
 	rec := f.doFrom(http.MethodGet, "/api/v1/auth/config", nil, "127.0.0.1:5555")
 	if !strings.Contains(rec.Body.String(), "k-requester-test") {

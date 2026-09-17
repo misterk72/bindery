@@ -319,18 +319,20 @@ func (h *AuthHandler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	resp := authConfigResponse{
 		Mode: string(h.mode(ctx)),
 	}
-	// Only expose the API key to admin users — it grants full access. The
-	// context role is not enough on its own: an auth mode grant can stamp
-	// admin on a signed in person's request, so when the request names a
-	// user, that user's stored role must be admin too.
+	// Only expose the API key to admin users — it grants full access. As
+	// defence in depth behind auth.Middleware, a requester never receives it,
+	// whatever role the context carries: the key would be a way out of the
+	// requester role. Admin and user sessions are unchanged, including a user
+	// session local-only mode stamps admin, which can regenerate the key and
+	// so must be able to see it.
 	canSeeKey := auth.UserRoleFromContext(ctx) == auth.RoleAdmin
 	if uid := auth.UserIDFromContext(ctx); uid != 0 {
 		u, _ := h.users.GetByID(ctx, uid)
 		if u != nil {
 			resp.Username = u.Username
-		}
-		if u == nil || u.Role != auth.RoleAdmin {
-			canSeeKey = false
+			if u.Role == auth.RoleRequester {
+				canSeeKey = false
+			}
 		}
 	} else if list, err := h.listAllUsers(ctx); err == nil && len(list) == 1 {
 		resp.Username = list[0].Username
