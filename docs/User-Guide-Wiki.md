@@ -413,9 +413,10 @@ to the records. Things worth knowing before you judge the results:
 A library scan attaches every file it can match with confidence and leaves
 the rest for you. Those books wait on **Import → In your library**, the page
 `/import` opens on. Each row is one **book**, not one file: a 193 track
-audiobook folder is one row, a folder of disc folders (`CD1`, `Disc 2`) is one
-row named after the folder above them, and `Dune.epub` beside `Dune.mobi` is
-one row.
+audiobook folder is one row, a folder whose subfolders are all discs (`CD1`,
+`Disc 2`, or `1`, `2`) is one row named after it, and `Dune.epub` beside
+`Dune.mobi` is one row. Folders named `Book 1`, `Book 2` under a series folder
+stay separate books, as do numbered folders straight under an author folder.
 
 **Adopting registers the files where they are.** Nothing is moved, renamed or
 queued, and no indexer search starts. It is the scan's own match with you
@@ -457,9 +458,15 @@ What adopting does to your library:
   adopted (ebook or audiobook), so Bindery never goes looking for the other
   format behind your back. It and a new author are owned by the admin who
   adopted them. The author's other books are not added.
-- **Undo** removes exactly the file entries the adoption made. A book or author
-  the adoption created is removed too, unless something else now depends on
-  it (another file, another adopted row).
+- **Undo** removes exactly the file entries the adoption made, and only while
+  each still belongs to the book it was adopted into; a file that has since
+  moved to another book stays with that book. A book or author the adoption
+  created is removed too, unless something else now depends on it (another
+  file, another book by that author, excluded or not, another adopted row),
+  or the book has been used since: monitored, edited, linked to a series, or
+  searched for or downloaded. Then the book stays and Undo says so.
+- If Bindery stops in the middle of an adoption, the next start reverses what
+  that adoption had done and the book is back in **Needs a decision**.
 - Only an admin can see or act on this list, because it shows server paths.
 
 Things worth knowing:
@@ -468,8 +475,9 @@ Things worth knowing:
   adopted, including one inside the library that points elsewhere.
 - A scan that finds no files at all (an unmounted volume, say) changes
   nothing on this list, so your ignores and adoptions survive it.
-- Adopted and ignored rows are forgotten 30 days after a scan last saw their
-  files unmatched.
+- An adopted row stays, with Undo, for as long as its book exists. An ignored
+  row is forgotten 30 days after a scan last saw its files, counted only by
+  scans that found files in that row's library folder.
 - One scan lists up to 20,000 books from up to 50,000 unmatched files. A
   larger library says so; adopt or ignore some and scan again.
 - **From a folder** (`/import?view=folder`) is the other way in: point it at a

@@ -31,7 +31,6 @@ export default function AdoptionEditor({ item, onAdopt, onCancel, showFiles = fa
   const searchRef = useRef<HTMLInputElement>(null)
   const [chosen, setChosen] = useState<AdoptionBookRef | null>(item.candidates[0]?.book ?? null)
   const [searched, setSearched] = useState<AdoptionBookRef | null>(null)
-  const [format, setFormat] = useState(item.format)
   const name = unitDisplayName(item)
 
   useEffect(() => { searchRef.current?.focus({ preventScroll: showFiles }) }, [showFiles])
@@ -51,7 +50,6 @@ export default function AdoptionEditor({ item, onAdopt, onCancel, showFiles = fa
     ...item.candidates,
     ...(searched && !item.candidates.some(c => c.book.id === searched.id) ? [{ book: searched }] : []),
   ]
-  const formatOverride = format !== item.format ? format : undefined
   const more = item.fileCount - item.members.length
 
   return (
@@ -105,7 +103,7 @@ export default function AdoptionEditor({ item, onAdopt, onCancel, showFiles = fa
           <BookPicker ref={searchRef} initialTerm={item.parsedTitle} onPick={pickSearched} selectedId={searched?.id ?? null} />
           <CatalogueAdder
             initialQuery={[item.parsedTitle, item.parsedAuthor].filter(Boolean).join(' ')}
-            hint={t('adoption.editor.metadataHint', 'Adds the book to your library unmonitored, in this format, and adopts these files. Nothing is downloaded.')}
+            hint={t('adoption.editor.metadataHint', 'Adds the book to your library unmonitored, as the format of these files, and adopts them. Nothing is downloaded.')}
             actionLabel={t('adoption.editor.addAndAdopt', 'Add and adopt')}
             busyLabel={t('adoption.editor.adding', 'Adding…')}
             onChoose={async b => {
@@ -113,29 +111,11 @@ export default function AdoptionEditor({ item, onAdopt, onCancel, showFiles = fa
                 foreignBookId: b.foreignBookId,
                 foreignAuthorId: b.author?.foreignAuthorId ?? '',
                 authorName: b.author?.authorName ?? '',
-                format: formatOverride,
               }, null)
             }}
           />
         </div>
         <div className="space-y-3">
-          <div>
-            <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-fg-muted">{t('adoption.editor.format', 'Adopt as')}</p>
-            <div role="radiogroup" aria-label={t('adoption.editor.format', 'Adopt as')} className="inline-flex gap-1 rounded-md bg-slate-200/70 dark:bg-zinc-800 p-0.5">
-              {(['ebook', 'audiobook'] as const).map(f => (
-                <button
-                  key={f}
-                  type="button"
-                  role="radio"
-                  aria-checked={format === f}
-                  onClick={() => setFormat(f)}
-                  className={`px-2.5 py-1 rounded text-xs font-medium ${format === f ? 'bg-white dark:bg-zinc-700 text-slate-900 dark:text-white shadow-sm' : 'text-slate-600 dark:text-zinc-400'}`}
-                >
-                  {f === 'ebook' ? t('common.ebook', 'Ebook') : t('common.audiobook', 'Audiobook')}
-                </button>
-              ))}
-            </div>
-          </div>
           {item.members.length > 1 && (
             <details className="text-xs" open={showFiles}>
               <summary className="cursor-pointer text-slate-600 dark:text-zinc-400">
@@ -160,7 +140,7 @@ export default function AdoptionEditor({ item, onAdopt, onCancel, showFiles = fa
         <button
           type="button"
           disabled={!chosen}
-          onClick={() => chosen && onAdopt({ bookId: chosen.id, format: formatOverride }, chosen)}
+          onClick={() => chosen && onAdopt({ bookId: chosen.id }, chosen)}
           className={`${btn.primary} ${btnSize.md}`}
         >
           {chosen

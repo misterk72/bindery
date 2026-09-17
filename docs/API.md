@@ -420,24 +420,31 @@ adopted `book` if any, `bookCreated`, `authorCreated` and the first 20
 
 `POST /api/v1/library/unmatched/{id}/adopt` takes either `{"bookId": 12}` for
 a book already in the library or `{"foreignBookId": "...", "foreignAuthorId":
-"...", "authorName": "..."}` for a metadata result, plus an optional
-`"format": "ebook" | "audiobook"`. No field is a path. The files are
-registered in place (an audiobook folder as its folder), nothing is moved and
-no search starts. A book added from metadata is created unmonitored with its
-media type set to the adopted format. Answers:
+"...", "authorName": "..."}` for a metadata result. An optional `"format"`
+must equal the row's format; audio files cannot be adopted as an ebook. No
+field is a path. The files are registered in place (an audiobook folder as its
+folder, a disc set disc folder by disc folder), nothing is moved and no search
+starts. A book added from metadata is created unmonitored with its media type
+set to the files' format. Every side effect is recorded on the row before the
+next, so an adoption interrupted by a crash is reversed at the next start.
+Answers:
 
 | Status | Meaning |
 |---|---|
 | `200` | the updated row |
-| `400` | neither or both of `bookId` and `foreignBookId`, or a bad format |
+| `400` | neither or both of `bookId` and `foreignBookId`, or a format that is not the files' format |
 | `404` | no such row, or the book is gone |
 | `409` | the row is not pending (the body names its `state`), or a file already belongs to a book |
 | `422` | a file is gone, is not a regular file, or resolves outside the library folders |
 | `502`, `503` | the metadata provider failed or the primary provider is down |
 
-`POST .../undo` removes exactly the book file entries the adoption made, and a
-book or author it created when nothing else holds them, and returns the row to
-pending. Adopt, undo, ignore and unignore each claim the row with a compare and
+`POST .../undo` removes exactly the book file entries the adoption made, each
+only while it still belongs to the book it was registered to, and a book or
+author it created when nothing else holds them (books by the author count
+whether excluded or not) and the book has not been used since (monitored,
+edited, linked to a series, searched or downloaded). A kept book is reported in
+the response's `message`. The row returns to pending; a `409` means another
+request took the row before the undo finished. Adopt, undo, ignore and unignore each claim the row with a compare and
 swap, so a double click or two admins acting at once get one `200` and one
 `409`.
 
