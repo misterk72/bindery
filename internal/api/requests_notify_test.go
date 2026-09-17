@@ -30,7 +30,7 @@ func (c *capturingNotifier) Send(_ context.Context, eventType string, payload ma
 // even when the provider's title and the username try.
 func TestRequestsCreate_SendsSanitisedRequestCreated(t *testing.T) {
 	stub := wellsRequestStub()
-	hostile := "@everyone \u0007Free\u202E nitro\u200B " + strings.Repeat("x", 400)
+	hostile := "@everyone <!channel> [Free\u0007 nitro](https://evil.example)\u202E\u200B " + strings.Repeat("x", 400)
 	stub.getBookByID["OL-HOSTILE"] = &models.Book{ForeignID: "OL-HOSTILE", Title: hostile,
 		Author: &models.Author{ForeignID: "OL1A", Name: "@here\u0000Someone"}}
 	f := newRequestsFixture(t, stub, &fakeAdder{})
@@ -57,8 +57,10 @@ func TestRequestsCreate_SendsSanitisedRequestCreated(t *testing.T) {
 		if v == "" {
 			t.Errorf("payload %s is empty", key)
 		}
-		if strings.Contains(v, "@") {
-			t.Errorf("payload %s = %q still carries an at sign", key, v)
+		for _, markup := range []string{"@", "<", ">", "[", "]"} {
+			if strings.Contains(v, markup) {
+				t.Errorf("payload %s = %q still carries %q", key, v, markup)
+			}
 		}
 		for _, r := range v {
 			if r < 0x20 || r == 0x7f || r == '\u202E' || r == '\u200B' {

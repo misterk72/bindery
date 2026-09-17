@@ -2,7 +2,9 @@ package db
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -19,12 +21,22 @@ import (
 // admin methods (ListAll, CountPending, Claim, Complete, Release, Decline)
 // are reached only through RequireAdmin routes.
 type RequestRepo struct {
-	db *sql.DB
+	db       *sql.DB
+	claimTTL time.Duration
 }
 
 func NewRequestRepo(db *sql.DB) *RequestRepo {
-	return &RequestRepo{db: db}
+	return &RequestRepo{db: db, claimTTL: RequestClaimTTL}
 }
+
+// WithClaimTTL shortens the claim TTL, for tests of claim renewal.
+func (r *RequestRepo) WithClaimTTL(d time.Duration) *RequestRepo {
+	r.claimTTL = d
+	return r
+}
+
+// ClaimTTL is how long a claim holds without renewal.
+func (r *RequestRepo) ClaimTTL() time.Duration { return r.claimTTL }
 
 var (
 	// ErrRequestExists is a second request for the same kind and foreign id
@@ -33,11 +45,15 @@ var (
 	// ErrRequestNotPending is a state change on a request that is no longer
 	// pending: already approved, declined, or claimed by another approval.
 	ErrRequestNotPending = errors.New("request is not pending")
+	// ErrRequestCapReached is a create or reopen that would take the owner
+	// past their cap of pending requests.
+	ErrRequestCapReached = errors.New("pending request cap reached")
 )
 
-// RequestClaimTTL is how long an approval's claim holds before another
-// approval may take the row over. An approval is a metadata lookup and a few
-// inserts; a claim this old means the process died part way.
+// RequestClaimTTL is how long an approval's claim holds without renewal
+// before another approval may take the row over. A running approval renews
+// its claim well inside this (see RenewClaim), so only a claim whose process
+// died goes stale.
 const RequestClaimTTL = 5 * time.Minute
 
 const requestColumns = `r.id, r.owner_user_id, COALESCE(u.username, ''), r.kind, r.foreign_id, r.media_type,
@@ -76,21 +92,38 @@ func scanRequest(s scanner) (*models.LibraryRequest, error) {
 	return &req, nil
 }
 
+// pendingBelowCap is the predicate that keeps an owner under their cap. It
+// sits inside the INSERT or UPDATE it guards, so the count and the write are
+// one statement under SQLite's single writer: concurrent creates cannot all
+// see room and all insert.
+const pendingBelowCap = `(SELECT COUNT(*) FROM requests WHERE owner_user_id = ? AND status IN ('pending', 'approving')) < ?`
+
 // Create inserts a pending request. A duplicate (owner, kind, foreign id)
-// returns ErrRequestExists.
-func (r *RequestRepo) Create(ctx context.Context, req *models.LibraryRequest) error {
+// returns ErrRequestExists. With maxPending above zero, a create that would
+// give the owner more than maxPending requests awaiting a decision inserts
+// nothing and returns ErrRequestCapReached.
+func (r *RequestRepo) Create(ctx context.Context, req *models.LibraryRequest, maxPending int) error {
+	if maxPending <= 0 {
+		maxPending = int(^uint32(0) >> 1)
+	}
 	now := time.Now().UTC()
 	res, err := r.db.ExecContext(ctx, `
 		INSERT INTO requests (owner_user_id, kind, foreign_id, media_type, title, author_name,
 		                      payload_json, status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+		SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?
+		WHERE `+pendingBelowCap,
 		req.OwnerUserID, req.Kind, req.ForeignID, req.MediaType, req.Title, req.AuthorName,
-		req.PayloadJSON, now, now)
+		req.PayloadJSON, now, now, req.OwnerUserID, maxPending)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
 			return ErrRequestExists
 		}
 		return fmt.Errorf("create request: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("create request: %w", err)
+	} else if n == 0 {
+		return ErrRequestCapReached
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
@@ -245,15 +278,23 @@ func (r *RequestRepo) CountPending(ctx context.Context) (int, error) {
 
 // Claim takes a pending request for approval by adminID. It is a compare and
 // swap on status: of two approvals racing for one row, exactly one gets the
-// row back and the other gets ErrRequestNotPending. A claim older than
-// RequestClaimTTL is abandoned and can be retaken.
+// row back and the other gets ErrRequestNotPending. A claim not renewed within
+// the claim TTL is abandoned and can be retaken.
+//
+// The returned request carries a random ClaimToken. RenewClaim, Complete and
+// Release act only while the row still holds that token, so an approval whose
+// claim was retaken cannot complete or release another approval's claim.
 func (r *RequestRepo) Claim(ctx context.Context, id, adminID int64) (*models.LibraryRequest, error) {
 	now := time.Now().UTC()
-	stale := now.Add(-RequestClaimTTL).Unix()
+	stale := now.Add(-r.claimTTL).UnixMilli()
+	token, err := claimToken()
+	if err != nil {
+		return nil, err
+	}
 	res, err := r.db.ExecContext(ctx, `
-		UPDATE requests SET status = 'approving', claimed_at = ?, decided_by = ?, updated_at = ?
+		UPDATE requests SET status = 'approving', claimed_at = ?, claim_token = ?, decided_by = ?, updated_at = ?
 		WHERE id = ? AND (status = 'pending' OR (status = 'approving' AND COALESCE(claimed_at, 0) < ?))`,
-		now.Unix(), nullableID(adminID), now, id, stale)
+		now.UnixMilli(), token, nullableID(adminID), now, id, stale)
 	if err != nil {
 		return nil, fmt.Errorf("claim request: %w", err)
 	}
@@ -262,16 +303,45 @@ func (r *RequestRepo) Claim(ctx context.Context, id, adminID int64) (*models.Lib
 	} else if n != 1 {
 		return nil, ErrRequestNotPending
 	}
-	return r.GetByID(ctx, id)
+	req, err := r.GetByID(ctx, id)
+	if err != nil || req == nil {
+		return nil, fmt.Errorf("reload claimed request: %w", err)
+	}
+	req.ClaimToken = token
+	return req, nil
 }
 
-// Complete marks a claimed request approved with what the approval created.
-func (r *RequestRepo) Complete(ctx context.Context, id int64, bookID, authorID *int64) error {
+func claimToken() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("claim token: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// RenewClaim restamps a claim this approval still holds, so a long running
+// approval never goes stale. ErrRequestNotPending when the claim was lost.
+func (r *RequestRepo) RenewClaim(ctx context.Context, id int64, token string) error {
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE requests SET claimed_at = ?
+		WHERE id = ? AND status = 'approving' AND claim_token = ?`, time.Now().UTC().UnixMilli(), id, token)
+	if err != nil {
+		return fmt.Errorf("renew claim: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return ErrRequestNotPending
+	}
+	return nil
+}
+
+// Complete marks a request this approval still holds approved with what the
+// approval created.
+func (r *RequestRepo) Complete(ctx context.Context, id int64, token string, bookID, authorID *int64) error {
 	now := time.Now().UTC()
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE requests SET status = 'approved', result_book_id = ?, result_author_id = ?,
-		       decided_at = ?, updated_at = ?, claimed_at = NULL
-		WHERE id = ? AND status = 'approving'`, bookID, authorID, now, now, id)
+		       decided_at = ?, updated_at = ?, claimed_at = NULL, claim_token = NULL
+		WHERE id = ? AND status = 'approving' AND claim_token = ?`, bookID, authorID, now, now, id, token)
 	if err != nil {
 		return fmt.Errorf("complete request: %w", err)
 	}
@@ -281,11 +351,12 @@ func (r *RequestRepo) Complete(ctx context.Context, id int64, bookID, authorID *
 	return nil
 }
 
-// Release returns a claimed request to pending after its approval failed.
-func (r *RequestRepo) Release(ctx context.Context, id int64) error {
+// Release returns a request this approval still holds to pending after the
+// approval failed.
+func (r *RequestRepo) Release(ctx context.Context, id int64, token string) error {
 	_, err := r.db.ExecContext(ctx, `
-		UPDATE requests SET status = 'pending', decided_by = NULL, claimed_at = NULL, updated_at = ?
-		WHERE id = ? AND status = 'approving'`, time.Now().UTC(), id)
+		UPDATE requests SET status = 'pending', decided_by = NULL, claimed_at = NULL, claim_token = NULL, updated_at = ?
+		WHERE id = ? AND status = 'approving' AND claim_token = ?`, time.Now().UTC(), id, token)
 	return err
 }
 
@@ -306,21 +377,30 @@ func (r *RequestRepo) Decline(ctx context.Context, id, adminID int64, reason str
 
 // Reopen puts ownerID's approved request back to pending, for when what it
 // added has since left the library and the requester asks again. It keeps
-// the row, so the (owner, kind, foreign id) uniqueness still holds.
-func (r *RequestRepo) Reopen(ctx context.Context, id, ownerID int64, mediaType, payload string) error {
+// the row, so the (owner, kind, foreign id) uniqueness still holds. The cap
+// check is part of the same UPDATE, as in Create.
+func (r *RequestRepo) Reopen(ctx context.Context, id, ownerID int64, mediaType, payload string, maxPending int) error {
+	if maxPending <= 0 {
+		maxPending = int(^uint32(0) >> 1)
+	}
 	now := time.Now().UTC()
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE requests SET status = 'pending', media_type = ?, payload_json = ?, decided_by = NULL,
 		       decided_at = NULL, result_book_id = NULL, result_author_id = NULL,
 		       decline_reason = '', created_at = ?, updated_at = ?
-		WHERE id = ? AND owner_user_id = ? AND status = 'approved'`, mediaType, payload, now, now, id, ownerID)
+		WHERE id = ? AND owner_user_id = ? AND status = 'approved' AND `+pendingBelowCap,
+		mediaType, payload, now, now, id, ownerID, ownerID, maxPending)
 	if err != nil {
 		return fmt.Errorf("reopen request: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n != 1 {
-		return ErrRequestNotPending
+	if n, _ := res.RowsAffected(); n == 1 {
+		return nil
 	}
-	return nil
+	var status string
+	if err := r.db.QueryRowContext(ctx, "SELECT status FROM requests WHERE id = ? AND owner_user_id = ?", id, ownerID).Scan(&status); err == nil && status == models.RequestStatusApproved {
+		return ErrRequestCapReached
+	}
+	return ErrRequestNotPending
 }
 
 // DeletePendingForOwner withdraws ownerID's own pending request. Returns

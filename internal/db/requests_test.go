@@ -33,7 +33,7 @@ func mustUser(t *testing.T, users *UserRepo, name string) *User {
 func mustRequest(t *testing.T, repo *RequestRepo, owner int64, kind, foreignID string) *models.LibraryRequest {
 	t.Helper()
 	req := &models.LibraryRequest{OwnerUserID: owner, Kind: kind, ForeignID: foreignID, Title: "T " + foreignID, PayloadJSON: `{"kind":"` + kind + `","foreignId":"` + foreignID + `"}`}
-	if err := repo.Create(context.Background(), req); err != nil {
+	if err := repo.Create(context.Background(), req, 0); err != nil {
 		t.Fatal(err)
 	}
 	return req
@@ -46,7 +46,7 @@ func TestRequestRepo_CreateDedupesPerOwner(t *testing.T) {
 
 	mustRequest(t, repo, alice.ID, models.RequestKindBook, "OL1W")
 	dup := &models.LibraryRequest{OwnerUserID: alice.ID, Kind: models.RequestKindBook, ForeignID: "OL1W", PayloadJSON: "{}"}
-	if err := repo.Create(ctx, dup); !errors.Is(err, ErrRequestExists) {
+	if err := repo.Create(ctx, dup, 0); !errors.Is(err, ErrRequestExists) {
 		t.Fatalf("second request for the same book: err = %v, want ErrRequestExists", err)
 	}
 	// Another owner, or another kind, is a separate request.
@@ -102,18 +102,20 @@ func TestRequestRepo_ClaimIsExclusive(t *testing.T) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	wins, losses := 0, 0
+	token := ""
 	start := make(chan struct{})
 	for i := 0; i < racers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			<-start
-			_, err := repo.Claim(ctx, req.ID, admin.ID)
+			claimed, err := repo.Claim(ctx, req.ID, admin.ID)
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
 			case err == nil:
 				wins++
+				token = claimed.ClaimToken
 			case errors.Is(err, ErrRequestNotPending):
 				losses++
 			default:
@@ -129,7 +131,10 @@ func TestRequestRepo_ClaimIsExclusive(t *testing.T) {
 	if err := repo.Decline(ctx, req.ID, admin.ID, "no"); !errors.Is(err, ErrRequestNotPending) {
 		t.Fatalf("decline of a claimed request: err = %v, want ErrRequestNotPending", err)
 	}
-	if err := repo.Complete(ctx, req.ID, nil, nil); err != nil {
+	if err := repo.Complete(ctx, req.ID, "not-the-token", nil, nil); !errors.Is(err, ErrRequestNotPending) {
+		t.Fatalf("complete with another claim's token: err = %v, want ErrRequestNotPending", err)
+	}
+	if err := repo.Complete(ctx, req.ID, token, nil, nil); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
 	if _, err := repo.Claim(ctx, req.ID, admin.ID); !errors.Is(err, ErrRequestNotPending) {
@@ -144,10 +149,11 @@ func TestRequestRepo_ReleaseAndStaleClaim(t *testing.T) {
 	owner := mustUser(t, users, "reader")
 	req := mustRequest(t, repo, owner.ID, models.RequestKindBook, "OL1W")
 
-	if _, err := repo.Claim(ctx, req.ID, admin.ID); err != nil {
+	claimed, err := repo.Claim(ctx, req.ID, admin.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.Release(ctx, req.ID); err != nil {
+	if err := repo.Release(ctx, req.ID, claimed.ClaimToken); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := repo.GetByID(ctx, req.ID)
@@ -155,7 +161,8 @@ func TestRequestRepo_ReleaseAndStaleClaim(t *testing.T) {
 		t.Fatalf("after release: status %q decided_by %v, want pending and nil", got.Status, got.DecidedBy)
 	}
 
-	if _, err := repo.Claim(ctx, req.ID, admin.ID); err != nil {
+	first, err := repo.Claim(ctx, req.ID, admin.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
 	// A fresh claim holds.
@@ -163,12 +170,27 @@ func TestRequestRepo_ReleaseAndStaleClaim(t *testing.T) {
 		t.Fatalf("second claim inside the TTL: err = %v, want ErrRequestNotPending", err)
 	}
 	// An abandoned one (the process died mid approval) can be retaken.
-	old := time.Now().Add(-2 * RequestClaimTTL).Unix()
+	old := time.Now().Add(-2 * RequestClaimTTL).UnixMilli()
 	if _, err := database.ExecContext(ctx, "UPDATE requests SET claimed_at = ? WHERE id = ?", old, req.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.Claim(ctx, req.ID, admin.ID); err != nil {
+	second, err := repo.Claim(ctx, req.ID, admin.ID)
+	if err != nil {
 		t.Fatalf("claim over a stale claim: %v", err)
+	}
+	// The retaken claim belongs to the second approval: the first can no
+	// longer renew, complete or release it.
+	if err := repo.RenewClaim(ctx, req.ID, first.ClaimToken); !errors.Is(err, ErrRequestNotPending) {
+		t.Fatalf("renew with the lost token: err = %v", err)
+	}
+	if err := repo.Release(ctx, req.ID, first.ClaimToken); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := repo.GetByID(ctx, req.ID); got.Status != models.RequestStatusApproving {
+		t.Fatalf("release with the lost token changed status to %q", got.Status)
+	}
+	if err := repo.RenewClaim(ctx, req.ID, second.ClaimToken); err != nil {
+		t.Fatalf("renew with the live token: %v", err)
 	}
 }
 
@@ -190,20 +212,21 @@ func TestRequestRepo_DeclineAndReopen(t *testing.T) {
 	if got.Status != models.RequestStatusDeclined || got.DeclineReason != "not this one" || got.DecidedAt == nil {
 		t.Fatalf("declined row = %+v", got)
 	}
-	if err := repo.Reopen(ctx, a.ID, owner.ID, "", "{}"); !errors.Is(err, ErrRequestNotPending) {
+	if err := repo.Reopen(ctx, a.ID, owner.ID, "", "{}", 0); !errors.Is(err, ErrRequestNotPending) {
 		t.Fatalf("reopen of a declined request: err = %v, want refusal", err)
 	}
 
-	if _, err := repo.Claim(ctx, b.ID, admin.ID); err != nil {
+	claimedB, err := repo.Claim(ctx, b.ID, admin.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.Complete(ctx, b.ID, nil, nil); err != nil {
+	if err := repo.Complete(ctx, b.ID, claimedB.ClaimToken, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.Reopen(ctx, b.ID, admin.ID, "", "{}"); !errors.Is(err, ErrRequestNotPending) {
+	if err := repo.Reopen(ctx, b.ID, admin.ID, "", "{}", 0); !errors.Is(err, ErrRequestNotPending) {
 		t.Fatalf("reopen by someone other than the owner: err = %v", err)
 	}
-	if err := repo.Reopen(ctx, b.ID, owner.ID, "audiobook", `{"x":1}`); err != nil {
+	if err := repo.Reopen(ctx, b.ID, owner.ID, "audiobook", `{"x":1}`, 0); err != nil {
 		t.Fatalf("owner reopen of an approved request: %v", err)
 	}
 	got, _ = repo.GetByID(ctx, b.ID)
@@ -232,16 +255,19 @@ func TestRequestRepo_ListDerivesFulfilment(t *testing.T) {
 	}
 	bookReq := mustRequest(t, repo, owner.ID, models.RequestKindBook, "OL101W")
 	authorReq := mustRequest(t, repo, owner.ID, models.RequestKindAuthor, "OL10A")
+	tokens := map[int64]string{}
 	for _, id := range []int64{bookReq.ID, authorReq.ID} {
-		if _, err := repo.Claim(ctx, id, admin.ID); err != nil {
+		c, err := repo.Claim(ctx, id, admin.ID)
+		if err != nil {
 			t.Fatal(err)
 		}
+		tokens[id] = c.ClaimToken
 	}
 	bookID, authorID := int64(101), int64(10)
-	if err := repo.Complete(ctx, bookReq.ID, &bookID, &authorID); err != nil {
+	if err := repo.Complete(ctx, bookReq.ID, tokens[bookReq.ID], &bookID, &authorID); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.Complete(ctx, authorReq.ID, nil, &authorID); err != nil {
+	if err := repo.Complete(ctx, authorReq.ID, tokens[authorReq.ID], nil, &authorID); err != nil {
 		t.Fatal(err)
 	}
 

@@ -66,7 +66,10 @@ func newRequestsFixture(t *testing.T, provider metadata.Provider, adder requestA
 	if adder == nil {
 		adder = f.author
 	}
-	f.h = NewRequestHandler(f.requests, f.books, f.authors, f.settings, agg, adder)
+	// A private, generous provider bucket so tests in this package do not
+	// share the process wide one; the limit tests set their own.
+	f.h = NewRequestHandler(f.requests, f.books, f.authors, f.settings, agg, adder).
+		WithProviderLimiter(auth.NewRequesterLimiter(1<<20, 1<<20, time.Minute, 64))
 
 	mk := func(name, role string) *db.User {
 		u, err := f.users.Create(ctx, name, "x")
@@ -694,8 +697,5 @@ func TestCleanRequestText(t *testing.T) {
 		if got := cleanRequestText(c.in, requestTitleMaxRunes); got != c.want {
 			t.Errorf("cleanRequestText(%q) = %q, want %q", c.in, got, c.want)
 		}
-	}
-	if got := neutraliseMentions("@everyone @here"); strings.Contains(got, "@") {
-		t.Errorf("neutraliseMentions left an at sign: %q", got)
 	}
 }

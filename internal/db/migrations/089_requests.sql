@@ -39,9 +39,13 @@ CREATE TABLE requests (
     created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     decided_at       DATETIME,
-    -- Unix seconds when an approval claimed the row; NULL unless approving.
-    -- An integer so the stale claim test is a numeric comparison.
+    -- Unix milliseconds when an approval claimed or last renewed the row;
+    -- NULL unless approving. An integer so the stale claim test is a numeric
+    -- comparison.
     claimed_at       INTEGER,
+    -- Random per claim. Renew, complete and release match on it, so an
+    -- approval whose claim was retaken cannot touch the new claim.
+    claim_token      TEXT,
     UNIQUE (owner_user_id, kind, foreign_id)
 );
 

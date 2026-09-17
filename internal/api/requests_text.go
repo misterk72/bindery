@@ -1,9 +1,6 @@
 package api
 
-import (
-	"strings"
-	"unicode"
-)
+import "github.com/vavallee/bindery/internal/notifier"
 
 // Length caps, in runes, for text a request carries. Titles and names come
 // from a metadata provider, and OpenLibrary is publicly editable, so they are
@@ -16,42 +13,11 @@ const (
 	requestForeignIDMaxLen  = 128
 )
 
-// cleanRequestText strips control and invisible formatting characters
-// (including bidi overrides and zero width characters, which can disguise
-// text in a notification), collapses runs of whitespace, trims, and caps the
-// result at maxRunes.
+// cleanRequestText is notifier.CleanText: control and invisible characters
+// stripped, whitespace collapsed, capped. Stored text goes through it; text
+// sent to a webhook goes through notifier.SafeText as well.
 func cleanRequestText(s string, maxRunes int) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	lastSpace := true
-	n := 0
-	for _, r := range s {
-		if n >= maxRunes {
-			break
-		}
-		switch {
-		case r == '\uFFFD' || unicode.Is(unicode.Cf, r) || (unicode.IsControl(r) && !unicode.IsSpace(r)):
-			continue
-		case unicode.IsSpace(r):
-			if lastSpace {
-				continue
-			}
-			b.WriteRune(' ')
-			lastSpace = true
-		default:
-			b.WriteRune(r)
-			lastSpace = false
-		}
-		n++
-	}
-	return strings.TrimSpace(b.String())
-}
-
-// neutraliseMentions replaces every at sign with the fullwidth at sign, which
-// reads the same to a person and is not a mention to Discord, Slack or
-// Matrix, so "@everyone" in a title or a username cannot ping a channel.
-func neutraliseMentions(s string) string {
-	return strings.ReplaceAll(s, "@", "\uFF20")
+	return notifier.CleanText(s, maxRunes)
 }
 
 // validForeignID reports whether id is a plausible provider id: non empty,

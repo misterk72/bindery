@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,8 +9,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -78,6 +81,67 @@ type RequestHandler struct {
 	adder    requestAdder
 	notif    requestNotifier
 	users    *db.UserRepo
+	// providerLimit is spent by Create for a requester when the guard did not
+	// already charge the request, so the limit holds even if the allow list
+	// entry for POST /requests loses its limit.
+	providerLimit *auth.RequesterLimiter
+	// notified suppresses a repeat requestCreated for the same request within
+	// requestNotifyWindow: create and withdraw in a loop is one webhook.
+	notified *recentKeys
+}
+
+// requestNotifyWindow is how long a requestCreated for one (owner, kind,
+// foreign id) suppresses another.
+const requestNotifyWindow = time.Hour
+
+// requestNotifyMaxKeys bounds the suppression map.
+const requestNotifyMaxKeys = 4096
+
+// recentKeys remembers when each key last fired, for window, holding at most
+// max keys. When full it drops expired keys, then the oldest.
+type recentKeys struct {
+	mu     sync.Mutex
+	seen   map[string]time.Time
+	window time.Duration
+	max    int
+	now    func() time.Time
+}
+
+func newRecentKeys(window time.Duration, max int) *recentKeys {
+	return &recentKeys{seen: make(map[string]time.Time), window: window, max: max, now: time.Now}
+}
+
+// first reports whether key has not fired within the window, and records it.
+func (k *recentKeys) first(key string) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	now := k.now()
+	if at, ok := k.seen[key]; ok && now.Sub(at) < k.window {
+		return false
+	}
+	if _, ok := k.seen[key]; !ok && len(k.seen) >= k.max {
+		oldestKey, oldest, found := "", time.Time{}, false
+		for key2, at := range k.seen {
+			if now.Sub(at) >= k.window {
+				delete(k.seen, key2)
+				continue
+			}
+			if !found || at.Before(oldest) {
+				oldestKey, oldest, found = key2, at, true
+			}
+		}
+		if len(k.seen) >= k.max && oldestKey != "" {
+			delete(k.seen, oldestKey)
+		}
+	}
+	k.seen[key] = now
+	return true
+}
+
+// WithProviderLimiter replaces the provider bucket Create spends from.
+func (h *RequestHandler) WithProviderLimiter(l *auth.RequesterLimiter) *RequestHandler {
+	h.providerLimit = l
+	return h
 }
 
 // requestNotifier sends the requestCreated event. *notifier.Notifier
@@ -97,13 +161,14 @@ func (h *RequestHandler) WithNotifier(n requestNotifier, users *db.UserRepo) *Re
 // requestCreatedPayload is the requestCreated event payload (security review
 // item S3). Titles come from a metadata provider that anyone can edit, and a
 // username from whoever made the account, and the payload lands in a chat
-// channel: every text field has control and invisible characters stripped,
-// is capped, and has its at signs neutralised so it cannot mention a channel.
+// channel: every text field goes through notifier.SafeText, which strips
+// control and invisible characters, caps the length, and neutralises mentions,
+// Slack escapes and markdown links.
 func requestCreatedPayload(req models.LibraryRequest, username string) map[string]interface{} {
 	return map[string]interface{}{
-		"title":     neutraliseMentions(cleanRequestText(req.Title, requestTitleMaxRunes)),
-		"author":    neutraliseMentions(cleanRequestText(req.AuthorName, requestAuthorMaxRunes)),
-		"username":  neutraliseMentions(cleanRequestText(username, requestUsernameMaxRunes)),
+		"title":     notifier.SafeText(req.Title, requestTitleMaxRunes),
+		"author":    notifier.SafeText(req.AuthorName, requestAuthorMaxRunes),
+		"username":  notifier.SafeText(username, requestUsernameMaxRunes),
 		"kind":      req.Kind,
 		"mediaType": req.MediaType,
 		"requestId": req.ID,
@@ -114,6 +179,9 @@ func requestCreatedPayload(req models.LibraryRequest, username string) map[strin
 // webhook targets can be slow, and the request is already stored.
 func (h *RequestHandler) notifyCreated(ctx context.Context, req models.LibraryRequest) {
 	if h.notif == nil {
+		return
+	}
+	if h.notified != nil && !h.notified.first(fmt.Sprintf("%d|%s|%s", req.OwnerUserID, req.Kind, req.ForeignID)) {
 		return
 	}
 	username := ""
@@ -133,7 +201,11 @@ func (h *RequestHandler) notifyCreated(ctx context.Context, req models.LibraryRe
 // NewRequestHandler wires the requests API. adder is normally the
 // *AuthorHandler the Add dialog uses.
 func NewRequestHandler(requests *db.RequestRepo, books *db.BookRepo, authors *db.AuthorRepo, settings *db.SettingsRepo, meta requestMetadata, adder requestAdder) *RequestHandler {
-	return &RequestHandler{requests: requests, books: books, authors: authors, settings: settings, meta: meta, adder: adder}
+	return &RequestHandler{
+		requests: requests, books: books, authors: authors, settings: settings, meta: meta, adder: adder,
+		providerLimit: auth.DefaultRequesterProviderLimiter(),
+		notified:      newRecentKeys(requestNotifyWindow, requestNotifyMaxKeys),
+	}
 }
 
 // requestResponse is a request as the API shows it. Status "approving" is
@@ -205,9 +277,11 @@ func toRequestResponse(req models.LibraryRequest, admin bool) requestResponse {
 }
 
 // decodeStrict decodes one JSON object from a body capped at limit bytes and
-// refuses unknown fields, so a client cannot smuggle options a route does not
-// accept (security review item S2). An empty body is an error unless
-// allowEmpty, in which case v keeps its zero value.
+// refuses any key that is not exactly one of v's json field names, so a
+// client cannot smuggle options a route does not accept (security review item
+// S2). The match is exact: encoding/json folds case, so "Kind" or a second
+// "kind" spelled differently would otherwise land in the same field. An empty
+// body is an error unless allowEmpty, in which case v keeps its zero value.
 func decodeStrict(w http.ResponseWriter, r *http.Request, limit int64, allowEmpty bool, v any) error {
 	if r.Body == nil {
 		if allowEmpty {
@@ -215,19 +289,50 @@ func decodeStrict(w http.ResponseWriter, r *http.Request, limit int64, allowEmpt
 		}
 		return io.EOF
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, limit)
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
-		if allowEmpty && errors.Is(err, io.EOF) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
+	if err != nil {
+		return err
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		if allowEmpty {
 			return nil
 		}
+		return io.EOF
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	var keys map[string]json.RawMessage
+	if err := dec.Decode(&keys); err != nil {
 		return err
 	}
 	if dec.More() {
 		return errors.New("trailing data after JSON object")
 	}
-	return nil
+	allowed := jsonFieldNames(v)
+	for k := range keys {
+		if !allowed[k] {
+			return fmt.Errorf("field %q not accepted", k)
+		}
+	}
+	strict := json.NewDecoder(bytes.NewReader(raw))
+	strict.DisallowUnknownFields()
+	return strict.Decode(v)
+}
+
+// jsonFieldNames is the set of json names of the struct v points to.
+func jsonFieldNames(v any) map[string]bool {
+	t := reflect.TypeOf(v)
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	names := make(map[string]bool, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		name := strings.Split(t.Field(i).Tag.Get("json"), ",")[0]
+		if name == "" || name == "-" {
+			continue
+		}
+		names[name] = true
+	}
+	return names
 }
 
 func validRequestMediaType(m string) bool {
@@ -259,6 +364,13 @@ func (h *RequestHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decodeStrict(w, r, requestCreateMaxBody, false, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "A request takes only kind, foreignId and mediaType.")
+		return
+	}
+	// Every create can reach the metadata provider, and a failed lookup
+	// stores nothing, so the pending cap cannot stand in for a rate limit.
+	if ok, retry := h.providerLimit.AllowRequester(ctx); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(retry))
+		writeErr(w, http.StatusTooManyRequests, "Too many requests at once. Try again shortly.")
 		return
 	}
 	body.ForeignID = strings.TrimSpace(body.ForeignID)
@@ -302,12 +414,17 @@ func (h *RequestHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// This count is only a fast refusal before the provider call. The cap
+	// that holds under concurrency is enforced by the insert itself.
 	limit := h.maxPendingPerUser(ctx)
+	capReached := func() {
+		writeErr(w, http.StatusTooManyRequests, fmt.Sprintf("You have %d requests waiting for a decision, which is the limit. Wait for some to be decided before asking for more.", limit))
+	}
 	if pending, err := h.requests.CountPendingByOwner(ctx, owner); err != nil {
 		writeServerError(w, r, err)
 		return
 	} else if pending >= limit {
-		writeErr(w, http.StatusTooManyRequests, fmt.Sprintf("You have %d requests waiting for a decision, which is the limit. Wait for some to be decided before asking for more.", pending))
+		capReached()
 		return
 	}
 
@@ -329,7 +446,11 @@ func (h *RequestHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if reopen {
-		if err := h.requests.Reopen(ctx, existing.ID, owner, req.MediaType, req.PayloadJSON); err != nil {
+		if err := h.requests.Reopen(ctx, existing.ID, owner, req.MediaType, req.PayloadJSON, limit); err != nil {
+			if errors.Is(err, db.ErrRequestCapReached) {
+				capReached()
+				return
+			}
 			if errors.Is(err, db.ErrRequestNotPending) {
 				writeErr(w, http.StatusConflict, "You have already requested this.")
 				return
@@ -346,7 +467,11 @@ func (h *RequestHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusCreated, toRequestResponse(*existing, false))
 		return
 	}
-	if err := h.requests.Create(ctx, &req.LibraryRequest); err != nil {
+	if err := h.requests.Create(ctx, &req.LibraryRequest, limit); err != nil {
+		if errors.Is(err, db.ErrRequestCapReached) {
+			capReached()
+			return
+		}
 		if errors.Is(err, db.ErrRequestExists) {
 			writeErr(w, http.StatusConflict, "You have already requested this.")
 			return
@@ -594,9 +719,16 @@ func (h *RequestHandler) Approve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Keep the claim fresh while the add runs. The cores return once the
+	// author or book row exists and leave the catalogue sync in the
+	// background, but their provider lookups and addBookCore's row poll can
+	// still take a while, and a claim that went stale mid add could be
+	// retaken by a second approval.
+	stopRenew := h.renewClaim(req.ID, req.ClaimToken)
 	bookID, authorID, status, msg, err := h.runApproval(ctx, req, body)
+	stopRenew()
 	if err != nil || msg != "" {
-		if relErr := h.requests.Release(ctx, req.ID); relErr != nil {
+		if relErr := h.requests.Release(ctx, req.ID, req.ClaimToken); relErr != nil {
 			slog.Error("requests: release claim after failed approval", "id", req.ID, "error", relErr)
 		}
 		if err != nil {
@@ -606,7 +738,15 @@ func (h *RequestHandler) Approve(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, status, msg)
 		return
 	}
-	if err := h.requests.Complete(ctx, req.ID, bookID, authorID); err != nil {
+	if err := h.requests.Complete(ctx, req.ID, req.ClaimToken, bookID, authorID); err != nil {
+		if errors.Is(err, db.ErrRequestNotPending) {
+			// The claim was lost despite renewal (the database was
+			// unreachable for longer than the TTL). The add has happened;
+			// say so rather than 500.
+			slog.Error("requests: approval finished after losing its claim", "id", req.ID)
+			writeErr(w, http.StatusConflict, "The item was added, but another approval took over this request meanwhile. Reload the queue.")
+			return
+		}
 		writeServerError(w, r, err)
 		return
 	}
@@ -616,6 +756,39 @@ func (h *RequestHandler) Approve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toRequestResponse(*done, true))
+}
+
+// renewClaim restamps the claim every third of the TTL until the returned
+// stop function is called.
+func (h *RequestHandler) renewClaim(id int64, token string) (stop func()) {
+	interval := h.requests.ClaimTTL() / 3
+	if interval <= 0 {
+		return func() {}
+	}
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				ctx, cancel := context.WithTimeout(context.Background(), interval)
+				err := h.requests.RenewClaim(ctx, id, token)
+				cancel()
+				if err != nil {
+					slog.Warn("requests: could not renew approval claim", "id", id, "error", err)
+				}
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-finished
+	}
 }
 
 // runApproval validates a claimed request and runs the add. It returns the

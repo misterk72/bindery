@@ -41,6 +41,8 @@ type LibraryRequest struct {
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	DecidedAt      *time.Time
+	// ClaimToken is set on the request Claim returns, and only there.
+	ClaimToken string
 
 	// Derived at list time, never stored. For a book request, BookStatus is
 	// the status of the book the approval created. For an author request,
