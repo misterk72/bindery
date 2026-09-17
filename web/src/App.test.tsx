@@ -286,7 +286,7 @@ describe('Shell — mobile navigation', () => {
   })
 })
 
-describe('Shell — Import nav badge', () => {
+describe('Shell: Import nav badge', () => {
   // Admins see how many library books still need a decision on the Import
   // entry. The count comes from an admin only route, so nobody else asks.
   it('shows the unmatched count for an admin', async () => {
