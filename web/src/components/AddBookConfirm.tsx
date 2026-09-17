@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api, Book, BookConflictBody } from '../api/client'
+import type { LibraryRequest } from '../api/client'
+import { useIsRequester } from '../auth/AuthContext'
+import RequestConfirm from './RequestConfirm'
 import { metadataSourceLink, providerDisplayName, providerFromBookForeignId } from '../util/metadataSource'
 import MetadataLinksMenu from './MetadataLinksMenu'
 
@@ -15,6 +18,9 @@ interface Props {
   onBack: () => void
   onClose: () => void
   onAdded: (book: Book) => void
+  // Called instead of onAdded when a requester sends a request. Without it
+  // the dialog closes.
+  onRequested?: (request: LibraryRequest) => void
 }
 
 function basePath(): string {
@@ -31,7 +37,29 @@ function conflictBody(err: unknown): BookConflictBody | null {
   return null
 }
 
-export default function AddBookConfirm({ book, searchedISBN, onBack, onClose, onAdded }: Props) {
+// A requester asks instead of adding: the request step replaces the add
+// form, so the search on add choice is never offered or sent.
+export default function AddBookConfirm(props: Props) {
+  const isRequester = useIsRequester()
+  if (isRequester) {
+    const { book, onBack, onClose, onRequested } = props
+    return (
+      <RequestConfirm
+        kind="book"
+        foreignId={book.foreignBookId}
+        title={book.title}
+        subtitle={book.author?.authorName}
+        imageUrl={book.imageUrl}
+        onBack={onBack}
+        onClose={onClose}
+        onRequested={r => (onRequested ? onRequested(r) : onClose())}
+      />
+    )
+  }
+  return <AddBookForm {...props} />
+}
+
+function AddBookForm({ book, searchedISBN, onBack, onClose, onAdded }: Props) {
   const { t } = useTranslation()
   const [addError, setAddError] = useState<string | null>(null)
   const [addConflict, setAddConflict] = useState<BookConflictBody | null>(null)

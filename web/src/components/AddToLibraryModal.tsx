@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api, Author, Book } from '../api/client'
+import type { LibraryRequest } from '../api/client'
+import { useIsRequester } from '../auth/AuthContext'
 import { isbnFromQuery, resolveBookQuery } from '../api/booklookup'
 import { splitAuthorSearchResults } from './addAuthorTitleGuard'
 import { groupAddResults } from './addToLibraryGrouping'
@@ -27,6 +29,9 @@ interface Props {
   // itself always fans out to authors and books, because the user's intent is
   // resolved by what they pick, not by what they said up front (#1227).
   mode?: 'author' | 'book'
+  // For a requester, called once a request is sent (the confirm steps send a
+  // request instead of adding).
+  onRequested?: (request: LibraryRequest) => void
 }
 
 type Selected =
@@ -46,8 +51,11 @@ function isIdentifierQuery(q: string): boolean {
   return isbnFromQuery(q) !== null || ASIN_RE.test(q)
 }
 
-export default function AddToLibraryModal({ onClose, onAdded, initialQuery, mode }: Props) {
+export default function AddToLibraryModal({ onClose, onAdded, initialQuery, mode, onRequested }: Props) {
   const { t } = useTranslation()
+  // A requester cannot read profiles, root folders or settings, and never
+  // needs them: the admin picks those at approval.
+  const isRequester = useIsRequester()
   const [query, setQuery] = useState(initialQuery ?? '')
   const [authors, setAuthors] = useState<Author[]>([])
   const [hiddenAuthors, setHiddenAuthors] = useState<Author[]>([])
@@ -69,12 +77,14 @@ export default function AddToLibraryModal({ onClose, onAdded, initialQuery, mode
   const dialogRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
+    if (isRequester) return
     let cancelled = false
     loadAuthorAddDefaults().then(d => { if (!cancelled) setAuthorDefaults(d) })
     return () => { cancelled = true }
-  }, [])
+  }, [isRequester])
 
   useEffect(() => {
+    if (isRequester) return
     api.getSetting('metadata.primary_provider')
       .then(s => {
         const value = (s.value || '').trim().toLowerCase()
@@ -83,7 +93,7 @@ export default function AddToLibraryModal({ onClose, onAdded, initialQuery, mode
         if (value === 'openlibrary' || value === 'dnb' || value === 'hardcover') setPrimaryProvider(value)
       })
       .catch(() => { /* unset; no provider notice needed */ })
-  }, [])
+  }, [isRequester])
 
   // Provider searches run on Enter or the Search button only, never on a
   // keystroke: every call here is a live request to a metadata provider with
@@ -243,13 +253,13 @@ export default function AddToLibraryModal({ onClose, onAdded, initialQuery, mode
         {author.libraryAuthorId ? (
           <div className="flex items-center gap-2 flex-shrink-0">
             <span className={badgeClass}>{t('addToLibrary.inLibrary')}</span>
-            <a
+            {!isRequester && <a
               href={`${basePath()}/author/${author.libraryAuthorId}`}
               aria-label={t('addToLibrary.openAuthor', { name: author.authorName })}
               className={openClass}
             >
               {t('addToLibrary.open')}
-            </a>
+            </a>}
           </div>
         ) : (
           <button
@@ -290,13 +300,13 @@ export default function AddToLibraryModal({ onClose, onAdded, initialQuery, mode
         {book.libraryBookId ? (
           <div className="flex items-center gap-2 flex-shrink-0">
             <span className={badgeClass}>{t('addToLibrary.inLibrary')}</span>
-            <a
+            {!isRequester && <a
               href={`${basePath()}/book/${book.libraryBookId}`}
               aria-label={t('addToLibrary.openBook', { title: book.title })}
               className={openClass}
             >
               {t('addToLibrary.open')}
-            </a>
+            </a>}
           </div>
         ) : (
           <button
@@ -330,6 +340,7 @@ export default function AddToLibraryModal({ onClose, onAdded, initialQuery, mode
             onBack={() => setSelected(null)}
             onClose={onClose}
             onAdded={author => { onAdded({ kind: 'author', author }); onClose() }}
+            onRequested={r => { onRequested?.(r); onClose() }}
           />
         ) : selected?.kind === 'book' ? (
           <AddBookConfirm
@@ -338,6 +349,7 @@ export default function AddToLibraryModal({ onClose, onAdded, initialQuery, mode
             onBack={() => setSelected(null)}
             onClose={onClose}
             onAdded={book => { onAdded({ kind: 'book', book }); onClose() }}
+            onRequested={r => { onRequested?.(r); onClose() }}
           />
         ) : <>
           <div className="p-4 flex-1 overflow-y-auto">

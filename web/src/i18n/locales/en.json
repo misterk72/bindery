@@ -82,7 +82,12 @@
     "users": "Users",
     "updateAvailable": "Update available",
     "importUnmatched_one": "{{count}} book needs a decision",
-    "importUnmatched_other": "{{count}} books need a decision"
+    "importUnmatched_other": "{{count}} books need a decision",
+    "requesterLibrary": "Library",
+    "request": "Request",
+    "myRequests": "My requests",
+    "requests": "Requests",
+    "requestsPending": "{{count}} pending requests"
   },
   "librarySearch": {
     "label": "Search library",
@@ -1469,6 +1474,9 @@
     "fieldRole": "Role",
     "roleAdmin": "Admin",
     "roleUser": "User",
+    "roleRequester": "Requester",
+    "roleFor": "Role for {{username}}",
+    "roleRequesterHint": "A requester can browse the library and ask for books and authors. An admin approves or declines each request. Needs the auth mode set to enabled.",
     "createButton": "Create User",
     "promote": "Make admin",
     "demote": "Make user",
@@ -1494,6 +1502,83 @@
     "countMetadataProfiles": "Metadata profiles",
     "countRootFolders": "Root folders",
     "countImportLists": "Import lists"
+  },
+  "requests": {
+    "kindBook": "Book",
+    "kindAuthor": "Author",
+    "anyFormat": "Any format",
+    "loadMore": "Load more",
+    "status": {
+      "pending": "Waiting for an admin",
+      "approved": "Approved, not here yet",
+      "available": "Available",
+      "declined": "Declined",
+      "authorProgress": "{{imported}} of {{total}} books here"
+    },
+    "confirm": {
+      "bookHint": "An admin will look at your request and add the book if they agree. You can follow it under My requests.",
+      "authorHint": "An admin will look at your request and add this author's books if they agree. You can follow it under My requests.",
+      "format": "Format",
+      "formatLabel": "Format to request",
+      "anyFormat": "Any format",
+      "requestBook": "Request book",
+      "requestAuthor": "Request author",
+      "sending": "Sending...",
+      "failed": "Could not send the request"
+    },
+    "mine": {
+      "title": "My requests",
+      "newRequest": "Request a book",
+      "empty": "You have not requested anything yet.",
+      "loadFailed": "Could not load your requests",
+      "withdraw": "Withdraw",
+      "withdrawLabel": "Withdraw request for {{title}}",
+      "withdrawFailed": "Could not withdraw the request",
+      "reason": "Reason: {{reason}}"
+    },
+    "library": {
+      "title": "Library",
+      "requestSomething": "Request a book",
+      "searchLabel": "Search the library",
+      "searchPlaceholder": "Title or author",
+      "empty": "The library is empty so far.",
+      "noMatches": "Nothing in the library matches. Try requesting it.",
+      "loadFailed": "Could not load the library",
+      "seriesWithPosition": "{{series}} #{{position}}",
+      "notYetAvailable": "Not available yet"
+    },
+    "admin": {
+      "title": "Requests",
+      "filterLabel": "Show requests",
+      "filter": {
+        "pending": "Pending",
+        "approved": "Approved",
+        "declined": "Declined",
+        "all": "All"
+      },
+      "empty": "No requests here.",
+      "emptyPending": "No requests are waiting.",
+      "loadFailed": "Could not load requests",
+      "requestedBy": "asked by {{username}} on {{date}}",
+      "approve": "Approve",
+      "approveLabel": "Approve request for {{title}}",
+      "approveFormLabel": "Approve {{title}}",
+      "decline": "Decline",
+      "declineLabel": "Decline request for {{title}}",
+      "declineFormLabel": "Decline {{title}}",
+      "reason": "Reason the requester will see (optional)",
+      "confirmDecline": "Decline",
+      "declineFailed": "Could not decline the request",
+      "metadataProfile": "Metadata profile",
+      "rootFolder": "Root folder",
+      "defaultRootFolder": "Library default",
+      "monitorMode": "Monitor",
+      "format": "Format",
+      "searchOnAdd": "Search indexers after adding",
+      "confirmApprove": "Approve and add",
+      "approving": "Adding...",
+      "approveFailed": "Could not approve the request"
+    }
   },
   "bookStatus": {
     "wanted": "Wanted",

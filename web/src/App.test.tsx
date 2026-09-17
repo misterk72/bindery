@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import App from './App'
 import { api } from './api/client'
 
@@ -9,6 +9,11 @@ const { authState, logoutMock } = vi.hoisted(() => ({
       status: { authenticated: false, mode: 'disabled', setupRequired: false },
       logout: vi.fn(),
       isAdmin: false,
+    } as {
+      status: { authenticated: boolean; mode: string; setupRequired: boolean; role?: string; username?: string }
+      logout: () => void
+      isAdmin: boolean
+      isRequester?: boolean
     },
   },
   logoutMock: vi.fn(),
@@ -38,11 +43,16 @@ vi.mock('./pages/LoginPage', async () => {
 vi.mock('./pages/SetupPage', () => ({ default: () => <div data-testid="page-setup" /> }))
 vi.mock('./pages/AuthorDetailPage', () => ({ default: () => <div /> }))
 vi.mock('./pages/BookDetailPage', () => ({ default: () => <div /> }))
+vi.mock('./pages/requests/RequesterLibraryPage', () => ({ default: () => <div data-testid="page-requester-library" /> }))
+vi.mock('./pages/requests/RequestSearchPage', () => ({ default: () => <div data-testid="page-request-search" /> }))
+vi.mock('./pages/requests/MyRequestsPage', () => ({ default: () => <div data-testid="page-my-requests" /> }))
+vi.mock('./pages/requests/RequestsPage', () => ({ default: () => <div data-testid="page-requests" /> }))
 
 vi.mock('./auth/AuthGuard', () => ({ default: ({ children }: { children: React.ReactNode }) => <>{children}</> }))
 vi.mock('./auth/AuthContext', () => ({
   AuthProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  useAuth: () => authState.value,
+  useAuth: () => ({ isRequester: false, ...authState.value }),
+  useIsRequester: () => authState.value.isRequester ?? false,
 }))
 
 vi.mock('./api/client', () => ({
@@ -53,6 +63,7 @@ vi.mock('./api/client', () => ({
     listDownloadClients: vi.fn().mockResolvedValue([]),
     // The Import nav badge reads this once for an admin.
     unmatchedSummary: vi.fn().mockResolvedValue({ pending: 0, pendingFiles: 0, ignored: 0, adopted: 0, scan: {} }),
+    pendingRequestCount: vi.fn().mockResolvedValue({ count: 3 }),
   },
 }))
 
@@ -71,6 +82,8 @@ vi.mock('react-i18next', () => ({
         'nav.queue': 'Queue', 'nav.history': 'History', 'nav.series': 'Series',
         'nav.calendar': 'Calendar', 'nav.discover': 'Discover', 'nav.settings': 'Settings',
         'nav.search': 'Search',
+        'nav.requesterLibrary': 'Library', 'nav.request': 'Request', 'nav.myRequests': 'My requests',
+        'nav.requests': 'Requests', 'nav.users': 'Users',
         'login.signOut': 'Sign out', 'login.signedInAs': 'Signed in as',
       }
       if (m[key]) return m[key]
@@ -301,5 +314,78 @@ describe('Shell: Import nav badge', () => {
   it('never asks for the count as a non admin', () => {
     renderShell()
     expect(api.unmatchedSummary).not.toHaveBeenCalled()
+  })
+})
+
+describe('Shell, requester role', () => {
+  beforeEach(() => {
+    authState.value = {
+      status: { authenticated: true, mode: 'enabled', setupRequired: false, role: 'requester', username: 'reader' },
+      logout: logoutMock,
+      isAdmin: false,
+      isRequester: true,
+    }
+  })
+
+  it('shows only Library, Request and My requests', () => {
+    renderShell()
+    const desktopNav = document.querySelector('nav.hidden.xl\\:flex')!
+    const labels = Array.from(desktopNav.querySelectorAll('a')).map(l => l.textContent)
+    expect(labels).toEqual(['Library', 'Request', 'My requests'])
+    expect(screen.queryByTitle('Settings')).not.toBeInTheDocument()
+    expect(screen.queryByTitle('Search')).not.toBeInTheDocument()
+  })
+
+  it('renders the read only library at the root instead of Authors', async () => {
+    renderShell()
+    expect(await screen.findByTestId('page-requester-library')).toBeInTheDocument()
+    expect(screen.queryByTestId('page-authors')).not.toBeInTheDocument()
+  })
+
+  it('sends any admin library path back to the requester library', async () => {
+    window.history.pushState(null, '', '/queue')
+    renderShell()
+    expect(await screen.findByTestId('page-requester-library')).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/')
+  })
+
+  it('does not call the system status route it cannot read', () => {
+    renderShell()
+    expect(api.status).not.toHaveBeenCalled()
+  })
+
+  it('omits the settings and search links from the mobile menu', () => {
+    renderShell()
+    fireEvent.click(screen.getByRole('button', { name: /toggle menu/i }))
+    const mobileNav = document.querySelector('div.xl\\:hidden > nav')!
+    const links = Array.from(mobileNav.querySelectorAll('a')).map(l => l.textContent)
+    expect(links).toEqual(['Library', 'Request', 'My requests'])
+  })
+})
+
+describe('Shell, admin requests entry', () => {
+  it('adds Requests with the pending count for admins', async () => {
+    authState.value = {
+      status: { authenticated: true, mode: 'enabled', setupRequired: false, role: 'admin' },
+      logout: logoutMock,
+      isAdmin: true,
+    }
+    renderShell()
+    const desktopNav = document.querySelector('nav.hidden.xl\\:flex')!
+    const requests = Array.from(desktopNav.querySelectorAll('a')).find(l => l.getAttribute('href') === '/requests')
+    expect(requests).toBeDefined()
+    expect(await within(requests as HTMLElement).findByText('3')).toBeInTheDocument()
+  })
+
+  it('does not show Requests to a plain user', () => {
+    authState.value = {
+      status: { authenticated: true, mode: 'enabled', setupRequired: false, role: 'user' },
+      logout: logoutMock,
+      isAdmin: false,
+    }
+    renderShell()
+    const desktopNav = document.querySelector('nav.hidden.xl\\:flex')!
+    expect(Array.from(desktopNav.querySelectorAll('a')).map(l => l.getAttribute('href'))).not.toContain('/requests')
+    expect(api.pendingRequestCount).not.toHaveBeenCalled()
   })
 })

@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api, AddAuthorRequest, Author, AuthorConflictBody, AuthorMonitorMode, MonitorNewItems, MediaType } from '../api/client'
+import type { LibraryRequest } from '../api/client'
+import { useIsRequester } from '../auth/AuthContext'
+import RequestConfirm from './RequestConfirm'
 import { AuthorAddDefaults, DEFAULT_MONITOR_LATEST_COUNT, DEFAULT_MONITOR_MODE } from './authorAddDefaults'
 import { useNeedsSetup } from './useNeedsSetup'
 import { authorProviderKey } from '../util/authorMetadata'
@@ -23,6 +26,9 @@ interface Props {
   onBack: () => void
   onClose: () => void
   onAdded: (author: Author) => void
+  // Called instead of onAdded when a requester sends a request. Without it
+  // the dialog closes.
+  onRequested?: (request: LibraryRequest) => void
 }
 
 const AUTO_GRAB_STORAGE_KEY = 'addAuthor.autoGrab'
@@ -49,7 +55,28 @@ function conflictBody(err: unknown): AuthorConflictBody | null {
   return null
 }
 
-export default function AddAuthorConfirm({ author, defaults, primaryProvider, onBack, onClose, onAdded }: Props) {
+// A requester asks instead of adding: the request step replaces the whole
+// form, and none of the admin choices below are loaded or sent.
+export default function AddAuthorConfirm(props: Props) {
+  const isRequester = useIsRequester()
+  if (isRequester) {
+    const { author, onBack, onClose, onRequested } = props
+    return (
+      <RequestConfirm
+        kind="author"
+        foreignId={author.foreignAuthorId}
+        title={author.authorName}
+        subtitle={author.disambiguation}
+        onBack={onBack}
+        onClose={onClose}
+        onRequested={r => (onRequested ? onRequested(r) : onClose())}
+      />
+    )
+  }
+  return <AddAuthorForm {...props} />
+}
+
+function AddAuthorForm({ author, defaults, primaryProvider, onBack, onClose, onAdded }: Props) {
   const { t } = useTranslation()
   const [addError, setAddError] = useState<string | null>(null)
   const [addConflict, setAddConflict] = useState<AuthorConflictBody | null>(null)

@@ -5,6 +5,7 @@ import { api, ManagedUser, UserOwnedRows, UserDeletePlan } from '../api/client'
 import { ApiError } from '../api/core'
 import DeleteUserDialog from './DeleteUserDialog'
 import { useAuth } from '../auth/AuthContext'
+import type { UserRole } from '../auth/AuthContext'
 
 const inputCls = 'w-full bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-slate-400 dark:focus:border-zinc-600'
 const btnCls = 'px-3 py-1.5 rounded text-sm font-medium transition-colors'
@@ -18,7 +19,7 @@ export default function UsersPage() {
   const [error, setError] = useState('')
   const [newUsername, setNewUsername] = useState('')
   const [newPassword, setNewPassword] = useState('')
-  const [newRole, setNewRole] = useState<'user' | 'admin'>('user')
+  const [newRole, setNewRole] = useState<UserRole>('user')
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState('')
   const [, setResetError] = useState<Record<number, string>>({})
@@ -94,8 +95,8 @@ export default function UsersPage() {
     }
   }
 
-  async function handleRoleToggle(u: ManagedUser) {
-    const next = u.role === 'admin' ? 'user' : 'admin'
+  async function handleRoleChange(u: ManagedUser, next: UserRole) {
+    if (next === u.role) return
     try {
       await api.setUserRole(u.id, next)
       setUsers(prev => prev.map(x => x.id === u.id ? { ...x, role: next } : x))
@@ -163,24 +164,27 @@ export default function UsersPage() {
                     )}
                   </td>
                   <td className="px-4 py-3">
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
-                      u.role === 'admin'
-                        ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-400'
-                        : 'bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-400'
-                    }`}>
-                      {u.role}
-                    </span>
+                    {/* Three roles, so a select rather than a promote/demote
+                        toggle. The server refuses to demote the last admin. */}
+                    <select
+                      value={u.role}
+                      onChange={e => void handleRoleChange(u, e.target.value as UserRole)}
+                      aria-label={t('users.roleFor', { username: u.username })}
+                      className={`px-2 py-0.5 rounded text-xs font-medium border border-slate-300 dark:border-zinc-700 ${
+                        u.role === 'admin'
+                          ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-400'
+                          : 'bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-400'
+                      }`}
+                    >
+                      <option value="admin">{t('users.roleAdmin')}</option>
+                      <option value="user">{t('users.roleUser')}</option>
+                      <option value="requester">{t('users.roleRequester')}</option>
+                    </select>
                   </td>
                   <td className="px-4 py-3 text-slate-500 dark:text-zinc-500">
                     {new Date(u.createdAt).toLocaleDateString()}
                   </td>
                   <td className="px-4 py-3 flex gap-2 justify-end">
-                    <button
-                      onClick={() => handleRoleToggle(u)}
-                      className={`${btnCls} text-xs bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-slate-700 dark:text-zinc-300`}
-                    >
-                      {u.role === 'admin' ? t('users.demote') : t('users.promote')}
-                    </button>
                     <button
                       onClick={() => handleReset(u.id)}
                       className={`${btnCls} text-xs bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-slate-700 dark:text-zinc-300`}
@@ -232,11 +236,13 @@ export default function UsersPage() {
             <select
               className={inputCls}
               value={newRole}
-              onChange={e => setNewRole(e.target.value as 'user' | 'admin')}
+              onChange={e => setNewRole(e.target.value as UserRole)}
             >
               <option value="user">{t('users.roleUser')}</option>
               <option value="admin">{t('users.roleAdmin')}</option>
+              <option value="requester">{t('users.roleRequester')}</option>
             </select>
+            <p className="mt-1 text-xs text-slate-500 dark:text-zinc-500">{t('users.roleRequesterHint')}</p>
           </div>
           {createError && <p className="text-sm text-red-500">{createError}</p>}
           <button
