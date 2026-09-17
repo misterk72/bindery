@@ -180,11 +180,17 @@ func registerOIDCDiscoveryRoutes(r chi.Router, h oidcDiscoveryRouteHandler) {
 }
 
 // useAPIAuth installs the auth stack every /api route sits behind: identity
-// and mode resolution, then the two CSRF guards. Shared by both API trees in
-// main.go and by the route tests, so a test cannot pass against a stack the
-// server does not run.
+// and mode resolution, the requester allow list, then the two CSRF guards.
+// Shared by both API trees in main.go (/api and /api/v1) and by the route
+// tests, so a test cannot pass against a stack the server does not run.
+//
+// RestrictRequester sits directly after Middleware because it needs the role
+// Middleware resolves, and before everything else so a requester is refused
+// on any route not on auth.RequesterAllowList, including routes registered
+// after this call.
 func useAPIAuth(r chi.Router, p auth.Provider) {
 	r.Use(auth.Middleware(p))
+	r.Use(auth.RestrictRequester)
 	r.Use(auth.RequireXRequestedWith)
 	r.Use(auth.RequireCSRFToken(p.SessionSecrets))
 }

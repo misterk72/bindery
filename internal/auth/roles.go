@@ -28,3 +28,11 @@ func ValidRole(role string) bool {
 		return false
 	}
 }
+
+// RoleHasLibraryAccess reports whether role may use the library directly:
+// the full API, OPDS feeds and file downloads. True for admin and user only.
+// A requester, an empty role (a user whose role could not be read) and any
+// unknown value are refused, so a lookup failure fails closed.
+func RoleHasLibraryAccess(role string) bool {
+	return role == RoleAdmin || role == RoleUser
+}

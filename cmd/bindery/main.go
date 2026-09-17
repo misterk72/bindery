@@ -1280,20 +1280,8 @@ func main() {
 	// If BINDERY_URL_BASE is set, mount the entire router under that prefix.
 	// chi.Mount strips the prefix before dispatching so all inner routes and
 	// the SPA handler continue to work unchanged against un-prefixed paths.
-	var handler http.Handler = r
+	handler := mountUnderURLBase(r, cfg.URLBase)
 	if cfg.URLBase != "" {
-		outer := chi.NewRouter()
-		// Redirect bare prefix (no trailing slash) to prefix/ so the SPA
-		// bootstrap and asset resolution work correctly.
-		outer.Get(cfg.URLBase, http.RedirectHandler(cfg.URLBase+"/", http.StatusMovedPermanently).ServeHTTP)
-		// http.StripPrefix actually rewrites r.URL.Path before dispatch, so the
-		// inner router sees un-prefixed paths. chi.Mount only rewrites the
-		// routing-context path and leaves r.URL.Path prefixed, which breaks the
-		// static file handler and http.FileServer — they read r.URL.Path directly
-		// and would look up "<prefix>/assets/…" in the embedded FS, miss, and fall
-		// back to serving index.html (text/html) for every JS/CSS asset.
-		outer.Handle(cfg.URLBase+"/*", http.StripPrefix(cfg.URLBase, r))
-		handler = outer
 		slog.Info("serving under path prefix", "urlBase", cfg.URLBase)
 	}
 

@@ -67,11 +67,17 @@ func OPDSAuth(p auth.Provider, users *db.UserRepo, limiter *auth.LoginLimiter) f
 					// feed to the caller's library when EnforceTenancy is on
 					// (D3).
 					if users == nil {
+						if !opdsRoleAllowed(w, p.UserRole(r.Context(), uid)) {
+							return
+						}
 						r = r.WithContext(auth.WithUserID(r.Context(), uid))
 						next.ServeHTTP(w, r)
 						return
 					}
 					if liveEpoch, err := users.GetSessionEpoch(r.Context(), uid); err == nil && liveEpoch == epoch {
+						if !opdsRoleAllowed(w, p.UserRole(r.Context(), uid)) {
+							return
+						}
 						r = r.WithContext(auth.WithUserID(r.Context(), uid))
 						next.ServeHTTP(w, r)
 						return
@@ -97,6 +103,12 @@ func OPDSAuth(p auth.Provider, users *db.UserRepo, limiter *auth.LoginLimiter) f
 					if limiter != nil {
 						limiter.Reset(ip)
 					}
+					// The password is correct, so the limiter is reset, but a
+					// requester may not read the feed or download its files:
+					// they browse through /requests/library only.
+					if !opdsRoleAllowed(w, u.Role) {
+						return
+					}
 					// Attach the basic-auth user id to ctx so the OPDS
 					// handler can filter the feed to the caller's library
 					// under EnforceTenancy. Without this the basic-auth
@@ -120,6 +132,21 @@ func OPDSAuth(p auth.Provider, users *db.UserRepo, limiter *auth.LoginLimiter) f
 			}
 		})
 	}
+}
+
+// opdsRoleAllowed answers 403 and returns false when role may not read the
+// library directly (auth.RoleHasLibraryAccess). OPDS serves book files, and a
+// requester browses the library read only, without downloads. The API key,
+// disabled and local-only branches above admit the install itself and are
+// unaffected.
+func opdsRoleAllowed(w http.ResponseWriter, role string) bool {
+	if auth.RoleHasLibraryAccess(role) {
+		return true
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	_, _ = w.Write([]byte(`{"error":"not available to requesters"}`))
+	return false
 }
 
 func opdsClientIP(r *http.Request) string {
