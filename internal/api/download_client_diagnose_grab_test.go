@@ -314,16 +314,33 @@ func delugeLabelServer(t *testing.T, downloads string, labelOptions string) (str
 func TestDiagnose_DelugeLabelMovePath(t *testing.T) {
 	defer httpsec.AllowLoopbackForTests()()
 	downloads := t.TempDir()
+	applied, _ := json.Marshal(map[string]any{"apply_move_completed": true, "move_completed": true, "move_completed_path": downloads})
 
 	t.Run("label move path wins", func(t *testing.T) {
-		opts, _ := json.Marshal(map[string]any{"apply_move_completed": true, "move_completed": true, "move_completed_path": downloads})
-		host, port := delugeLabelServer(t, downloads, string(opts))
+		host, port := delugeLabelServer(t, downloads, string(applied))
 		resp, _ := runDiagnose(t, diagnoseSetup{downloadDir: downloads}, &models.DownloadClient{
-			Name: "Deluge", Type: "deluge", Host: host, Port: port, Password: "deluge", Category: "Books", Enabled: true,
+			Name: "Deluge", Type: "deluge", Host: host, Port: port, Password: "deluge", Category: "books", Enabled: true,
 		})
 		path := wantDiagStatus(t, resp, diagCodeClientPath, diagPass)
 		if resp.Paths[0].ClientPath != downloads || !strings.Contains(path.Message, `label "books"`) {
 			t.Errorf("paths = %+v, message = %q", resp.Paths, path.Message)
+		}
+	})
+
+	// The Label plugin rejects a label with capitals and the grab ignores
+	// that error, so the torrent lands in the global folder. The doctor must
+	// say so rather than report the lowercase label's folder.
+	t.Run("capital letters are not labelled", func(t *testing.T) {
+		host, port := delugeLabelServer(t, downloads, string(applied))
+		resp, _ := runDiagnose(t, diagnoseSetup{downloadDir: downloads}, &models.DownloadClient{
+			Name: "Deluge", Type: "deluge", Host: host, Port: port, Password: "deluge", Category: "Books", Enabled: true,
+		})
+		path := wantDiagStatus(t, resp, diagCodeClientPath, diagWarn)
+		if resp.Paths[0].ClientPath != "/incomplete" {
+			t.Errorf("clientPath = %q, want the global folder the unlabelled grab lands in", resp.Paths[0].ClientPath)
+		}
+		if !strings.Contains(path.Message, "only accepts lowercase labels") || path.Fix != "Use a lowercase category for this client in Bindery." {
+			t.Errorf("check = %+v", path)
 		}
 	})
 
@@ -337,4 +354,175 @@ func TestDiagnose_DelugeLabelMovePath(t *testing.T) {
 			t.Errorf("message = %q", path.Message)
 		}
 	})
+
+	// Grabs send the category untrimmed, so "books " is not the "books" label.
+	t.Run("category with a trailing space warns", func(t *testing.T) {
+		host, port := delugeLabelServer(t, downloads, "")
+		resp, _ := runDiagnose(t, diagnoseSetup{downloadDir: downloads}, &models.DownloadClient{
+			Name: "Deluge", Type: "deluge", Host: host, Port: port, Password: "deluge", Category: "books ", Enabled: true,
+		})
+		path := wantDiagStatus(t, resp, diagCodeClientPath, diagWarn)
+		if !strings.Contains(path.Message, "starts or ends with a space") {
+			t.Errorf("message = %q", path.Message)
+		}
+	})
+}
+
+// TestDiagnose_GlobalRemapOnlyWarnsForSentSavePath: torrentSavePath inverts
+// only the client's own remap, so with just BINDERY_DOWNLOAD_PATH_REMAP the
+// client is sent Bindery's own folder and the round trip back proves nothing.
+func TestDiagnose_GlobalRemapOnlyWarnsForSentSavePath(t *testing.T) {
+	defer httpsec.AllowLoopbackForTests()()
+	downloads := t.TempDir()
+
+	t.Run("qbittorrent without a category", func(t *testing.T) {
+		host, port := qbitGrabServer(t, map[string]string{}, "/default")
+		resp, _ := runDiagnose(t, diagnoseSetup{downloadDir: downloads, remap: "/qbit/downloads:" + downloads}, qbitClient(host, port, "", ""))
+		remap := wantDiagStatus(t, resp, diagCodeRemap, diagWarn)
+		if !strings.Contains(remap.Message, "BINDERY_DOWNLOAD_PATH_REMAP is not applied") {
+			t.Errorf("message = %q", remap.Message)
+		}
+		if resp.Paths[0].ClientPath != downloads {
+			t.Errorf("clientPath = %q, want Bindery's own folder, as the grab sends it", resp.Paths[0].ClientPath)
+		}
+	})
+
+	t.Run("a client remap removes the warning", func(t *testing.T) {
+		host, port := qbitGrabServer(t, map[string]string{}, "/default")
+		resp, _ := runDiagnose(t, diagnoseSetup{downloadDir: downloads, remap: "/qbit/downloads:" + downloads}, qbitClient(host, port, "", "/qbit/downloads:"+downloads))
+		wantDiagStatus(t, resp, diagCodeRemap, diagPass)
+	})
+
+	t.Run("a category save path is not sent by Bindery", func(t *testing.T) {
+		host, port := qbitGrabServer(t, map[string]string{"books": "/qbit/downloads"}, "/default")
+		resp, _ := runDiagnose(t, diagnoseSetup{downloadDir: downloads, remap: "/qbit/downloads:" + downloads}, qbitClient(host, port, "books", ""))
+		wantDiagStatus(t, resp, diagCodeRemap, diagPass)
+	})
+}
+
+// TestDiagnose_FilesystemSlotsAreCapped: repeated Diagnose calls against a
+// filesystem call that never returns leave at most cap(diagFSSlots) calls in
+// flight, and later calls say a previous check is still waiting.
+func TestDiagnose_FilesystemSlotsAreCapped(t *testing.T) {
+	defer httpsec.AllowLoopbackForTests()()
+	waitForFreeSlots(t)
+	downloads := t.TempDir()
+	library := t.TempDir()
+	host, port := qbitDiagServer(t, qbitCategory("books", downloads))
+
+	release := make(chan struct{})
+	t.Cleanup(func() {
+		close(release)
+		waitForFreeSlots(t)
+	})
+	var mu sync.Mutex
+	inFlight, maxInFlight := 0, 0
+	stuck := func(string, string) (bool, string) {
+		mu.Lock()
+		inFlight++
+		if inFlight > maxInFlight {
+			maxInFlight = inFlight
+		}
+		mu.Unlock()
+		<-release
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		return true, ""
+	}
+
+	sawBusy := false
+	for i := 0; i < 8; i++ {
+		resp, _ := runDiagnose(t, diagnoseSetup{
+			downloadDir: downloads, roots: []string{library}, fsTimeout: 30 * time.Millisecond, probe: stuck,
+		}, qbitClient(host, port, "books", ""))
+		for _, c := range resp.Checks {
+			if strings.Contains(c.Message, "still waiting for the filesystem") {
+				sawBusy = true
+			}
+		}
+	}
+	if got := len(diagFSSlots); got > cap(diagFSSlots) {
+		t.Fatalf("slots in use = %d, over the cap %d", got, cap(diagFSSlots))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if maxInFlight > cap(diagFSSlots) {
+		t.Errorf("stuck filesystem calls in flight = %d, want at most %d", maxInFlight, cap(diagFSSlots))
+	}
+	if maxInFlight == 0 {
+		t.Error("the stuck probe never ran")
+	}
+	if !sawBusy {
+		t.Error("no response said a previous check is still waiting")
+	}
+}
+
+func waitForFreeSlots(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for len(diagFSSlots) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d filesystem slots still held", len(diagFSSlots))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestDiagnose_ReadOnlyDownloadFolderIsNotGreen: the shared hardlink check
+// answers linkable when it cannot write its probe file; the doctor says it
+// could not test instead.
+func TestDiagnose_ReadOnlyDownloadFolderIsNotGreen(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into read only directories")
+	}
+	defer httpsec.AllowLoopbackForTests()()
+	downloads := t.TempDir()
+	if err := os.Chmod(downloads, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(downloads, 0o700) })
+	host, port := qbitDiagServer(t, qbitCategory("books", downloads))
+	resp, _ := runDiagnose(t, diagnoseSetup{downloadDir: downloads, roots: []string{t.TempDir()}}, qbitClient(host, port, "books", ""))
+	wantDiagStatus(t, resp, diagCodeLocalPath, diagWarn)
+	links := wantDiagStatus(t, resp, diagCodeHardlinks, diagUnknown)
+	if !strings.Contains(links.Message, "could not write a test file") {
+		t.Errorf("message = %q", links.Message)
+	}
+	if len(resp.Hardlinks) != 1 || resp.Hardlinks[0].Result != "unknown" || resp.Hardlinks[0].Linkable {
+		t.Errorf("hardlinks = %+v", resp.Hardlinks)
+	}
+}
+
+// TestDiagnose_MissingLibraryRootIsNotProbed: a library folder that does not
+// exist is reported missing, and no test link is written in an ancestor that
+// may lie outside every configured root.
+func TestDiagnose_MissingLibraryRootIsNotProbed(t *testing.T) {
+	defer httpsec.AllowLoopbackForTests()()
+	downloads := t.TempDir()
+	parent := t.TempDir()
+	missing := filepath.Join(parent, "not", "there")
+	past := time.Now().Add(-48 * time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(parent, past, past); err != nil {
+		t.Fatal(err)
+	}
+	probed := 0
+	host, port := qbitDiagServer(t, qbitCategory("books", downloads))
+	resp, _ := runDiagnose(t, diagnoseSetup{
+		downloadDir: downloads, roots: []string{missing},
+		probe: func(string, string) (bool, string) { probed++; return true, "" },
+	}, qbitClient(host, port, "books", ""))
+	links := wantDiagStatus(t, resp, diagCodeHardlinks, diagWarn)
+	if !strings.Contains(links.Message, "do not exist") {
+		t.Errorf("message = %q", links.Message)
+	}
+	if len(resp.Hardlinks) != 1 || resp.Hardlinks[0].Result != "missing" {
+		t.Errorf("hardlinks = %+v", resp.Hardlinks)
+	}
+	if probed != 0 {
+		t.Errorf("probe ran %d times for a missing root", probed)
+	}
+	if info, err := os.Stat(parent); err != nil || !info.ModTime().Equal(past) {
+		t.Errorf("something was written in the missing root's ancestor")
+	}
 }

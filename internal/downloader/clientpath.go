@@ -20,10 +20,16 @@ type ClientPathInfo struct {
 	// Source names where Path came from, as an English phrase for a sentence
 	// ("the save path Bindery sends", "the category save path").
 	Source string
-	// Category is the category or label the path was resolved for.
+	// Category is the category or label the path was resolved for, exactly
+	// as the grab sends it.
 	Category string
-	// Note is set when part of the answer could not be checked.
-	Note string
+	// SentByBindery is true when Path is the save path Bindery itself sends
+	// with the grab (torrentSavePath), rather than a folder the client chose.
+	SentByBindery bool
+	// Note and NoteFix are set when a grab will not behave the way the
+	// configuration suggests, or when part of the answer could not be checked.
+	Note    string
+	NoteFix string
 }
 
 // ClientTypeName is the display name for a download client type.
@@ -109,7 +115,10 @@ func GrabSavePath(ctx context.Context, client *models.DownloadClient, mediaType,
 	if client == nil {
 		return ClientPathInfo{}, nil
 	}
-	category := strings.TrimSpace(ResolveCategory(client, mediaType))
+	// No trimming anywhere below: SendDownload sends the category and the
+	// save path exactly as they are, so the doctor has to use them the same
+	// way to reach the same folder.
+	category := ResolveCategory(client, mediaType)
 	sent := torrentSavePath(client, SendOptions{MediaType: mediaType, DownloadDir: downloadDir, AudiobookDownloadDir: audiobookDownloadDir})
 	info := ClientPathInfo{Category: category}
 	switch client.Type {
@@ -119,7 +128,7 @@ func GrabSavePath(ctx context.Context, client *models.DownloadClient, mediaType,
 		// rTorrent receives d.directory.set whenever Bindery has a download
 		// folder, so directory.default only matters without one.
 		if sent != "" {
-			info.Path, info.Source = sent, "the save path Bindery sends"
+			info.Path, info.Source, info.SentByBindery = sent, "the save path Bindery sends", true
 			return info, nil
 		}
 		dir, err := RtorrentFor(client).DefaultDirectory(ctx)
@@ -131,7 +140,7 @@ func GrabSavePath(ctx context.Context, client *models.DownloadClient, mediaType,
 	case "transmission":
 		// SendDownload passes client.Category (never the audiobook category)
 		// as download-dir when it is an absolute path.
-		info.Category = strings.TrimSpace(client.Category)
+		info.Category = client.Category
 		if strings.HasPrefix(info.Category, "/") {
 			info.Path, info.Source = info.Category, "the save path Bindery sends"
 			return info, nil
@@ -143,11 +152,11 @@ func GrabSavePath(ctx context.Context, client *models.DownloadClient, mediaType,
 		info.Path, info.Source = dir, "the client default"
 		return info, nil
 	case "deluge":
-		path, source, note, err := DelugeFor(client).DownloadLocation(ctx, category)
+		loc, err := DelugeFor(client).DownloadLocation(ctx, category)
 		if err != nil {
 			return info, err
 		}
-		info.Path, info.Source, info.Note = path, source, note
+		info.Path, info.Source, info.Note, info.NoteFix = loc.Path, loc.Source, loc.Note, loc.NoteFix
 		return info, nil
 	case "nzbget":
 		dir, source, err := NzbgetFor(client).GrabDestDir(ctx, category)
@@ -176,7 +185,7 @@ func qbittorrentGrabPath(ctx context.Context, client *models.DownloadClient, inf
 	qb := QbittorrentFor(client)
 	if info.Category == "" {
 		if sent != "" {
-			info.Path, info.Source = sent, "the save path Bindery sends"
+			info.Path, info.Source, info.SentByBindery = sent, "the save path Bindery sends", true
 			return info, nil
 		}
 		def, err := qb.GetDefaultSavePath(ctx)
@@ -250,8 +259,9 @@ type CategoryReport struct {
 func CheckCategories(ctx context.Context, client *models.DownloadClient) (CategoryReport, error) {
 	report := CategoryReport{}
 	for _, c := range []string{client.Category, client.CategoryAudiobook} {
-		c = strings.TrimSpace(c)
-		if c != "" && !slices.Contains(report.Wanted, c) {
+		// Compared exactly as grabs send it; a category with spaces around it
+		// does not match the client's, and the grab would not either.
+		if strings.TrimSpace(c) != "" && !slices.Contains(report.Wanted, c) {
 			report.Wanted = append(report.Wanted, c)
 		}
 	}

@@ -26,6 +26,12 @@ func TestGrabDestDir(t *testing.T) {
 		{name: "AppendCategoryDir no", category: "Books", extra: []configEntry{{Name: "AppendCategoryDir", Value: "no"}}, want: "/data/nzbget/completed"},
 		{name: "category with its own DestDir", category: "audio", want: "/library/audio"},
 		{name: "no category", category: "", want: "/data/nzbget/completed"},
+		// Scanner::ResolveCategory swaps in the configured name on a case
+		// insensitive match, so the subfolder uses the config's casing.
+		{name: "sent in other case uses the configured name", category: "books", want: "/data/nzbget/completed/Books"},
+		// A trailing space stops the match; SanitizeRelativePath then trims it.
+		{name: "trailing space does not match but is trimmed", category: "Books ", want: "/data/nzbget/completed/Books"},
+		{name: "unknown category keeps its own name", category: "comics.", want: "/data/nzbget/completed/comics"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

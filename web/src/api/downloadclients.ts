@@ -85,6 +85,9 @@ export interface DiagnoseHardlinkRow {
   mediaType?: DiagnoseMediaType
   downloadPath: string
   root: string
+  // unknown: no test file could be written in the download folder.
+  // missing: the library folder does not exist, so it was not probed.
+  result: 'yes' | 'no' | 'unknown' | 'missing'
   linkable: boolean
   reason?: string
 }

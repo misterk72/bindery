@@ -727,8 +727,12 @@
         "libraryFolder": "Library folder",
         "hardlinks": "Hardlinks",
         "reason": "Why not",
-        "yes": "Yes",
-        "no": "No",
+        "linkResult": {
+          "yes": "Yes",
+          "no": "No",
+          "unknown": "Not tested",
+          "missing": "Folder missing"
+        },
         "remap": {
           "client": "This client's remap",
           "global": "Global remap",

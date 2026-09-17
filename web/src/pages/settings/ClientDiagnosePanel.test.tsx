@@ -28,7 +28,10 @@ function fixture(): DiagnoseResult {
       { mediaType: 'ebook', clientPath: '/remote/books', source: 'the category save path', remapRule: 'client', localPath: '/downloads/books' },
       { mediaType: 'audiobook', clientPath: '/remote/audio', source: 'the category save path', remapRule: 'client', localPath: '/downloads/audio' },
     ],
-    hardlinks: [{ mediaType: 'ebook', downloadPath: '/downloads/books', root: '/library', linkable: false, reason: 'EXDEV' }],
+    hardlinks: [
+      { mediaType: 'ebook', downloadPath: '/downloads/books', root: '/library', result: 'no', linkable: false, reason: 'EXDEV' },
+      { mediaType: 'audiobook', downloadPath: '/downloads/books', root: '/library', result: 'missing', linkable: false, reason: 'the library folder does not exist' },
+    ],
     primaryFix: 'Add a path remap.',
   }
 }
@@ -59,6 +62,9 @@ describe('ClientDiagnosePanel', () => {
     const table = screen.getByRole('table', { name: 'settings.clients.diagnose.hardlinksCaption' })
     expect(table).toHaveTextContent('/downloads/books')
     expect(table).toHaveTextContent('EXDEV')
+    // Two rows share a download folder and root; both render (distinct keys).
+    expect(within(table).getAllByRole('row')).toHaveLength(3)
+    expect(table).toHaveTextContent('settings.clients.diagnose.linkResult.missing')
   })
 
   it('copies a report without the host or the username', async () => {

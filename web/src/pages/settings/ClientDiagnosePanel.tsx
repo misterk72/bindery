@@ -117,11 +117,11 @@ export default function ClientDiagnosePanel({ result, onClose }: Props) {
               </tr>
             </thead>
             <tbody>
-              {result.hardlinks.map(h => (
-                <tr key={`${h.downloadPath}|${h.root}`} className="border-t border-slate-200 dark:border-zinc-800">
+              {result.hardlinks.map((h, i) => (
+                <tr key={`${h.mediaType ?? 'all'}|${h.downloadPath}|${h.root}|${i}`} className="border-t border-slate-200 dark:border-zinc-800">
                   <td className="py-1 pr-3 font-mono break-all">{h.downloadPath}</td>
                   <td className="py-1 pr-3 font-mono break-all">{h.root}</td>
-                  <td className="py-1 pr-3">{h.linkable ? t('settings.clients.diagnose.yes') : t('settings.clients.diagnose.no')}</td>
+                  <td className="py-1 pr-3">{t(`settings.clients.diagnose.linkResult.${h.result ?? (h.linkable ? 'yes' : 'no')}`)}</td>
                   <td className={`py-1 ${labelCls}`}>{h.reason}</td>
                 </tr>
               ))}

@@ -69,7 +69,7 @@ export function buildDiagnoseReport(result: DiagnoseResult): string {
         `local path${media}: ${p.localPath || '(none)'}`,
       ]
     }),
-    ...result.hardlinks.map(h => `hardlink ${h.downloadPath} to ${h.root}: ${h.linkable ? 'yes' : 'no'}`),
+    ...result.hardlinks.map(h => `hardlink ${h.downloadPath} to ${h.root}: ${h.result ?? (h.linkable ? 'yes' : 'no')}`),
   ]
   return lines.join('\n')
 }

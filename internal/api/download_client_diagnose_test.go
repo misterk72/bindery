@@ -349,6 +349,11 @@ func TestDiagnose_SymlinkOutOfDownloadFolderTouchesNothing(t *testing.T) {
 	if !strings.Contains(local.Message, "symbolic link") {
 		t.Errorf("message = %q", local.Message)
 	}
+	// The link name shares a prefix with the download folder, but the
+	// problem is where the link goes, not the letter case.
+	if strings.Contains(local.Fix, "letter case") {
+		t.Errorf("fix blames letter case for a symlink leading outside: %q", local.Fix)
+	}
 	info, err := os.Stat(outside)
 	if err != nil {
 		t.Fatal(err)

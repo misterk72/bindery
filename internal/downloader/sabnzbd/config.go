@@ -55,7 +55,8 @@ func (c *Client) CompleteDir(ctx context.Context, category string) (string, bool
 	}
 
 	catDir := ""
-	if category = strings.TrimSpace(category); category != "" {
+	// The category is used exactly as AddURL sends it, spaces included.
+	if category != "" {
 		var cats categoryDirConfig
 		params := url.Values{"mode": {"get_config"}, "section": {"categories"}, "keyword": {category}}
 		// A category SABnzbd does not know answers with status false. The

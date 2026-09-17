@@ -236,8 +236,8 @@ describe('download client diagnose', () => {
       checks: [{ code: 'connect', status: 'pass', message: 'Connected.' }],
       primaryFix: '',
       hardlinks: [
-        { downloadPath: '/downloads', root: '/books', linkable: true },
-        { downloadPath: '/downloads', root: '/audiobooks', linkable: false, reason: 'different filesystems' },
+        { downloadPath: '/downloads', root: '/books', result: 'yes', linkable: true },
+        { downloadPath: '/downloads', root: '/audiobooks', result: 'no', linkable: false, reason: 'different filesystems' },
       ],
     }))
     renderTab([makeClient()])

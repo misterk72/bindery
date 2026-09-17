@@ -74,12 +74,23 @@ type diagPathRow struct {
 	LocalPath  string `json:"localPath"`
 }
 
+// Hardlink row results.
+const (
+	diagLinkYes     = "yes"
+	diagLinkNo      = "no"
+	diagLinkUnknown = "unknown"
+	diagLinkMissing = "missing"
+)
+
 type diagHardlinkRow struct {
 	MediaType    string `json:"mediaType,omitempty"`
 	DownloadPath string `json:"downloadPath"`
 	Root         string `json:"root"`
-	Linkable     bool   `json:"linkable"`
-	Reason       string `json:"reason,omitempty"`
+	// Result is yes, no, unknown (no test file could be written in the
+	// download folder) or missing (the library folder does not exist).
+	Result   string `json:"result"`
+	Linkable bool   `json:"linkable"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 type diagnoseResponse struct {
@@ -93,9 +104,10 @@ type diagnoseResponse struct {
 // diagTarget is one folder grabs land in: ebook, audiobook, or both when
 // they resolve to the same client folder.
 type diagTarget struct {
-	row       diagPathRow
-	probePath string // symlink-resolved local path, set once readable
-	stopped   bool   // an earlier per folder check had nothing to pass on
+	row           diagPathRow
+	sentByBindery bool   // the client path is the save path Bindery sends
+	probePath     string // symlink-resolved local path, set once readable
+	stopped       bool   // an earlier per folder check had nothing to pass on
 }
 
 // diagState is what the checks share. Each check reads what earlier checks
@@ -276,25 +288,56 @@ func errText(err error) string {
 	return httpsec.RedactSecrets(httpsec.RedactURLError(err).Error())
 }
 
-// boundedFS runs fn with a deadline. fn must only return values and never
-// write shared state, because on a timeout it keeps running in its goroutine
-// after this returns ok false.
-func boundedFS[T any](ctx context.Context, timeout time.Duration, fn func() T) (T, bool) {
+// diagFSSlots caps how many filesystem phases can be in flight across every
+// Diagnose request. A phase that times out keeps its goroutine, and the OS
+// thread under a blocked syscall, until the syscall returns; without a cap,
+// pressing Diagnose repeatedly against a dead mount would pile them up.
+var diagFSSlots = make(chan struct{}, 4)
+
+type fsOutcome int
+
+const (
+	fsDone fsOutcome = iota
+	fsTimedOut
+	fsBusy
+)
+
+// boundedFS runs fn with a deadline, in one of the diagFSSlots. The slot is
+// taken without blocking (fsBusy when none is free) and given back by the
+// goroutine when fn returns, not when this gives up waiting. fn must only
+// return values and never write shared state, because on a timeout it keeps
+// running after this returns.
+func boundedFS[T any](ctx context.Context, timeout time.Duration, fn func() T) (T, fsOutcome) {
+	var zero T
+	select {
+	case diagFSSlots <- struct{}{}:
+	default:
+		return zero, fsBusy
+	}
 	ch := make(chan T, 1)
-	go func() { ch <- fn() }()
+	go func() {
+		defer func() { <-diagFSSlots }()
+		ch <- fn()
+	}()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case v := <-ch:
-		return v, true
+		return v, fsDone
 	case <-timer.C:
 	case <-ctx.Done():
 	}
-	var zero T
-	return zero, false
+	return zero, fsTimedOut
 }
 
-func (st *diagState) fsTimeoutResult(what string) diagCheckResult {
+func (st *diagState) fsNotDoneResult(what string, outcome fsOutcome) diagCheckResult {
+	if outcome == fsBusy {
+		return diagCheckResult{
+			Status:  diagUnknown,
+			Message: "Bindery did not check this because a previous check of this folder is still waiting for the filesystem.",
+			Fix:     "Check that the storage behind this folder is mounted and answering, then run Diagnose again.",
+		}
+	}
 	return diagCheckResult{
 		Status:  diagUnknown,
 		Message: fmt.Sprintf("%s did not respond within %d seconds. A network mount that has stopped answering looks like this.", what, int(st.fsTimeout.Seconds())),
@@ -417,7 +460,7 @@ func checkDiagClientPath(ctx context.Context, st *diagState) []diagCheckResult {
 
 	out := make([]diagCheckResult, 0, len(found))
 	for _, f := range found {
-		t := &diagTarget{row: diagPathRow{MediaType: f.mediaType, ClientPath: f.info.Path, Source: f.info.Source}}
+		t := &diagTarget{row: diagPathRow{MediaType: f.mediaType, ClientPath: f.info.Path, Source: f.info.Source}, sentByBindery: f.info.SentByBindery}
 		st.targets = append(st.targets, t)
 		res := describeClientPath(st, f.mediaType, f.info, f.err)
 		res.MediaType = f.mediaType
@@ -464,7 +507,15 @@ func describeClientPath(st *diagState, mediaType string, info downloader.ClientP
 	if info.Note != "" {
 		res.Status = diagWarn
 		res.Message += " " + info.Note
-		res.Fix = fmt.Sprintf("Check the settings of that label in %s by hand.", st.clientName)
+		res.Fix = info.NoteFix
+	}
+	// Grabs send the category untrimmed, and no client trims it on arrival.
+	if trimmed := strings.TrimSpace(info.Category); trimmed != "" && trimmed != info.Category {
+		res.Status = diagWarn
+		res.Message += fmt.Sprintf(" The category %q starts or ends with a space, and %s will not match it to the category it looks like.", info.Category, st.clientName)
+		if res.Fix == "" {
+			res.Fix = "Remove the spaces around the category in this client's settings in Bindery."
+		}
 	}
 	return res
 }
@@ -517,6 +568,16 @@ func remapTarget(st *diagState, t *diagTarget, global *pathmap.Remapper) diagChe
 			Status:  diagFail,
 			Message: fmt.Sprintf("The folder resolves to %q, which is not an absolute path.", local),
 			Fix:     "Make both sides of the path remap absolute paths.",
+		}
+	}
+	// torrentSavePath inverts only the client's own remap when sending, so
+	// with only the global remap set the client is sent Bindery's own folder,
+	// and remapping it back proves nothing about the client's side.
+	if t.sentByBindery && strings.TrimSpace(st.client.PathRemap) == "" && !global.Empty() {
+		return diagCheckResult{
+			Status:  diagWarn,
+			Message: fmt.Sprintf("Bindery sends its own folder %q to %s, because BINDERY_DOWNLOAD_PATH_REMAP is not applied when sending. This check can only confirm Bindery reads its own folder, not that %s writes there.", raw, st.clientName, st.clientName),
+			Fix:     fmt.Sprintf("Set a path remap on this client, so the folder Bindery sends is translated into the path %s uses for the same storage.", st.clientName),
 		}
 	}
 	switch rule {
@@ -616,11 +677,11 @@ func checkDiagLocalPath(_ context.Context, st *diagState) []diagCheckResult {
 				res = outsideConfiguredFolders(st.clientName, local, bases, "")
 				break
 			}
-			probed, ok := boundedFS(st.fsCtx, st.fsTimeout, func() localProbe {
+			probed, outcome := boundedFS(st.fsCtx, st.fsTimeout, func() localProbe {
 				return probeLocalPath(st.clientName, local, bases)
 			})
-			if !ok {
-				res = st.fsTimeoutResult(fmt.Sprintf("%q", local))
+			if outcome != fsDone {
+				res = st.fsNotDoneResult(fmt.Sprintf("%q", local), outcome)
 				break
 			}
 			res = probed.res
@@ -740,6 +801,11 @@ func outsideConfiguredFolders(clientName, local string, bases []diagBase, resolv
 	}
 	fix := fmt.Sprintf("Add a path remap on this client that turns the folder %s reports into a folder under the download folder, or change where %s saves.", clientName, clientName)
 	for _, b := range bases {
+		if resolved != "" {
+			// The path leads out through a symlink; a case hint would
+			// describe the link's name, not the problem.
+			break
+		}
 		n := len(b.path)
 		if len(local) >= n && strings.EqualFold(local[:n], b.path) && (len(local) == n || local[n] == filepath.Separator) {
 			fix = fmt.Sprintf("%q differs from the %s %q only in letter case, and folder names on Linux are case sensitive. Change the path remap so the case matches.", local, b.label, b.path)
@@ -784,15 +850,14 @@ func checkDiagHardlinks(_ context.Context, st *diagState) []diagCheckResult {
 		}
 	}
 	probe := st.hardlinkProbe
-	rows, ok := boundedFS(st.fsCtx, st.fsTimeout, func() []diagHardlinkRow {
+	rows, outcome := boundedFS(st.fsCtx, st.fsTimeout, func() []diagHardlinkRow {
 		out := make([]diagHardlinkRow, 0, len(pairs))
 		done := map[[2]string]diagHardlinkRow{}
 		for _, p := range pairs {
 			key := [2]string{p.probe, p.root}
 			row, seen := done[key]
 			if !seen {
-				linkable, reason := probe(p.probe, p.root)
-				row = diagHardlinkRow{Linkable: linkable, Reason: reason}
+				row = doctorHardlink(probe, p.probe, p.root)
 				done[key] = row
 			}
 			row.MediaType, row.DownloadPath, row.Root = p.mediaType, p.local, p.root
@@ -800,29 +865,75 @@ func checkDiagHardlinks(_ context.Context, st *diagState) []diagCheckResult {
 		}
 		return out
 	})
-	if !ok {
-		return one(st.fsTimeoutResult("The hardlink test"))
+	if outcome != fsDone {
+		return one(st.fsNotDoneResult("The hardlink test", outcome))
 	}
 	st.hardlinks = rows
 
-	failing := 0
-	firstReason := ""
+	var failing, unknown, missing int
+	firstReason, firstUnknown := "", ""
 	for _, row := range rows {
-		if !row.Linkable {
+		switch row.Result {
+		case diagLinkNo:
 			failing++
 			if firstReason == "" {
 				firstReason = row.Reason
 			}
+		case diagLinkMissing:
+			missing++
+		case diagLinkUnknown:
+			unknown++
+			if firstUnknown == "" {
+				firstUnknown = row.Reason
+			}
 		}
 	}
-	if failing == 0 {
-		return one(diagCheckResult{Status: diagPass, Message: "Imports can hardlink into every library folder."})
+	switch {
+	case missing > 0:
+		return one(diagCheckResult{
+			Status:  diagWarn,
+			Message: fmt.Sprintf("%d of %d library folders do not exist, so Bindery did not test hardlinks into them.", missing, len(rows)),
+			Fix:     "Create the missing library folder, or remove it from Settings if it is no longer used.",
+		})
+	case failing > 0:
+		return one(diagCheckResult{
+			Status:  diagWarn,
+			Message: fmt.Sprintf("%d of %d download and library folder pairs will copy instead of hardlinking: %s.", failing, len(rows), firstReason),
+			Fix:     "To hardlink, mount the download folder and the library from the same filesystem into Bindery as a single volume. Copying still works, it just uses more space.",
+		})
+	case unknown > 0:
+		return one(diagCheckResult{
+			Status:  diagUnknown,
+			Message: firstUnknown + " Hardlinks were not tested.",
+			Fix:     "Give the user Bindery runs as write access to the download folder, then run Diagnose again.",
+		})
 	}
-	return one(diagCheckResult{
-		Status:  diagWarn,
-		Message: fmt.Sprintf("%d of %d download and library folder pairs will copy instead of hardlinking: %s.", failing, len(rows), firstReason),
-		Fix:     "To hardlink, mount the download folder and the library from the same filesystem into Bindery as a single volume. Copying still works, it just uses more space.",
-	})
+	return one(diagCheckResult{Status: diagPass, Message: "Imports can hardlink into every library folder."})
+}
+
+// doctorHardlink wraps the shared hardlinkableReason for the doctor only.
+// That function answers "linkable" when it cannot write its probe file, which
+// suits the storage endpoint but would show a read only download folder as
+// green here, and it writes its test link in the nearest existing ancestor
+// of a library folder that does not exist, which may lie outside every
+// configured root. Both cases are answered here without calling it.
+func doctorHardlink(probe func(a, b string) (bool, string), download, root string) diagHardlinkRow {
+	if _, err := os.Stat(root); errors.Is(err, fs.ErrNotExist) {
+		return diagHardlinkRow{Result: diagLinkMissing, Reason: "the library folder does not exist"}
+	}
+	f, err := os.CreateTemp(download, ".bindery-hlcheck-*")
+	if err != nil {
+		return diagHardlinkRow{Result: diagLinkUnknown, Reason: fmt.Sprintf("Bindery could not write a test file in %q.", download)}
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	linkable, reason := probe(download, root)
+	row := diagHardlinkRow{Result: diagLinkNo, Linkable: linkable, Reason: reason}
+	if linkable {
+		row.Result = diagLinkYes
+	}
+	return row
 }
 
 func checkDiagIndexerReach(_ context.Context, st *diagState) []diagCheckResult {
