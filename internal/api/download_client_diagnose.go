@@ -586,6 +586,15 @@ func remapTarget(st *diagState, t *diagTarget, global *pathmap.Remapper) diagChe
 	case downloader.RemapRuleGlobal:
 		return diagCheckResult{Status: diagPass, Message: fmt.Sprintf("The global path remap (BINDERY_DOWNLOAD_PATH_REMAP) turns %q into %q.", raw, local)}
 	default:
+		// A pure string check. When the unremapped folder is not one Bindery
+		// uses, a pass here would contradict the local_path failure and its
+		// fix, which is to add a remap; that row keeps the fix.
+		if _, ok := containingBase(local, st.bases()); !ok {
+			return diagCheckResult{
+				Status:  diagWarn,
+				Message: fmt.Sprintf("No path remap applies, and %s's folder %q is not a folder Bindery uses.", st.clientName, local),
+			}
+		}
 		return diagCheckResult{Status: diagPass, Message: fmt.Sprintf("No path remap applies, so Bindery looks for %q at the same path.", local)}
 	}
 }

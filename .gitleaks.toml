@@ -33,6 +33,8 @@ regexes = [
   '''test-api-key''',
   '''admin123''',
   '''SCREAMING_TEST_KEY_[A-Z0-9_]+''',
+  # Known download client secrets asserted absent from responses (download_client_diagnose_test.go)
+  '''[a-z]+-(apikey|pass)-SECRET-[0-9]{4}''',
   # URL path false-positive in docs/auth-proxy.md (authelia verify endpoint)
   '''9091/api/verify''',
 ]

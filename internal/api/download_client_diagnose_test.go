@@ -223,13 +223,18 @@ func TestDiagnose_MissingRemap(t *testing.T) {
 	host, port := qbitDiagServer(t, qbitCategory("books", "/torrents/complete/books"))
 	resp, _ := runDiagnose(t, diagnoseSetup{downloadDir: downloads}, qbitClient(host, port, "books", ""))
 
-	wantDiagStatus(t, resp, diagCodeRemap, diagPass)
+	// No remap applies and the folder is not one Bindery uses, so the remap
+	// row must not read as a pass while the fix says to add a remap.
+	remap := wantDiagStatus(t, resp, diagCodeRemap, diagWarn)
+	if !strings.Contains(remap.Message, "is not a folder Bindery uses") {
+		t.Errorf("remap message = %q", remap.Message)
+	}
 	local := wantDiagStatus(t, resp, diagCodeLocalPath, diagFail)
 	if !strings.Contains(local.Message, "outside every folder") {
 		t.Errorf("message = %q", local.Message)
 	}
-	if !strings.Contains(resp.PrimaryFix, "path remap") {
-		t.Errorf("primaryFix = %q, want it to name the path remap", resp.PrimaryFix)
+	if !strings.Contains(resp.PrimaryFix, "path remap") || resp.PrimaryFix != local.Fix {
+		t.Errorf("primaryFix = %q, want the local_path fix naming the path remap (%q)", resp.PrimaryFix, local.Fix)
 	}
 	wantDiagStatus(t, resp, diagCodeHardlinks, diagSkipped)
 }
