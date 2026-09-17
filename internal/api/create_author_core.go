@@ -34,6 +34,9 @@ type createAuthorParams struct {
 	MonitorNewItems *string
 	SearchOnAdd     bool
 	MediaType       string
+	// SkipCatalogueSync creates or relinks the author without starting its
+	// catalogue sync. False keeps the handler's behaviour.
+	SkipCatalogueSync bool
 }
 
 // createAuthorResult is what an Add Author produced.
@@ -177,7 +180,9 @@ func (h *AuthorHandler) createAuthorCore(ctx context.Context, req createAuthorPa
 			// the snapshot read against this write (see fetchAuthorBooksAsync).
 			cleanAuthorDescription(canonical)
 			h.stampProviderMismatch(canonical)
-			h.fetchAuthorBooksAsync(canonical, catalogueSyncOptions{autoSearch: req.SearchOnAdd, mediaType: mediaType})
+			if !req.SkipCatalogueSync {
+				h.fetchAuthorBooksAsync(canonical, catalogueSyncOptions{autoSearch: req.SearchOnAdd, mediaType: mediaType})
+			}
 			return createAuthorResult{Author: canonical}, nil
 		}
 		return createAuthorResult{}, &authorConflictError{Canonical: canonical, Message: "author name already resolves to an existing author — confirm merge"}
@@ -222,7 +227,9 @@ func (h *AuthorHandler) createAuthorCore(ctx context.Context, req createAuthorPa
 
 	// Fetch and store books for this author. Always populate the catalogue;
 	// pass searchOnAdd so FetchAuthorBooks knows whether to also queue grabs.
-	h.fetchAuthorBooksAsync(author, catalogueSyncOptions{autoSearch: req.SearchOnAdd, mediaType: mediaType})
+	if !req.SkipCatalogueSync {
+		h.fetchAuthorBooksAsync(author, catalogueSyncOptions{autoSearch: req.SearchOnAdd, mediaType: mediaType})
+	}
 
 	telemetry.MarkFirst(ctx, h.settings, telemetry.SettingFirstAuthorAt)
 	return createAuthorResult{Author: author, Created: true}, nil

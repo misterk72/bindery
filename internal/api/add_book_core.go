@@ -27,6 +27,14 @@ type addBookParams struct {
 	// book (#1397). Empty keeps the provider's media type, falling back to
 	// the default.media_type setting.
 	MediaType string
+	// Monitored overrides the monitored flag step 3 sets on the book. Nil
+	// keeps the handler's behaviour, which always marks the book monitored.
+	Monitored *bool
+	// SkipCatalogueSync suppresses the single work fallback sync that runs
+	// when the direct insert produced no row. With it set, the core looks
+	// for the row once instead of polling, since nothing it started could
+	// still create it. False keeps the handler's behaviour.
+	SkipCatalogueSync bool
 }
 
 // addBookResult is what an Add Book produced.
@@ -432,7 +440,7 @@ func (h *AuthorHandler) addBookCore(ctx context.Context, req addBookParams) (add
 	// sync ran, restricted to the work the user actually picked, so the poll
 	// below can still succeed without the rest of the bibliography riding
 	// along (#1816).
-	if existing, _ := h.books.GetByForeignID(ctx, req.ForeignBookID); existing == nil {
+	if existing, _ := h.books.GetByForeignID(ctx, req.ForeignBookID); existing == nil && !req.SkipCatalogueSync {
 		// mediaType only fills a format the provider left blank, and step 3
 		// below applies the request's explicit choice to whatever row the poll
 		// finds — so the default is the right value to pass here. It no longer
@@ -448,6 +456,9 @@ func (h *AuthorHandler) addBookCore(ctx context.Context, req addBookParams) (add
 	// 2. Poll until the book appears (the single-work fallback, if it ran,
 	// creates it asynchronously).
 	deadline := time.Now().Add(15 * time.Second)
+	if req.SkipCatalogueSync {
+		deadline = time.Now()
+	}
 	var book *models.Book
 	for {
 		b, _ := h.books.GetByForeignID(ctx, req.ForeignBookID)
@@ -486,6 +497,9 @@ func (h *AuthorHandler) addBookCore(ctx context.Context, req addBookParams) (add
 	// Re-evaluate status on a change so e.g. adding an already-imported ebook
 	// as 'both' flips it back to wanted for the missing format (#1148).
 	book.Monitored = true
+	if req.Monitored != nil {
+		book.Monitored = *req.Monitored
+	}
 	if req.MediaType != "" && book.MediaType != req.MediaType {
 		book.MediaType = req.MediaType
 		reevaluateBookStatus(book)
