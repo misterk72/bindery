@@ -20,14 +20,23 @@
 -- created_book_id and created_author_id are set only when the adopt request
 -- itself inserted that row, which is what lets Undo remove them again without
 -- touching a book or author that existed before. registered_paths_json lists
--- exactly the book_files paths the adopt inserted, for the same reason.
+-- exactly the book_files rows the adopt inserted, each as its path and the
+-- book it was registered to, so Undo never removes a row that has since moved
+-- to another book. created_book_fingerprint records the created book as the
+-- adoption left it; if it differs at Undo, someone has started using the book
+-- and Undo keeps it.
+--
+-- An adopt writes each of these as soon as it exists, before the next side
+-- effect, so a request that dies part way leaves a row that says exactly what
+-- to reverse. claimed_at dates the claim for that recovery; updated_at cannot,
+-- because every scan refreshes it.
 --
 -- member_paths_json holds the files that make up the unit. Adopt re-checks
 -- each one on disk before registering anything, because the row may be hours
 -- old by then.
 --
 -- Times are written by the repository in one fixed width UTC layout so the
--- purge and in flight recovery comparisons below can compare them as text.
+-- purge and claim recovery comparisons can compare them as text.
 
 CREATE TABLE unmatched_units (
     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,10 +61,12 @@ CREATE TABLE unmatched_units (
     created_book_id       INTEGER  REFERENCES books(id) ON DELETE SET NULL,
     created_author_id     INTEGER  REFERENCES authors(id) ON DELETE SET NULL,
     registered_paths_json TEXT     NOT NULL DEFAULT '[]',
+    created_book_fingerprint TEXT  NOT NULL DEFAULT '',
     scan_generation       INTEGER  NOT NULL DEFAULT 0,
     first_seen_at         TEXT     NOT NULL,
     last_seen_at          TEXT     NOT NULL,
     resolved_at           TEXT,
+    claimed_at            TEXT,
     updated_at            TEXT     NOT NULL
 );
 

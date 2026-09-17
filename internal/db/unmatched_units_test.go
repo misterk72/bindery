@@ -116,8 +116,10 @@ func TestReconcileScan_ZeroFileScanDeletesNothing(t *testing.T) {
 	}
 }
 
-// TestReconcileScan_PurgesOldDecisions: ignored and adopted rows unseen for 30
-// days go, a truncated scan purges nothing, and a recent one stays.
+// TestReconcileScan_PurgesOldDecisions: ignored rows unseen for 30 days go
+// when their root produced files, a truncated scan removes and purges
+// nothing, a root that produced no files keeps its ignores, and a recent one
+// stays.
 func TestReconcileScan_PurgesOldDecisions(t *testing.T) {
 	ctx := context.Background()
 	database, repo := openUnmatchedRepo(t)
@@ -133,14 +135,21 @@ func TestReconcileScan_PurgesOldDecisions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := repo.ReconcileScan(ctx, nil, ReconcileScanOptions{SkipPurge: true})
+	res, err := repo.ReconcileScan(ctx, nil, ReconcileScanOptions{SkipDeletion: true, RootsWithFiles: []string{"/lib"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Purged != 0 || res.Ignored != 2 {
 		t.Fatalf("truncated reconcile = %+v, want no purge", res)
 	}
-	res, err = repo.ReconcileScan(ctx, nil, ReconcileScanOptions{})
+	res, err = repo.ReconcileScan(ctx, nil, ReconcileScanOptions{RootsWithFiles: []string{"/audiobooks"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Purged != 0 || res.Ignored != 2 {
+		t.Fatalf("reconcile with the row's root producing no files = %+v, want no purge", res)
+	}
+	res, err = repo.ReconcileScan(ctx, nil, ReconcileScanOptions{RootsWithFiles: []string{"/lib"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,6 +159,21 @@ func TestReconcileScan_PurgesOldDecisions(t *testing.T) {
 	if unitByPath(t, database, repo, "/lib/A/recent.epub") == nil {
 		t.Fatal("recent ignored row purged")
 	}
+}
+
+func seedAdoptionBook(t *testing.T, database *sql.DB) *models.Book {
+	t.Helper()
+	ctx := context.Background()
+	author := &models.Author{ForeignID: "ol:seed", Name: "Seed Author", SortName: "Author, Seed", MetadataProvider: "openlibrary"}
+	if err := NewAuthorRepo(database).Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+	book := &models.Book{ForeignID: "ol:seed-book", AuthorID: author.ID, Title: "Seed",
+		Status: models.BookStatusWanted, MediaType: models.MediaTypeEbook, MetadataProvider: "openlibrary"}
+	if err := NewBookRepo(database).Create(ctx, book); err != nil {
+		t.Fatal(err)
+	}
+	return book
 }
 
 // TestReconcileScan_AdoptedRowSeenAgain: an adoption finished before the scan
@@ -162,12 +186,13 @@ func TestReconcileScan_AdoptedRowSeenAgain(t *testing.T) {
 	if _, err := repo.ReconcileScan(ctx, units, ReconcileScanOptions{}); err != nil {
 		t.Fatal(err)
 	}
+	book := seedAdoptionBook(t, database)
 	for _, p := range []string{"/lib/A/before.epub", "/lib/A/during.epub"} {
 		u := unitByPath(t, database, repo, p)
 		if ok, _ := repo.ClaimState(ctx, u.ID, UnmatchedStatePending, UnmatchedStateAdopting); !ok {
 			t.Fatal("claim failed")
 		}
-		if ok, err := repo.CompleteAdoption(ctx, u.ID, AdoptionRecord{RegisteredPaths: []string{p}}); err != nil || !ok {
+		if ok, err := repo.CompleteAdoption(ctx, u.ID, AdoptionRecord{BookID: book.ID, Registered: []RegisteredFile{{Path: p, BookID: book.ID}}}); err != nil || !ok {
 			t.Fatalf("complete: ok=%v err=%v", ok, err)
 		}
 	}
@@ -183,7 +208,7 @@ func TestReconcileScan_AdoptedRowSeenAgain(t *testing.T) {
 	if _, err := repo.ReconcileScan(ctx, units, ReconcileScanOptions{StartedAt: scanStart}); err != nil {
 		t.Fatal(err)
 	}
-	if got := unitByPath(t, database, repo, "/lib/A/before.epub"); got.State != UnmatchedStatePending || len(got.RegisteredPaths) != 0 {
+	if got := unitByPath(t, database, repo, "/lib/A/before.epub"); got.State != UnmatchedStatePending || len(got.Registered) != 0 {
 		t.Fatalf("stale adoption = %+v, want pending with nothing registered", got)
 	}
 	if got := unitByPath(t, database, repo, "/lib/A/during.epub"); got.State != UnmatchedStateAdopted {
@@ -191,9 +216,10 @@ func TestReconcileScan_AdoptedRowSeenAgain(t *testing.T) {
 	}
 }
 
-// TestReconcileScan_ChunksAndStaleClaims: more than one chunk of units lands,
-// and a row a crashed request left claimed is released.
-func TestReconcileScan_ChunksAndStaleClaims(t *testing.T) {
+// TestReconcileScan_ChunksAndLeavesClaims: more than one chunk of units
+// lands, a truncated scan removes no pending row, and a scan never touches a
+// row an adopt holds (its side effects are the adoption handler's to reverse).
+func TestReconcileScan_ChunksAndLeavesClaims(t *testing.T) {
 	ctx := context.Background()
 	database, repo := openUnmatchedRepo(t)
 	units := make([]UnmatchedUnitScan, reconcileChunkSize*2+7)
@@ -207,15 +233,55 @@ func TestReconcileScan_ChunksAndStaleClaims(t *testing.T) {
 	if res.Upserted != len(units) || res.Pending != len(units) {
 		t.Fatalf("reconcile = %+v, want %d rows", res, len(units))
 	}
-	if _, err := database.Exec(`UPDATE unmatched_units SET state = 'adopting', updated_at = ? WHERE unit_path = '/lib/A/0000.epub'`,
+	claimed := unitByPath(t, database, repo, "/lib/A/0000.epub")
+	if ok, _ := repo.ClaimState(ctx, claimed.ID, UnmatchedStatePending, UnmatchedStateAdopting); !ok {
+		t.Fatal("claim failed")
+	}
+	if res, err = repo.ReconcileScan(ctx, units[1:2], ReconcileScanOptions{SkipDeletion: true}); err != nil || res.RemovedPending != 0 {
+		t.Fatalf("truncated reconcile = %+v %v, want no pending row removed", res, err)
+	}
+	if _, err := repo.ReconcileScan(ctx, units[1:], ReconcileScanOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := unitByPath(t, database, repo, "/lib/A/0000.epub"); got == nil || got.State != UnmatchedStateAdopting {
+		t.Fatalf("claimed row after scans = %+v, want untouched", got)
+	}
+}
+
+// TestStaleClaims_DatedByClaimedAt: a scan refreshes updated_at on every row
+// it sees, so a claim is dated by claimed_at. A long held claim is stale even
+// when a scan just touched the row; a fresh one is not.
+func TestStaleClaims_DatedByClaimedAt(t *testing.T) {
+	ctx := context.Background()
+	database, repo := openUnmatchedRepo(t)
+	units := []UnmatchedUnitScan{scanUnit("/lib/A/old.epub"), scanUnit("/lib/A/new.epub")}
+	if _, err := repo.ReconcileScan(ctx, units, ReconcileScanOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/lib/A/old.epub", "/lib/A/new.epub"} {
+		if ok, _ := repo.ClaimState(ctx, unitByPath(t, database, repo, p).ID, UnmatchedStatePending, UnmatchedStateAdopting); !ok {
+			t.Fatal("claim failed")
+		}
+	}
+	if _, err := database.Exec(`UPDATE unmatched_units SET claimed_at = ? WHERE unit_path = '/lib/A/old.epub'`,
 		unitTime(time.Now().Add(-time.Hour))); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repo.ReconcileScan(ctx, units, ReconcileScanOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if got := unitByPath(t, database, repo, "/lib/A/0000.epub"); got.State != UnmatchedStatePending {
-		t.Fatalf("stale claim = %q, want released to pending", got.State)
+	stale, err := repo.StaleClaims(ctx, time.Now().Add(-UnmatchedClaimTimeout))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stale) != 1 || stale[0].UnitPath != "/lib/A/old.epub" {
+		t.Fatalf("stale claims = %+v, want only the hour old claim", stale)
+	}
+	if ok, err := repo.ResetToPending(ctx, stale[0].ID, UnmatchedStateAdopting); err != nil || !ok {
+		t.Fatalf("reset: %v %v", ok, err)
+	}
+	if got := unitByPath(t, database, repo, "/lib/A/old.epub"); got.State != UnmatchedStatePending || got.ClaimedAt != nil {
+		t.Fatalf("reset row = %+v", got)
 	}
 }
 

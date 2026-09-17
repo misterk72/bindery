@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -19,13 +20,17 @@ import (
 // match are grouped into books and stored as unmatched_units rows, where an
 // admin can adopt, ignore or leave them (see internal/api/adoption.go).
 
-const (
+// Scan bounds. Variables so a test can reach them without 50,000 files.
+var (
 	// maxUnmatchedFiles bounds how many unmatched files one scan groups. The
 	// old blob list stopped at 1000 files, which a single large audiobook
 	// could fill on its own (#2547).
 	maxUnmatchedFiles = 50000
 	// maxUnmatchedUnits bounds how many rows one scan stores.
 	maxUnmatchedUnits = 20000
+)
+
+const (
 	// candidateThreshold is the lowest title similarity offered as a
 	// suggestion. The reconcile itself needs 0.85; below that a person decides.
 	candidateThreshold = 0.60
@@ -105,24 +110,70 @@ func scanRootFor(path string, roots []string) string {
 	return best
 }
 
+// discSetNameRe is the disc folder names library adoption treats as parts of
+// one book: CD 1, Disc 2, Disk 3, or a bare one or two digit number. It is
+// narrower than IsDiscFolderName, which also accepts Book, Part, Vol and
+// Chapter: in a library those name separate books of a series as often as
+// discs ("Mistborn/Book 1"), and merging separate books into one row would
+// adopt them all as one.
+var discSetNameRe = regexp.MustCompile(`(?i)^(cd|dis[ck])\s*[._-]?\s*\d+$|^\d{1,2}$`)
+
+// discSetChecker answers, once per folder, whether a folder is one multi disc
+// audiobook: the folder import walker's rule (AllDiscFolders over every
+// subfolder), with the narrower names above, and never for a library root or
+// a folder directly under one, which is an author folder.
+func discSetChecker(roots []string) func(folder string) bool {
+	cache := make(map[string]bool)
+	return func(folder string) bool {
+		if v, ok := cache[folder]; ok {
+			return v
+		}
+		result := false
+		parent := filepath.Dir(folder)
+		underRoot := false
+		for _, r := range roots {
+			if r != "" && (filepath.Clean(r) == parent || filepath.Clean(r) == folder) {
+				underRoot = true
+			}
+		}
+		if !underRoot && scanRootFor(folder, roots) != "" {
+			if entries, err := os.ReadDir(folder); err == nil {
+				var subdirs []string
+				names := true
+				for _, e := range entries {
+					if !e.IsDir() {
+						continue
+					}
+					subdirs = append(subdirs, filepath.Join(folder, e.Name()))
+					names = names && discSetNameRe.MatchString(e.Name())
+				}
+				result = names && AllDiscFolders(subdirs)
+			}
+		}
+		cache[folder] = result
+		return result
+	}
+}
+
 // unitKeyFor decides which unit a file belongs to (#2547). The unit is a book,
 // not a file:
 //
 //   - audio groups by its folder, so 193 tracks are one row;
-//   - audio in a disc folder (CD1, Disc 2) groups by the folder above it;
+//   - audio in a disc folder groups by the folder above it, when that folder
+//     is a disc set (discSetChecker);
 //   - loose audio directly in a library root has no book folder, so each file
 //     stands alone, as in the folder import scan;
 //   - ebooks group by folder and file stem, so Title.epub and Title.mobi are
 //     one book in two formats.
 //
 // It returns the grouping key, and for a folder unit the folder path.
-func unitKeyFor(f unmatchedScanFile, root string) (key, folder string) {
+func unitKeyFor(f unmatchedScanFile, root string, isDiscSet func(string) bool) (key, folder string) {
 	parent := filepath.Dir(f.path)
 	if f.format == models.MediaTypeAudiobook {
 		if parent == root {
 			return "file\x00" + f.path, ""
 		}
-		if IsDiscFolderName(filepath.Base(parent)) && filepath.Dir(parent) != root && pathUnderDir(filepath.Dir(parent), root) {
+		if discSetNameRe.MatchString(filepath.Base(parent)) && isDiscSet(filepath.Dir(parent)) {
 			parent = filepath.Dir(parent)
 		}
 		return "folder\x00" + parent, parent
@@ -143,9 +194,10 @@ func groupUnmatched(files []unmatchedScanFile, roots []string) (groups []unmatch
 	}
 	byKey := make(map[string]*acc)
 	var keys []string
+	isDiscSet := discSetChecker(roots)
 	for _, f := range files {
 		root := scanRootFor(f.path, roots)
-		key, folder := unitKeyFor(f, root)
+		key, folder := unitKeyFor(f, root, isDiscSet)
 		a := byKey[key]
 		if a == nil {
 			a = &acc{folder: folder, root: root}
@@ -326,7 +378,7 @@ type unitCounts struct {
 
 // recordUnmatchedUnits groups a finished scan's unmatched files and stores
 // them. candidatesFor ranks suggestions for one unit's representative parse.
-func (s *Scanner) recordUnmatchedUnits(ctx context.Context, c *unmatchedCollector, roots []string, startedAt time.Time,
+func (s *Scanner) recordUnmatchedUnits(ctx context.Context, c *unmatchedCollector, roots, rootsWithFiles []string, startedAt time.Time,
 	candidatesFor func(title, author, layoutAuthor string) []db.UnmatchedCandidate) unitCounts {
 	if s.unmatchedUnits == nil {
 		return unitCounts{}
@@ -338,9 +390,12 @@ func (s *Scanner) recordUnmatchedUnits(ctx context.Context, c *unmatchedCollecto
 		units[i].Candidates = candidatesFor(g.rep.title, g.rep.author, g.rep.layoutAuthor)
 	}
 	truncated := c.truncated || unitsTruncated
+	// A truncated scan did not see every unit, so it removes and purges
+	// nothing: a unit beyond the cap is unlisted, not gone.
 	res, err := s.unmatchedUnits.ReconcileScan(ctx, units, db.ReconcileScanOptions{
-		StartedAt: startedAt,
-		SkipPurge: truncated,
+		StartedAt:      startedAt,
+		SkipDeletion:   truncated,
+		RootsWithFiles: rootsWithFiles,
 	})
 	if err != nil {
 		slog.Warn("library scan: failed to store unmatched units", "error", err)
@@ -363,16 +418,4 @@ func (s *Scanner) unmatchedUnitCounts(ctx context.Context, truncated bool) unitC
 		return unitCounts{truncated: truncated}
 	}
 	return unitCounts{pending: sum.Pending, ignored: sum.Ignored, truncated: truncated}
-}
-
-// audioTrackedByFolder reports whether an audio file sits in a folder that is
-// already tracked: its own folder, or, for a disc folder, the book folder
-// above it. Adoption registers a disc set by its book folder, so without the
-// second case the next scan would list every disc's tracks again.
-func audioTrackedByFolder(trackedPaths map[string]bool, cleanPath string) bool {
-	parent := filepath.Dir(cleanPath)
-	if trackedPaths[parent] {
-		return true
-	}
-	return IsDiscFolderName(filepath.Base(parent)) && trackedPaths[filepath.Dir(parent)]
 }

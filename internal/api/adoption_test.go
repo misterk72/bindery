@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +31,7 @@ type adoptionFixture struct {
 	books   *db.BookRepo
 	authors *db.AuthorRepo
 	lib     string
+	db      *sql.DB
 }
 
 // newAdoptionFixture wires the handler over an in memory database, a real
@@ -62,7 +64,7 @@ func newAdoptionFixture(t *testing.T, provider metadata.Provider) adoptionFixtur
 	r.Post("/library/unmatched/{id}/undo", h.Undo)
 	r.Post("/library/unmatched/{id}/ignore", h.Ignore)
 	r.Post("/library/unmatched/{id}/unignore", h.Unignore)
-	return adoptionFixture{h: h, router: r, units: units, books: books, authors: authors, lib: lib}
+	return adoptionFixture{h: h, router: r, units: units, books: books, authors: authors, lib: lib, db: database}
 }
 
 func (f adoptionFixture) write(t *testing.T, rel string) string {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -44,8 +45,12 @@ type adoptionUnitStore interface {
 	Get(ctx context.Context, id int64) (*db.UnmatchedUnit, error)
 	BookRefs(ctx context.Context, ids []int64) (map[int64]db.UnmatchedBookRef, error)
 	ClaimState(ctx context.Context, id int64, from, to string) (bool, error)
+	RecordAdoptionProgress(ctx context.Context, id int64, rec db.AdoptionRecord) (bool, error)
 	CompleteAdoption(ctx context.Context, id int64, rec db.AdoptionRecord) (bool, error)
 	CompleteUndo(ctx context.Context, id int64) (bool, error)
+	ResetToPending(ctx context.Context, id int64, from string) (bool, error)
+	StaleClaims(ctx context.Context, before time.Time) ([]db.UnmatchedUnit, error)
+	BookFingerprint(ctx context.Context, bookID int64) (string, error)
 	IgnorePending(ctx context.Context, ids []int64, authorFolder string) (int64, error)
 	BookReferencedElsewhere(ctx context.Context, bookID, exceptID int64) (bool, error)
 	AuthorReferencedElsewhere(ctx context.Context, authorID, exceptID int64) (bool, error)
@@ -111,6 +116,9 @@ type adoptionItem struct {
 	Members       []string   `json:"members"`
 	FirstSeenAt   time.Time  `json:"firstSeenAt"`
 	ResolvedAt    *time.Time `json:"resolvedAt,omitempty"`
+	// Message explains an outcome that is not the obvious one, such as Undo
+	// keeping a book that has been used since it was added.
+	Message string `json:"message,omitempty"`
 }
 
 // adoptionScanStatus is what the page says about the last and current scan.
@@ -143,6 +151,11 @@ type adoptionSummaryResponse struct {
 // are hydrated in one query.
 func (h *AdoptionHandler) List(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	// Release rows a request died holding, reversing what it did, so they do
+	// not sit invisible. Cheap: an indexed state lookup that is usually empty.
+	if _, err := h.RecoverStaleClaims(context.WithoutCancel(ctx), db.UnmatchedClaimTimeout); err != nil {
+		slog.Warn("adoption: stale claim recovery failed", "error", err)
+	}
 	qv := r.URL.Query()
 	limit, _ := strconv.Atoi(qv.Get("limit"))
 	offset, _ := strconv.Atoi(qv.Get("offset"))
@@ -301,6 +314,10 @@ func unitIDParam(w http.ResponseWriter, r *http.Request) (int64, bool) {
 
 // writeUnit answers with one row, freshly read and hydrated.
 func (h *AdoptionHandler) writeUnit(w http.ResponseWriter, r *http.Request, id int64) {
+	h.writeUnitWithMessage(w, r, id, "")
+}
+
+func (h *AdoptionHandler) writeUnitWithMessage(w http.ResponseWriter, r *http.Request, id int64, message string) {
 	u, err := h.units.Get(r.Context(), id)
 	if err != nil {
 		writeServerError(w, r, err)
@@ -315,6 +332,7 @@ func (h *AdoptionHandler) writeUnit(w http.ResponseWriter, r *http.Request, id i
 		writeServerError(w, r, err)
 		return
 	}
+	items[0].Message = message
 	writeJSON(w, http.StatusOK, items[0])
 }
 

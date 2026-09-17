@@ -42,23 +42,6 @@ func TestGroupUnmatched_Table(t *testing.T) {
 			want: []want{{"/lib/Weir/Hail Mary", "folder", "audiobook", "Weir", "Weir/Hail Mary", "Project Hail Mary", 3}},
 		},
 		{
-			name: "disc folders group under the book folder",
-			files: []unmatchedScanFile{
-				audioFile("/lib/Weir/Artemis/CD1/01.mp3", "Artemis"),
-				audioFile("/lib/Weir/Artemis/Disc 2/01.mp3", "Artemis"),
-			},
-			want: []want{{"/lib/Weir/Artemis", "folder", "audiobook", "Weir", "Weir/Artemis", "Artemis", 2}},
-		},
-		{
-			name: "a disc set is named after its book folder, not a disc",
-			files: []unmatchedScanFile{
-				audioFile("/lib/Sanderson/Rhythm of War/CD1/01.mp3", "CD 1"),
-				audioFile("/lib/Sanderson/Rhythm of War/CD2/01.mp3", "CD 2"),
-				audioFile("/lib/Sanderson/Rhythm of War/CD2/02.mp3", "CD 2"),
-			},
-			want: []want{{"/lib/Sanderson/Rhythm of War", "folder", "audiobook", "Sanderson", "Sanderson/Rhythm of War", "Rhythm of War", 3}},
-		},
-		{
 			name: "a disc folder straight under the root is its own unit",
 			files: []unmatchedScanFile{
 				audioFile("/lib/CD1/01.mp3", "Something"),
@@ -317,22 +300,6 @@ func TestScanLibrary_MakesNoOutboundCalls(t *testing.T) {
 	}
 	if n := len(readUnmatchedFiles(t, ctx, s)); n != 2 {
 		t.Fatalf("units = %d, want 2", n)
-	}
-}
-
-// TestAudioTrackedByFolder_DiscSet: adoption registers a disc set by its book
-// folder, and the next scan must count every disc's tracks as tracked.
-func TestAudioTrackedByFolder_DiscSet(t *testing.T) {
-	tracked := map[string]bool{filepath.Clean("/lib/A/Book"): true}
-	for _, p := range []string{"/lib/A/Book/01.mp3", "/lib/A/Book/CD1/01.mp3", "/lib/A/Book/Disc 2/05.mp3"} {
-		if !audioTrackedByFolder(tracked, filepath.Clean(p)) {
-			t.Errorf("%s not tracked", p)
-		}
-	}
-	for _, p := range []string{"/lib/A/Other/01.mp3", "/lib/A/Book/Extras/01.mp3"} {
-		if audioTrackedByFolder(tracked, filepath.Clean(p)) {
-			t.Errorf("%s tracked, want untracked", p)
-		}
 	}
 }
 

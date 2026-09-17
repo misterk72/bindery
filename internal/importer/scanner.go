@@ -2880,10 +2880,20 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 	}
 
 	foundFiles := walkDir(s.libraryDir)
+	// rootsWithFiles tells the unmatched unit purge which roots this scan
+	// actually saw files under, so an unmounted root keeps its ignores.
+	var rootsWithFiles []string
+	if len(foundFiles) > 0 {
+		rootsWithFiles = append(rootsWithFiles, s.libraryDir)
+	}
 
 	// Also scan the audiobook directory when it is configured separately.
 	if s.audiobookDir != "" && s.audiobookDir != s.libraryDir {
-		foundFiles = append(foundFiles, walkDir(s.audiobookDir)...)
+		audioFiles := walkDir(s.audiobookDir)
+		if len(audioFiles) > 0 {
+			rootsWithFiles = append(rootsWithFiles, s.audiobookDir)
+		}
+		foundFiles = append(foundFiles, audioFiles...)
 	}
 
 	slog.Info("library scan found files", "paths", []string{s.libraryDir, s.audiobookDir}, "count", len(foundFiles))
@@ -3252,7 +3262,7 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 		// every epub sitting next to an attached audiobook from the scan
 		// (#1957) — the mirror image of the one-format-per-pass claim below.
 		if trackedPaths[cleanPath] ||
-			(detectedFmt == models.MediaTypeAudiobook && audioTrackedByFolder(trackedPaths, cleanPath)) {
+			(detectedFmt == models.MediaTypeAudiobook && trackedPaths[filepath.Clean(filepath.Dir(cleanPath))]) {
 			alreadyTracked++
 			continue
 		}
@@ -3493,7 +3503,7 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 
 	// Suggestions come from the catalogue already in memory, ranked once per
 	// unit rather than per file.
-	units := s.recordUnmatchedUnits(ctx, &unmatchedFiles, scanRoots, scanStartedAt,
+	units := s.recordUnmatchedUnits(ctx, &unmatchedFiles, scanRoots, rootsWithFiles, scanStartedAt,
 		func(title, author, layoutAuthor string) []db.UnmatchedCandidate {
 			authorSet, _ := resolveAuthors(author, layoutAuthor)
 			return rankCandidates(normalizeTitle(title), wantedBooks, booksByAuthor, authorSet)

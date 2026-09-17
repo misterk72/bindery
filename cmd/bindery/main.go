@@ -707,6 +707,12 @@ func main() {
 	unmatchedUnitRepo := db.NewUnmatchedUnitRepo(database)
 	importScanner.WithUnmatchedUnits(unmatchedUnitRepo)
 	adoptionHandler := api.NewAdoptionHandler(unmatchedUnitRepo, bookRepo, authorRepo, authorHandler, libraryRoots, importScanner, settingsRepo)
+	// Any claim present at startup belongs to a process that is gone.
+	if n, err := adoptionHandler.RecoverStaleClaims(ctxBoot, 0); err != nil {
+		slog.Warn("library adoption: could not recover abandoned claims", "error", err)
+	} else if n > 0 {
+		slog.Info("library adoption: recovered abandoned claims", "count", n)
+	}
 	fileHandler := api.NewFileHandler(bookRepo, cfg.LibraryDir, cfg.AudiobookDir).
 		WithRootFolders(rootFolderRepo)
 	historyHandler := api.NewHistoryHandler(historyRepo, blocklistRepo, bookRepo)
