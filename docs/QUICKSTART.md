@@ -196,7 +196,7 @@ Use **Test** to confirm the connection.
 
 ## 5. Add an author and grab a book
 
-Go to **Authors → Add Author**. Type a name and press Enter (results come from
+Go to **Library → Authors** and press **Add Author**. Type a name and press Enter (results come from
 OpenLibrary / Hardcover / DNB); the list shows the author followed by their
 books. Select the author row, choose a **Monitor mode** (default monitors all
 books), and add them. Adding an author **populates their catalogue** —

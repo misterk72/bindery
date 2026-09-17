@@ -32,7 +32,7 @@ If either requirement is missing, Bindery hides the enhanced controls and the en
 
 Use **Search series...** at the top of the Series page to filter your local series by title instead of using browser Find in a large collection. Matching ignores case and accents; clear the field to show all series again. This local search is available without enhanced Hardcover data.
 
-1. Open **Series**.
+1. Open **Library → Series**.
 2. Create a series manually, or open an existing series populated from your library metadata.
 3. Use **Add Book** to attach existing Bindery books and set their series positions.
 4. Use **Search** to find a matching Hardcover series.

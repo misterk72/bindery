@@ -136,7 +136,12 @@ them — it reads existing files with a fixed parser that prefers an
 `{Author}/{Book Title}/` folder structure and reads a bare `X - Y` filename as
 `Title - Author` (the *opposite* of Readarr's default order). Author folders
 settle the order. The Library Scan takes the author from the author folder,
-except for an audiobook whose tags name an author: there the tag wins. A file
+except for an audiobook whose tags name an author: there the tag wins. An
+ebook's **title** comes from the file's own name, with the book folder as the
+fallback, so a series or box set folder does not retitle the books inside it;
+a leading position number is stripped from a folder title, so `01 - The Eye of
+the World (1990)` matches as well. An audiobook keeps the folder as the book,
+because its files are tracks rather than books. A file
 in a folder named after the first part of its name can also be read the other
 way round, as author then title, and that reading is kept only if it matches a
 book by an author in your library. Bulk folder import tries it for the folder
@@ -233,7 +238,10 @@ Settings → General turns grabbing off entirely if you prefer to grab by hand
 from the Wanted page. It covers every path that can start a download: the
 scheduled sweep, the searches an author add fires, a series fill, adding a
 single book, adding from recommendations, a bulk **Search** action, a book
-flipping to wanted, and the re-search after a stalled download. Books are
+flipping to wanted, and the re-search after a stalled download. A bulk
+**Search** refuses while the switch is off and says which setting to change,
+keeping your selection; a single book's **Search Indexers** still runs, which
+is how you search and grab by hand with grabbing off. Books are
 still created and still marked wanted, so the Wanted page is complete when
 you come back to it. Searches also fire when an author is added
 ("Search for books on add") and when a book flips to wanted.
@@ -319,6 +327,12 @@ correct one from the author's own edit dialog.
 After import, Bindery fans out to whatever integrations you enabled: Calibre,
 a CWA ingest folder, Grimmory's BookDrop, an Audiobookshelf library scan,
 webhooks.
+
+If the library app downstream reads sidecar metadata, turn on **Write a
+metadata.opf sidecar** in Settings → General (off by default). Bindery then
+writes a Calibre style `metadata.opf` next to each imported ebook and
+audiobook with its own title, author, series and identifiers, and refreshes it
+on Reorganize. The book file itself is never modified.
 
 **Queue and History.** The Queue page shows live downloads and, importantly,
 the recovery actions: **Retry import** (after fixing a path remap), **Match to

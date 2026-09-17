@@ -111,6 +111,11 @@ polls it after **Refresh metadata** to show the result once the sync is done,
 and `POST /api/v1/author/{id}/refresh` answers **409 Conflict** while it is set
 instead of starting a second sync (#2601).
 
+`POST /api/v1/author` accepts an optional `monitorNewItems` (#2541), the same
+field `PUT /api/v1/author/{id}` takes: `all` (the default) lets a refresh add
+newly discovered books, `none` keeps the catalogue as it was added. Any other
+value is rejected with 400.
+
 `POST /api/v1/author` responses include a `providerMismatch` object when the
 linked record routes its catalogue syncs to a provider other than the
 configured `metadata.primary_provider` (#2237), so a fallback pick is visible
@@ -184,6 +189,20 @@ POST   /api/v1/book/{id}/search                   manual indexer search
 GET    /api/v1/book/{id}/file                     download the imported file (auth required; `?path=…` serves one specific tracked file, for a book holding several of a format; `?format=ebook|audiobook` picks the format on dual-format books; `?path=` wins when both are sent)
 ```
 
+### Series
+
+```
+GET    /api/v1/series                             list series with their linked books
+GET    /api/v1/series/{id}                        one series
+POST   /api/v1/series/{id}/fill                   add the series' missing books as wanted (admin)
+PATCH  /api/v1/series/{id}                        monitor / unmonitor (admin)
+```
+
+`GET /series` returns the bare array it always has. Pagination is opt-in
+(#2345): pass `limit` and/or `offset` and you get an `{items, total, limit,
+offset}` envelope instead, which is what a large catalogue wants, since the
+unpaged response carries every series with every linked book.
+
 ### Search & discovery
 
 ```
@@ -239,6 +258,14 @@ rolling 24 hours (#2312). Omitted, `null` and `0` all mean no cap. A negative
 value is rejected with 400. `GET /indexer` and `GET /indexer/{id}` also return
 `dailyQueriesUsed` on capped indexers, which is a display figure summed from the
 stored hourly buckets and lags the live tally by up to one flush interval.
+
+#### Rate limit holds
+
+When Bindery is holding off on an indexer after a rate limit (#2640),
+`GET /indexer` and `GET /indexer/{id}` carry `cooldownUntil` (a timestamp) and
+`cooldownReason`. Both are response-only, are omitted when nothing is held, and
+are ignored if a client sends them. The hold lives in memory, so it is gone
+after a restart.
 
 #### Indexer and Prowlarr API keys are write-only
 

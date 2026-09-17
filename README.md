@@ -94,7 +94,7 @@ Clean-room Go rewrite, modern React UI, MIT-licensed, actively developed.
 
 | | **Bindery** | LazyLibrarian | Livrarr | Readarr |
 |---|---|---|---|---|
-| **Status** | Active (v1.22.x) | Active (community fork) | Alpha (0.1.x) | Archived (June 2025) |
+| **Status** | Active (v1.37.x) | Active (community fork) | Alpha (0.1.x) | Archived (June 2025) |
 | **Stack** | Go, single binary | Python | Rust | C# / .NET |
 | **Book metadata** | 6 independent sources, no scraping | Goodreads + fallbacks | 4 sources, no scraping | Dead backend |
 | **Readarr `.db` import** | **Yes** | No | No | — |
@@ -108,7 +108,7 @@ Clean-room Go rewrite, modern React UI, MIT-licensed, actively developed.
 **Pick Livrarr** if you want the same single-binary spirit and don't need the maturity, the Readarr import, Pi-class ARM, or a Helm chart yet.
 **Calibre-Web / Audiobookshelf** solve a different problem — *serving* an already-curated library, not automating acquisition — and pair well downstream of Bindery.
 
-<sub>Competitor details verified June 2026 (Readarr archived 2025-06-27; LazyLibrarian active community fork; [Livrarr](https://github.com/kkodecs/livrarr) v0.1.0-alpha5). Spotted something out of date? Open an issue.</sub>
+<sub>Competitor details verified June 2026 (Readarr archived 2025-06-27; LazyLibrarian active community fork; [Livrarr](https://github.com/kkodecs/livrarr) v0.1.0-alpha5). Livrarr rechecked September 2026: v0.1.0-alpha6. Spotted something out of date? Open an issue.</sub>
 
 ## Features
 
@@ -121,6 +121,7 @@ Clean-room Go rewrite, modern React UI, MIT-licensed, actively developed.
 - **Library adoption**: whatever the scan could not match waits on the Import page as one row per book (an audiobook folder or disc set is one row), with suggested matches (one click Confirm only for a strong match), one "Add author" decision per missing author, and Undo. Files are registered where they are, never moved.
 - Author aliases (`RR Haywood` / `R.R. Haywood` / `R R Haywood` merge into one canonical row), and metadata re-bind to correct a wrong match without delete-and-re-add. On a book’s **File → Re-bind** dialog, search configured metadata providers and select an OpenLibrary work or Hardcover book, or enter an exact provider ID and press Enter. Results already in the library are marked and link to the existing book; records belonging to another library book cannot be selected. Each result’s **Links** menu opens its upstream page when available; OpenLibrary editions can be viewed but require a work ID for re-binding. Re-binding updates metadata and series without moving files; author mismatches require confirmation.
 - Explicit author-catalogue reconciliation with a selectable preview: remove chosen stale metadata-only Wanted rows after changing provider or metadata profile while always protecting imported books and every row with a tracked file.
+- Manual metadata editing with field locks: edit a book's title, description, genres, language or release date and the edit survives every refresh. **Fix match** reassigns a file that was attached to the wrong book. See [docs/Metadata-Editing-Wiki.md](docs/Metadata-Editing-Wiki.md).
 
 **Search & downloads**
 - Newznab + Torznab indexers queried in parallel, deduplicated, then composite-ranked by format quality, edition tags (RETAIL / UNABRIDGED / ABRIDGED), year match, grab count, size, and ISBN exact-match bonus.
@@ -129,11 +130,13 @@ Clean-room Go rewrite, modern React UI, MIT-licensed, actively developed.
 - **Diagnose** on each saved download client: one click checks the connection, the category, where ebook and audiobook grabs actually land, the path remap, whether Bindery can read that folder, and whether imports can hardlink into each library folder, then names the first thing to fix. No shell needed, which matters in the distroless image.
 - Auto-grab sweep every 12h, immediate search on add or `wanted` flip, plus interactive per-book search and "Search all wanted" per author. Global kill-switch pauses auto-grab without losing your monitored list.
 - Quality profiles covering every format release parsing recognises (EPUB, MOBI, AZW3, PDF, plus AZW, DJVU, CBR, CBZ, FB2, LIT, RTF, TXT and the audio containers M4B, M4A, FLAC, MP3, OGG), language filter, regex-based custom formats, delay profiles, blocklist (consulted on every search; one-click add from History), and failure visibility in Queue and History.
+- Indexer-friendly by default: an optional per-indexer **Daily query limit** with usage shown on the Indexers tab, a rate-limited indexer is left alone for longer each time it refuses (one hour, then three, six, twelve and a day) and its row says when searches resume, an indexer that has stopped working is flagged in Settings, and a per-indexer *freeleech only* policy holds ratio-costing releases for manual approval.
 
 **Import & organize**
 - Completed downloads matched by NZO ID and placed in the library with configurable naming. Modes: **Auto** (default — hardlink when possible, else copy; seeding-safe), **Move**, **Copy** (keep source for seeding), **Hardlink** (zero extra disk; same filesystem required), **External** (hand off to a sibling tool).
 - Naming tokens — `{Author}`, `{SortAuthor}`, `{Title}`, `{Year}`, `{Series}`, `{SeriesNumber}`, `{Genre}`, `{Lang}`, `{ext}` — collapse cleanly for non-series books, with conditional literals (`{Title}{ - Series}` emits the dash only when a series exists) and zero-pad widths (`{SeriesNumber:2}` → `02`).
 - Cross-filesystem-safe moves: atomic rename when possible, copy + verify + delete for NFS / separate volumes. Full grab / import / failure history per book.
+- The **Import** page is where files you already have come in, two ways: **In your library** is the adoption list described above, and **From a folder** points at a folder anywhere Bindery can read, matches what it finds and imports it into the library, creating a book from a metadata search when nothing in the catalogue fits.
 - Calibre integration in three modes: `calibredb` CLI hook on import, [Bindery Bridge plugin](https://github.com/vavallee/bindery-plugins) (cross-container), or direct read of an existing Calibre library's `metadata.db` as Bindery's catalogue.
 - **Audiobookshelf import** — pull an existing ABS server's book libraries in as Bindery's catalogue (metadata-first, dry-run, review queue for ambiguous matches, rollback), with an ABS library-scan trigger after every audiobook import. See [docs/ABS-Import-Wiki.md](docs/ABS-Import-Wiki.md).
 - **Grimmory push** (preview) — imported ebooks are sent to a self-hosted [Grimmory](https://grimmory.org) library via its BookDrop inbox, with a bulk **Push all** for existing files.
@@ -162,10 +165,13 @@ Cover images are fetched and cached server-side under `<dataDir>/image-cache/` (
 - **Multi-user mode** — per-user libraries, monitored authors, profiles, and downloads. Admin role manages indexers / download clients / users; standard users see only their own catalogue. Local, OIDC-provisioned, or forward-auth-mapped.
 - **Requests** (requester role). Give family and friends an account that can browse the library read only and ask for a book or an author, but cannot grab, download, delete or configure anything. Admins approve from a Requests queue with the usual add choices, and the added books belong to the person who asked. Requesters can follow each request to "available", and a webhook can announce new ones. See [docs/multi-user.md](docs/multi-user.md#requester).
 - **Webhook notifications** for grab / import / failure / new books found (pipe to Apprise, ntfy, Home Assistant, Discord, Slack via proxies). **On-demand SQLite backups.** **Persistent log viewer** in Settings → Logs with runtime DEBUG toggle.
+- **Download logs** from Settings → Logs as a text file for bug reports. **In-app update badge** when a newer release exists. `bindery db-check` and `bindery db-repair` report and repair orphaned database rows offline, for an instance that will not start ([details](docs/DEPLOYMENT.md)).
 - **Arr-compatible queue** at `GET /api/queue` for [Harpoon](https://github.com/harpoon-io/harpoon) and other *arr-aware tools — pagination, sort, live size, status, client, remote ID, protocol.
 
 **UI**
 - Modern React 19 + TypeScript + Tailwind CSS SPA with search-first author acquisition and deep-linkable routed `/book/:id` and `/author/:id` pages.
+- Five entries in the top bar: **Library** (Authors, Books, Series), **Activity** (Wanted, Queue, History, and Requests for an admin), **Import**, **Calendar** and **Discover**. A group opens on its first page and repeats the rest as tabs above the content, and every page keeps the address it always had.
+- Library search in the header over your authors, books and series, with a last row that hands a miss to a single **Add to library** dialog for authors and books (title, author, ISBN or ASIN).
 - Light / dark themes (respecting `prefers-color-scheme` first paint), grid / table view toggles, mobile-friendly responsive layout, hamburger nav, agenda-style mobile Calendar.
 - Full pagination, search, filter, and sort on every list page; preferences persist to `localStorage`.
 - Previous/Next navigation between authors on the author detail page, stepping through the list page you came from.
@@ -239,6 +245,9 @@ The full reference (path remapping, API-key seeding, telemetry, trusted-proxy, r
 | **Usenet clients** | SABnzbd, NZBGet |
 | **Torrent clients** | qBittorrent, Transmission, Deluge, rTorrent / ruTorrent (XML-RPC over HTTP or SCGI) |
 | **Indexers** | Newznab (NZBGeek, NZBFinder, NZBPlanet, DrunkenSlug, …), Torznab (Prowlarr, Jackett, direct endpoints), with per-indexer category overrides |
+| **Metadata sources** | OpenLibrary, Google Books, Hardcover, DNB, Audnex, Audible |
+| **Import lists** | Hardcover lists, synced on a configurable interval |
+| **Library tools** | Calibre (`calibredb`, Bindery Bridge plugin, `metadata.db` import), Audiobookshelf (import and scan trigger), Grimmory (preview), post-import drop folder for Calibre-Web-Automated and similar |
 | **Notifications** | Generic webhooks — pipe to Apprise / ntfy / Home Assistant / Slack / Discord |
 | **Authentication** | Local (argon2id), API key, OIDC (Google, GitHub via Dex, Authelia, Keycloak, …), forward-auth proxy |
 | **Reading apps** | OPDS 1.2 catalogue at `/opds/` (KOReader, Moon+ Reader, Aldiko, …) |
@@ -293,6 +302,7 @@ The full endpoint catalogue, authentication rules (API key, session cookie, loca
 | **Deployment** — Docker, Compose, k8s/Helm, binary, UID/GID, env vars, upgrades | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
 | **Architecture** — components, data flow, dependencies | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | **API** — REST endpoints, auth, integration patterns | [docs/API.md](docs/API.md) |
+| **Search and matching design** (contributors): how titles and author names are normalised and compared | [docs/search-design.md](docs/search-design.md) |
 | **Roadmap** — planned work and explicitly-out-of-scope items | [docs/ROADMAP.md](docs/ROADMAP.md) |
 | **Multi-user** — roles, user management, CSRF tokens | [docs/multi-user.md](docs/multi-user.md) |
 | **Upgrading to v1.0** — multi-user migration: backup, dry-run, rollback | [docs/upgrade-v1.md](docs/upgrade-v1.md) |
@@ -313,7 +323,7 @@ The full endpoint catalogue, authentication rules (API key, session cookie, loca
 
 ## Community
 
-- **Discord** — real-time help, setup questions, release chat: [discord.gg/RpuYYRM9cZ](https://discord.gg/RpuYYRM9cZ). The `#support` channel is the best place to ask; `#changelog` is updated on every release. The three read-only voice channels at the top of the server show live active-install count, latest release, and GitHub star count, refreshed from the telemetry API every 10 minutes.
+- **Discord** — real-time help, setup questions, release chat: [discord.gg/RpuYYRM9cZ](https://discord.gg/RpuYYRM9cZ). The `#support` channel is the best place to ask; `#releases` is updated on every release. The three read-only voice channels at the top of the server show live active-install count, latest release, and GitHub star count, refreshed from the telemetry API every 10 minutes.
 - **GitHub Issues** — bug reports and feature requests: [issues](https://github.com/vavallee/bindery/issues).
 - **GitHub Discussions** — open-ended design questions, show-and-tell, integration recipes: [discussions](https://github.com/vavallee/bindery/discussions).
 
