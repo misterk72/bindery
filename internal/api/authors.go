@@ -95,6 +95,10 @@ type AuthorHandler struct {
 	// manual Refresh can refuse to start a second one and the author page can
 	// tell when the one it started has finished (#2601).
 	runningSyncs authorSyncsRunning
+
+	// notif publishes bookAnnounced (#2236). Optional; see WithNotifier in
+	// author_discovery.go.
+	notif eventSender
 }
 
 func NewAuthorHandler(authors *db.AuthorRepo, aliases *db.AuthorAliasRepo, books *db.BookRepo, series *db.SeriesRepo, meta *metadata.Aggregator, settings *db.SettingsRepo, profiles *db.MetadataProfileRepo, searcher BookSearcher) *AuthorHandler {
@@ -1831,7 +1835,19 @@ func (h *AuthorHandler) authorAwaitsFirstCatalogue(ctx context.Context, author *
 
 // ctx is the background context the sync runs on: the jobs group's
 // shutdown-scoped one when the async path launched it, h.bgCtx() otherwise.
+//
+// The outcome is logged by runCatalogueSync; callers that need it (scheduled
+// discovery, #2236) call runCatalogueSync directly.
 func (h *AuthorHandler) fetchAuthorBooks(ctx context.Context, author *models.Author, opts catalogueSyncOptions) {
+	_, _ = h.runCatalogueSync(ctx, author, opts)
+}
+
+// runCatalogueSync is the catalogue sync behind fetchAuthorBooks. It returns
+// how many books the run created and, when the provider could not list the
+// author's works, that error, so scheduled discovery can tell a rate limit
+// from an ordinary run (#2236). Every other early exit returns a nil error:
+// those are decisions, not failures.
+func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Author, opts catalogueSyncOptions) (int, error) {
 	autoSearch, mediaType, discovery := opts.autoSearch, opts.mediaType, opts.discovery
 	// singleWork: the caller picked one specific book and the direct insert
 	// couldn't produce it. This run exists only to create that one row, so it
@@ -1882,11 +1898,11 @@ func (h *AuthorHandler) fetchAuthorBooks(ctx context.Context, author *models.Aut
 		if singleWork {
 			slog.Info("single-work fallback skipped: author is not linked to a metadata provider",
 				"author", author.Name, "foreignId", author.ForeignID)
-			return
+			return 0, nil
 		}
 		if err := h.relinkCalibreAuthor(ctx, author); err != nil {
 			slog.Info("calibre author not re-linked to metadata provider", "author", author.Name, "reason", err)
-			return
+			return 0, nil
 		}
 	}
 
@@ -1917,7 +1933,7 @@ func (h *AuthorHandler) fetchAuthorBooks(ctx context.Context, author *models.Aut
 	books, err := h.meta.GetAuthorWorksForAuthor(metaCtx, *author)
 	if err != nil {
 		slog.Error("failed to fetch books", "author", author.Name, "error", err)
-		return
+		return 0, err
 	}
 
 	// Single-work run (#1816): the caller asked for one specific book, so drop
@@ -2009,7 +2025,7 @@ func (h *AuthorHandler) fetchAuthorBooks(ctx context.Context, author *models.Aut
 		if current == nil {
 			slog.Info("author deleted while catalogue fetch was running; aborting sync",
 				"author", author.Name, "authorId", author.ID)
-			return
+			return 0, nil
 		}
 		// This re-read is also the last chance to correct a stale owner before
 		// the insert loop stamps it onto every new book. `author` is a
@@ -2094,6 +2110,10 @@ func (h *AuthorHandler) fetchAuthorBooks(ctx context.Context, author *models.Aut
 			"author", author.Name, "authorId", author.ID,
 			"monitored", author.Monitored, "monitorNewItems", models.NormalizeAuthorMonitorNewItems(author.MonitorNewItems))
 	}
+
+	// Whether the author had a catalogue before this run, for the bookAnnounced
+	// rule (#2236). Read before anything is created.
+	populatedBefore := h.catalogueWasPopulated(ctx, author, opts, len(allBooks))
 
 	normalizedAuthor := strings.ToLower(strings.TrimSpace(author.Name))
 	latestKeys := latestBookMonitorKeys(books, author.MonitorLatestCount, func(book models.Book) bool {
@@ -2264,9 +2284,12 @@ func (h *AuthorHandler) fetchAuthorBooks(ctx context.Context, author *models.Aut
 	// per-item call would have, so a transient failure never drops a book.
 	var editionsByForeignID map[string][]models.Edition
 	if needsEditionPreview && len(candidates) > 0 {
-		editionsByForeignID = make(map[string][]models.Edition, len(candidates))
+		// Works the author already has are exempt from both filters below, so
+		// their editions are not fetched (P1, #2236).
+		prefetch := h.editionPrefetchCandidates(ctx, author.ID, allBooks, candidates)
+		editionsByForeignID = make(map[string][]models.Edition, len(prefetch))
 		var mu sync.Mutex
-		concurrency.RunBounded(ctx, candidates, authorAutoSearchConcurrency, func(ctx context.Context, b models.Book) {
+		concurrency.RunBounded(ctx, prefetch, authorAutoSearchConcurrency, func(ctx context.Context, b models.Book) {
 			editions, err := h.meta.GetEditions(ctx, b.ForeignID)
 			if err != nil {
 				slog.Debug("edition lookup failed while checking MinPages/SkipMissingISBN; not enforcing for this work",
@@ -2589,7 +2612,7 @@ func (h *AuthorHandler) fetchAuthorBooks(ctx context.Context, author *models.Aut
 				if current, gerr := h.authors.GetByID(ctx, author.ID); gerr == nil && current == nil {
 					slog.Info("author deleted mid-sync; aborting catalogue sync",
 						"author", author.Name, "authorId", author.ID, "added", added)
-					return
+					return added, nil
 				}
 			}
 			slog.Warn("failed to create book", "title", b.Title, "error", err)
@@ -2649,8 +2672,10 @@ func (h *AuthorHandler) fetchAuthorBooks(ctx context.Context, author *models.Aut
 	if singleWork {
 		slog.Info("single-work catalogue fallback complete",
 			"author", author.Name, "foreignId", opts.onlyForeignID, "added", added)
-		return
+		return added, nil
 	}
+
+	h.announceDiscoveredBooks(ctx, author, opts, populatedBefore, createdBooks)
 
 	// Publish the run's accounting so the author page can say what happened to
 	// the works that never became books (#1889). Recorded for every sync, not
@@ -2705,9 +2730,10 @@ func (h *AuthorHandler) fetchAuthorBooks(ctx context.Context, author *models.Aut
 	if failed+skippedLang+skippedJunk+skippedMediaType+skippedPartBooks+skippedMissingDate+
 		skippedMinPages+skippedMissingISBN > 0 {
 		slog.Warn("author books synced", logArgs...)
-		return
+		return added, nil
 	}
 	slog.Info("author books synced", logArgs...)
+	return added, nil
 }
 
 // keepWorkWithForeignID narrows a provider works list to the single work the

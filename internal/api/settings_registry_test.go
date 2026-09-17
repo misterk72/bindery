@@ -377,6 +377,14 @@ func TestValidateSettingValue_KnownKeysUnchanged(t *testing.T) {
 		{"hardcover sync interval rejects under an hour", SettingHardcoverSyncInterval, "5m", true},
 		{"hardcover sync interval rejects over a week", SettingHardcoverSyncInterval, "1000h", true},
 
+		{"discovery interval accepts off", SettingAuthorDiscoveryInterval, "off", false},
+		{"discovery interval accepts empty", SettingAuthorDiscoveryInterval, "", false},
+		{"discovery interval accepts daily", SettingAuthorDiscoveryInterval, "24h", false},
+		{"discovery interval accepts monthly", SettingAuthorDiscoveryInterval, "720h", false},
+		{"discovery interval rejects gibberish", SettingAuthorDiscoveryInterval, "weekly", true},
+		{"discovery interval rejects under a day", SettingAuthorDiscoveryInterval, "6h", true},
+		{"discovery interval rejects over a month", SettingAuthorDiscoveryInterval, "1000h", true},
+
 		// Keys with a descriptor but no per key rule: they were accepted
 		// before and still are, now on the strength of being registered
 		// rather than of falling off the end of the switch.
@@ -415,6 +423,7 @@ func TestValidateSettingValue_KnownKeysUnchanged(t *testing.T) {
 var webSettingKeys = []string{
 	"author.default_monitor_latest_count",
 	"author.default_monitor_mode",
+	"authors.discovery.interval",
 	"autoGrab.enabled",
 	"calibre.binary_path",
 	"calibre.library_import_enabled",

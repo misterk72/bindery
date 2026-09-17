@@ -163,6 +163,13 @@ const SettingSearchInterval = "search.interval"
 // literal the job used before the setting existed). Takes effect on restart.
 const SettingHardcoverSyncInterval = "hardcover.sync_interval"
 
+// SettingAuthorDiscoveryInterval is the KV key for how often each monitored
+// author's catalogue is checked for new books by the scheduled discovery job
+// (#2236). Value is "off" or a Go duration string bounded to [24h, 720h].
+// Empty or unset means the default, 168h (weekly). Read on every hourly tick,
+// so a change applies without a restart.
+const SettingAuthorDiscoveryInterval = "authors.discovery.interval"
+
 // SettingImportAudiobookFlattenMultiDisc (#886) is "true" to flatten multi-disc
 // audiobook downloads into a single "Part 001.ext", … sequence on import, or
 // unset/"false" (default) to preserve the download's disc-folder layout.
@@ -854,6 +861,23 @@ func validateSettingValue(key, value string) error {
 		}
 		if d > 168*time.Hour {
 			return fmt.Errorf("hardcover.sync_interval %q exceeds the maximum of 168h (7 days)", value)
+		}
+	case SettingAuthorDiscoveryInterval:
+		// Empty = unset (weekly default). "off" stops scheduled discovery.
+		// Below a day every author would be re-checked faster than a
+		// provider's cache turns over, above 30 days it stops being a cadence.
+		if value == "" || value == "off" {
+			return nil
+		}
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("authors.discovery.interval %q is not off or a valid duration (e.g. 24h, 168h, 720h)", value)
+		}
+		if d < 24*time.Hour {
+			return fmt.Errorf("authors.discovery.interval %q is too short, the minimum is 24h", value)
+		}
+		if d > 720*time.Hour {
+			return fmt.Errorf("authors.discovery.interval %q exceeds the maximum of 720h (30 days)", value)
 		}
 	}
 	return nil

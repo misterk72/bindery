@@ -53,7 +53,7 @@ The `internal/` tree is organised by domain, not by layer:
 | `decision` | Quality profiles, language filter, custom formats, delay profiles, blocklist consultation. |
 | `downloader` | SABnzbd, NZBGet, qBittorrent, Transmission, Deluge, rTorrent clients (queue/history polling, submission, deletion). |
 | `importer` | NZO-ID matching, Move/Copy/Hardlink semantics, naming-token expansion, cross-FS-safe moves. |
-| `scheduler` | Cron loops for auto-grab, refresh, recommendations, cleanup. |
+| `scheduler` | Cron loops for auto-grab, refresh, release discovery, recommendations, cleanup. See [Scheduled jobs](#scheduled-jobs). |
 | `recommender` | Discover engine — taste profile, candidate filters, multi-source signals. |
 | `seriesmatch` | Four-tier reconciliation (ASIN → title+author → series+position → fuzzy). |
 | `textutil` | The character-level folds every string comparison shares, and the reasons they differ — see [search-design.md](search-design.md). |
@@ -96,6 +96,25 @@ If audiobooks live on a different volume, set `BINDERY_AUDIOBOOK_DIR` (and optio
 - Background workers (auto-grab sweep, recommendations refresh, indexer probes, ABS import) are scheduled by the `scheduler` package as long-lived goroutines guarded by context cancellation on shutdown.
 - SQLite runs in WAL mode, but the connection pool is pinned to a single connection (`SetMaxOpenConns(1)`), so **reads serialize alongside writes** rather than running concurrently. WAL's concurrent-reader property is not currently being used. This is sufficient for the workload in practice, and [#2147](https://github.com/vavallee/bindery/issues/2147) tracks lifting it, including the reason it is not a one-line change: migrations run a connection-scoped `PRAGMA foreign_keys=OFF`, which a pool would break.
 - All outbound HTTP calls go through a shared client with timeouts, SSRF guards, and User-Agent stamping (`bindery/<version>`).
+
+## Scheduled jobs
+
+Registered by `internal/scheduler`. Every job runs under `SkipIfStillRunning`, so a run that overruns its interval skips the next one rather than queueing behind it, and each run is recorded through `metrics.ObserveSchedulerRun`.
+
+| Job | Interval | What it does |
+|-----|----------|--------------|
+| `check-downloads` | 15s | Polls download clients and imports finished jobs. |
+| `check-stalled` | 5m | Fails, blocklists and re-searches downloads stuck past the stall timeout. |
+| `download-client-health` | 15m | Re-probes download client reachability and paths. |
+| `search-wanted` | `search.interval`, default 12h, read at startup | Searches indexers for wanted books and auto-grabs when enabled. |
+| `refresh-metadata` | 24h | Refreshes four profile fields on monitored authors. Creates no books. |
+| `author-discovery` | hourly tick, cadence from `authors.discovery.interval` (default 168h, `off` disables), read every tick | Runs the author catalogue sync for a batch of monitored authors whose `last_discovery_at` is older than the interval, never checked first. Batch is `ceil(eligible / hours in interval)`, clamped to 1..25, with 3 seconds between authors. Skips the tick while Refresh all runs, skips an author whose sync is already running, stops the pass on a Hardcover rate limit without stamping. Never grabs; new monitored books reach indexers through `search-wanted`. Publishes `bookAnnounced` ([#2236](https://github.com/vavallee/bindery/issues/2236)). |
+| `scan-library` | 6h | Reconciles files under the library roots against the catalogue. |
+| `calibre-sync` | 24h | Imports from a Calibre library, when configured. |
+| `recommendations` | 24h | Rebuilds Discover recommendations, when enabled. |
+| `hardcover-sync` | `hardcover.sync_interval`, default 24h, read at startup | Syncs Hardcover import lists, when configured. |
+| `telemetry-ping` | 24h | Anonymous install ping, unless opted out. |
+| `log-trim` | 24h | Trims the persistent log store to its retention. |
 
 ## Why these choices
 

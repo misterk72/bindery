@@ -391,7 +391,7 @@ without a custom template:
 
 | Field | Meaning |
 |-------|---------|
-| `eventType` | `grabbed` \| `bookImported` \| `upgrade` \| `downloadFailed` \| `health` \| `test` — present on **every** event |
+| `eventType` | `grabbed` \| `bookImported` \| `upgrade` \| `downloadFailed` \| `health` \| `bookAnnounced` \| `test` — present on **every** event |
 | `title` | what happened, e.g. `Release Grabbed`, `Book Imported`, `Download Failed` |
 | `message` | the subject, e.g. `The Way of Kings · Brandon Sanderson` |
 | `body` | alias of `message` (Apprise requires a `body` field) |
@@ -399,6 +399,31 @@ without a custom template:
 | `format` | `ebook` \| `audiobook` on `bookImported` and `upgrade`. **Omitted for Apprise targets only** (a URL with a `/notify` path segment) — Apprise reserves `format` for the body markup and rejects anything but `text`/`html`/`markdown` with HTTP 400. Every other consumer still receives it |
 | `mediaFormat` | the same value as `format`, always present. Use this one if your relay is Apprise, or if you want a key that is never stripped |
 | event extras | `author`, `size`, `path`, `status`, `clientId` when relevant |
+
+Which events a webhook receives is set per notification by `onGrab`,
+`onImport`, `onUpgrade`, `onFailure`, `onHealth` and `onBookAnnounced`.
+`onBookAnnounced` defaults to `false`, and migration 087 set it to `false` on
+every notification that existed before it, so an upgrade sends nothing new
+until an admin turns it on.
+
+**`bookAnnounced`** is sent once per author run when a refresh (manual, bulk,
+Refresh all, relink) or scheduled discovery adds books to an author whose
+catalogue was already populated. The first population of a new author and the
+single book add never send it.
+
+| Field | Meaning |
+|-------|---------|
+| `title` | `New Book Found` or `New Books Found` |
+| `message` | `Author: Title one, Title two and N more` |
+| `author`, `authorId` | the author the books were added to |
+| `count` | how many books the run added |
+| `books` | up to 10 entries of `{id, title, foreignId, monitored, releaseDate}`; `releaseDate` is `YYYY-MM-DD` and omitted when unknown; `monitored` says whether the book will be searched for |
+| `more` | how many added books are not listed |
+
+Titles, the author name and foreign ids come from the metadata provider, which
+for OpenLibrary is publicly editable. They are stripped of control and
+bidirectional override characters, collapsed to one line, and capped (200
+characters for titles and names, 100 for ids) before they are sent.
 
 **ntfy:** set the notification's **topic** field and point the URL at the ntfy
 server root (e.g. `https://ntfy.sh`). Bindery then POSTs the JSON body with a
@@ -445,6 +470,11 @@ carries no stored values, only the shape of each key:
 
 A key marked `inert` is kept so existing rows and existing clients keep working.
 Do not offer it as a control: nothing will happen.
+
+`authors.discovery.interval` is `off` or a duration from `24h` to `720h`
+(default `168h`). It sets how often each monitored author is checked for new
+books by the scheduled discovery job, and it is read on every hourly tick, so
+`restartRequired` is `false`.
 
 ### Auth and users (admin)
 

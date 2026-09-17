@@ -26,6 +26,11 @@ const (
 	EventDownloadFailed = "downloadFailed"
 	EventHealth         = "health"
 	EventUpgrade        = "upgrade"
+	// EventBookAnnounced fires once per author run when a refresh or the
+	// scheduled discovery job adds books to an author whose catalogue was
+	// already populated (#2236). The payload lists the books; the rule and
+	// the payload shape live in internal/api/author_discovery.go.
+	EventBookAnnounced = "bookAnnounced"
 )
 
 // normalizeEventPayload gives every event a consistent, human-readable shape so
@@ -98,6 +103,22 @@ func normalizeEventPayload(eventType string, payload map[string]interface{}) map
 		}
 		if body = msg; body == "" {
 			body = status
+		}
+	case EventBookAnnounced:
+		// The api package sends the author's name and the joined titles as
+		// message, both already capped and stripped of control characters,
+		// because provider text reaches this payload unreviewed.
+		title = "New Books Found"
+		if count, ok := payload["count"].(int); ok && count == 1 {
+			title = "New Book Found"
+		}
+		switch {
+		case author != "" && msg != "":
+			body = author + ": " + msg
+		case author != "":
+			body = author
+		default:
+			body = msg
 		}
 	case "test":
 		title = "Bindery Test"
@@ -276,6 +297,8 @@ func (n *Notifier) matchesEvent(notif *models.Notification, eventType string) bo
 		return notif.OnHealth
 	case EventUpgrade:
 		return notif.OnUpgrade
+	case EventBookAnnounced:
+		return notif.OnBookAnnounced
 	}
 	return false
 }

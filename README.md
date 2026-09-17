@@ -114,6 +114,7 @@ Clean-room Go rewrite, modern React UI, MIT-licensed, actively developed.
 
 **Library management**
 - Author monitoring via OpenLibrary's author-works endpoint, configurable author monitor modes for all/future/latest/none defaults, per-book monitor toggles, and a `wanted → imported` workflow with live download progress on the Queue page.
+- Unattended release discovery: monitored authors are checked for new books on a schedule (weekly by default, or daily, monthly or off), so a followed author's next book joins the library without a click. Opt an author out with **Monitor new items: Don't add them**.
 - Dual-format books — each title holds an ebook *and* an audiobook in independent slots, with separate search, grab, and import pipelines, and the audiobook side moves multi-part `.m4b` / `.mp3` folders as one unit.
 - Series support with position tracking and search by series title, edition tracking (format / ISBN / publisher / page count), Calendar view of upcoming releases, and multiple library roots.
 - Library scan with four-tier matching: ASIN → title + author → series name + position → fuzzy title. Honours librarian sort-suffix form (`Title, The`) and series-annotated filenames (`[Mistborn, Book 1]`).
@@ -157,7 +158,7 @@ Cover images are fetched and cached server-side under `<dataDir>/image-cache/` (
 - **Authentication** — first-run setup creates an admin account (argon2id, signed session cookies). Four modes: **Enabled** / **Local only** (bypass for private IPs) / **Disabled** / **Proxy** (trust upstream `X-Forwarded-User` from a configured trusted proxy — drop-in for Authelia / Authentik / oauth2-proxy). Per-account API key, per-IP login rate limiting, CSRF double-submit (API-key clients exempt).
 - **OIDC** — native Authorization Code + PKCE with multi-provider support. Pre-configured for Google, GitHub (via Dex), Authelia, and Keycloak; identifies users by stable `(issuer, sub)` so email/username changes don't break logins.
 - **Multi-user mode** — per-user libraries, monitored authors, profiles, and downloads. Admin role manages indexers / download clients / users; standard users see only their own catalogue. Local, OIDC-provisioned, or forward-auth-mapped.
-- **Webhook notifications** for grab / import / failure (pipe to Apprise, ntfy, Home Assistant, Discord, Slack via proxies). **On-demand SQLite backups.** **Persistent log viewer** in Settings → Logs with runtime DEBUG toggle.
+- **Webhook notifications** for grab / import / failure / new books found (pipe to Apprise, ntfy, Home Assistant, Discord, Slack via proxies). **On-demand SQLite backups.** **Persistent log viewer** in Settings → Logs with runtime DEBUG toggle.
 - **Arr-compatible queue** at `GET /api/queue` for [Harpoon](https://github.com/harpoon-io/harpoon) and other *arr-aware tools — pagination, sort, live size, status, client, remote ID, protocol.
 
 **UI**

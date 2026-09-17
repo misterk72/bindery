@@ -498,6 +498,46 @@ reuse what Bindery fetched in the last 24 hours instead, which keeps a whole
 library refresh from hammering the providers; a change upstream reaches them
 within a day.
 
+### New releases arrive on their own
+
+Following an author means their next book shows up without a click. Bindery
+checks each monitored author's catalogue on a schedule, **weekly by default**,
+and adds the books it does not have yet. This is the same sync as **Refresh
+metadata**, so the same rules apply: the author must be monitored and set to
+take new items, the metadata profile's language and junk filters still run,
+and each new book is monitored or not according to the author's monitor mode.
+
+- **How often:** Settings → General → **New release discovery**. Choose Off,
+  Daily, Weekly or Monthly. The change applies within the hour, no restart.
+- **How it spreads out:** every hour Bindery checks a small share of your
+  authors (at most 25), so a week's worth of checks is spread over the week
+  instead of arriving in one burst. Authors never checked go first.
+- **Grabbing:** discovery only adds books. A new monitored book is picked up
+  by the next wanted search, and only when **auto grab** is on.
+- **Opting an author out:** set their **Monitor new items** to *Don't add
+  them*. Unmonitored authors and Calibre library authors are not checked
+  either.
+- **Rate limits:** when Hardcover is your primary provider and it starts
+  refusing requests, the pass stops and the remaining authors wait for the
+  next hour.
+- **Getting told:** a webhook with **New book** turned on receives one
+  `bookAnnounced` message per author run that added books to an author you
+  already had, listing up to ten titles. It is **off for every webhook until
+  you turn it on**, existing ones included. The first fill of a newly added
+  author, and adding a single book, never send it.
+
+**A risk worth knowing.** OpenLibrary can be edited by anyone. A false "new
+book" added to an author you follow becomes a Wanted, monitored book, and with
+auto grab on the next wanted search will try to download it. This could
+already happen when you clicked Refresh; discovery makes it happen without
+you. The profile filters, the small hourly batch and the `bookAnnounced`
+message are the mitigations, and *Don't add them* on an author, or Off in
+Settings, removes it entirely.
+
+Discovery follows authors only. Watching a **series** for its next entry is
+planned separately
+([#2523](https://github.com/vavallee/bindery/issues/2523)).
+
 Changing a provider or tightening a metadata profile does not silently delete
 old catalogue rows during refresh. To apply the new catalogue rules to an
 author's existing rows, open the author, choose **More → Reconcile catalogue…**,
@@ -539,9 +579,9 @@ and Unmonitor or Exclude. Before adding more, pick a different mode on the Add
 Author dialog (it shows how many books will arrive and what will be searched
 for), or change the default in Settings → Metadata Profiles → Library
 Defaults. *None* lists the catalogue and searches for nothing. *Future books
-only* searches only for unreleased titles, and note that new releases join
-the list when you refresh the author, not on their own
-([#2236](https://github.com/vavallee/bindery/issues/2236)).
+only* searches only for unreleased titles, and new releases join the list on
+their own through scheduled discovery
+([New releases arrive on their own](#new-releases-arrive-on-their-own)).
 
 **Scan Library sees my files but imports nothing.**
 Rule 1 — the catalogue is empty or the authors don't exist yet. Populate

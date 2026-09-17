@@ -24,6 +24,11 @@ export interface GeneralTabProps {
 // the server's [1h, 168h] range is valid too and gets its own option appended.
 const HARDCOVER_SYNC_INTERVAL_PRESETS = ['1h', '3h', '6h', '12h', '24h', '48h', '168h']
 
+// Preset values offered by the release discovery picker (#2236). The server
+// accepts "off" or any duration in [24h, 720h]; anything else gets its own
+// option appended, the same as the Hardcover picker.
+const DISCOVERY_INTERVAL_PRESETS = ['off', '24h', '168h', '720h']
+
 export default function GeneralTab({ onNavigate }: GeneralTabProps = {}) {
   const { t } = useTranslation()
   const { isAdmin } = useAuth()
@@ -173,6 +178,8 @@ export default function GeneralTab({ onNavigate }: GeneralTabProps = {}) {
   // its own option rather than letting the select render blank (#1848).
   const hardcoverSyncInterval = settings['hardcover.sync_interval'] ?? '24h'
   const hardcoverSyncIntervalIsCustom = !HARDCOVER_SYNC_INTERVAL_PRESETS.includes(hardcoverSyncInterval)
+  const discoveryInterval = settings['authors.discovery.interval'] || '168h'
+  const discoveryIntervalIsCustom = !DISCOVERY_INTERVAL_PRESETS.includes(discoveryInterval)
 
   if (loading) return <div className="text-slate-600 dark:text-zinc-500">{t('common.loading')}</div>
 
@@ -695,6 +702,40 @@ export default function GeneralTab({ onNavigate }: GeneralTabProps = {}) {
             <p className="text-xs text-slate-500 dark:text-zinc-600 mt-1">
               {t('settings.general.searchIntervalRestart')}
             </p>
+          </div>
+        </div>
+      </section>
+
+      {/* Unattended release discovery (#2236). Read by the scheduler on every
+          hourly tick, so unlike the two intervals above it needs no restart. */}
+      <section>
+        <h3 className="text-base font-semibold mb-3 text-slate-800 dark:text-zinc-200">{t('settings.general.discovery')}</h3>
+        <div className="p-4 border border-slate-200 dark:border-zinc-800 rounded-lg bg-slate-100 dark:bg-zinc-900">
+          <div>
+            <label htmlFor="discovery-interval" className="block text-sm font-medium text-slate-800 dark:text-zinc-200 mb-1">
+              {t('settings.general.discoveryIntervalLabel')}
+            </label>
+            <p className="text-xs text-slate-600 dark:text-zinc-500 mb-2">
+              {t('settings.general.discoveryIntervalHint')}
+            </p>
+            <select
+              id="discovery-interval"
+              value={discoveryInterval}
+              onChange={async e => {
+                const next = e.target.value
+                setSettings(s => ({ ...s, 'authors.discovery.interval': next }))
+                await api.setSetting('authors.discovery.interval', next).catch(console.error)
+              }}
+              className="bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded-md px-3 py-2 text-sm focus:outline-none focus:border-emerald-500"
+            >
+              <option value="off">{t('settings.general.discoveryOff')}</option>
+              <option value="24h">{t('settings.general.discoveryDaily')}</option>
+              <option value="168h">{t('settings.general.discoveryWeekly')}</option>
+              <option value="720h">{t('settings.general.discoveryMonthly')}</option>
+              {discoveryIntervalIsCustom && (
+                <option value={discoveryInterval}>{discoveryInterval}</option>
+              )}
+            </select>
           </div>
         </div>
       </section>

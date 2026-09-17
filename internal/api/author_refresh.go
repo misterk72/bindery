@@ -100,6 +100,15 @@ func (h *AuthorRefreshHandler) RefreshAll(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusAccepted, map[string]string{"message": "metadata refresh started"})
 }
 
+// Running reports whether a refresh-all job is in progress in this process.
+// Scheduled discovery skips its tick while one is, since the job already runs
+// the same sync over every author (#2236).
+func (h *AuthorRefreshHandler) Running() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.running
+}
+
 // run is the background job. It enumerates every author and refreshes them
 // sequentially (provider rate limits — never parallelise), tolerating a panic
 // in any single author's refresh. Progress is persisted to the settings table
