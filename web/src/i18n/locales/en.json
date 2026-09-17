@@ -80,7 +80,9 @@
     "blocklist": "Blocklist",
     "settings": "Settings",
     "users": "Users",
-    "updateAvailable": "Update available"
+    "updateAvailable": "Update available",
+    "importUnmatched_one": "{{count}} book needs a decision",
+    "importUnmatched_other": "{{count}} books need a decision"
   },
   "librarySearch": {
     "label": "Search library",
@@ -139,6 +141,137 @@
     "metadataAuthorMissing": "Author name missing on this result",
     "metadataAdd": "Add and use",
     "metadataAdding": "Adding…"
+  },
+  "importPage": {
+    "title": "Import",
+    "subtitle": "Bring books you already have into Bindery.",
+    "viewsLabel": "Import views",
+    "viewLibrary": "In your library",
+    "viewFolder": "From a folder"
+  },
+  "adoption": {
+    "adminOnly": "Only an admin can decide what the files in the library are.",
+    "searchPlaceholder": "Search titles, authors and folders",
+    "searchLabel": "Search books to decide",
+    "stateLabel": "Show",
+    "state": {
+      "pending": "Needs a decision",
+      "ignored": "Ignored",
+      "adopted": "Adopted"
+    },
+    "filterReason": "Why it did not match",
+    "filterFormat": "Format",
+    "chipFolder": "Folder: {{folder}}",
+    "reason": {
+      "author_not_in_library": "Author not in your library",
+      "no_candidate_books": "No book waiting for a file",
+      "no_title_match": "No close title",
+      "no_title_parsed": "No title read"
+    },
+    "confirm": "Confirm",
+    "other": "Other book",
+    "choose": "Choose book",
+    "ignore": "Ignore",
+    "unignore": "Unignore",
+    "undo": "Undo",
+    "hint": {
+      "reasonTooltip": "Scan reason: {{code}}",
+      "suggestion": "Closest match is {{title}} by {{author}} ({{percent}}%). Confirm it or choose another book.",
+      "authorMissing": "{{author}} is not in your library yet. Add the author, then scan again.",
+      "authorUnreadable": "No author could be read from these files. Choose the book they are.",
+      "noCandidates": "{{author}} has no book in your library waiting for these files. Choose the book or search metadata.",
+      "noTitle": "No title could be read from the file names or tags. Choose the book they are.",
+      "noTitleMatch": "No book by {{author}} has a title close to this one. Choose the book it is.",
+      "noTitleMatchNoAuthor": "No book in your library has a title close to this one. Choose the book it is."
+    },
+    "row": {
+      "files_one": "{{count}} file",
+      "files_other": "{{count}} files",
+      "adoptedAs": "Adopted as"
+    },
+    "outcome": {
+      "adopting": "Adopting as {{title}}…",
+      "adopted": "Adopted as {{title}} by {{author}}.",
+      "created": "Added to your library, unmonitored.",
+      "ignored": "Ignored. Later scans keep it out of this list.",
+      "undoing": "Undoing…",
+      "restored": "Back in Needs a decision."
+    },
+    "editor": {
+      "heading": "Which book is {{name}}?",
+      "suggestions": "Suggestions",
+      "score": "{{percent}}% title match",
+      "fromSearch": "From search",
+      "searchLibrary": "Search your library",
+      "metadataHint": "Adds the book to your library unmonitored, in this format, and adopts these files. Nothing is downloaded.",
+      "addAndAdopt": "Add and adopt",
+      "adding": "Adding…",
+      "format": "Adopt as",
+      "files_one": "{{count}} file",
+      "files_other": "{{count}} files",
+      "moreFiles": "and {{count}} more",
+      "inPlace": "Files stay where they are. Picking a book already in your library leaves its owner and monitoring as they are.",
+      "adoptAs": "Adopt as {{title}}",
+      "pickFirst": "Pick a book"
+    },
+    "col": {
+      "book": "Book",
+      "why": "Why it is here",
+      "match": "Best match"
+    },
+    "caption": {
+      "pending": "Books in your library that need a decision",
+      "ignored": "Ignored books in your library",
+      "adopted": "Books you adopted from your library",
+      "keys": "Arrow keys move between books, Enter opens one, i ignores, u undoes."
+    },
+    "rail": {
+      "label": "Folders with the most books to decide",
+      "heading": "Folders",
+      "counts_one": "{{count}} book, {{files}} files",
+      "counts_other": "{{count}} books, {{files}} files",
+      "notInLibrary": "{{author}} is not in your library",
+      "addAuthor": "Add author",
+      "show": "Show",
+      "showAll": "Show all",
+      "ignore": "Ignore folder"
+    },
+    "ignoreFolder": {
+      "title": "Ignore every book in {{folder}}?",
+      "body": "They leave this list and later scans keep them out. You can unignore any of them from the Ignored list.",
+      "confirm": "Ignore folder"
+    },
+    "summary": {
+      "label": "Library scan summary",
+      "scanning": "Scanning your library…",
+      "pending_one": "{{count}} book needs a decision, {{files}} files",
+      "pending_other": "{{count}} books need a decision, {{files}} files",
+      "none": "Nothing needs a decision",
+      "lastScan": "Last scan {{when}}",
+      "neverScanned": "Not scanned yet",
+      "ignored": "{{count}} ignored",
+      "adopted": "{{count}} adopted",
+      "nudge": "Author added. Scan now to match their files.",
+      "scanningButton": "Scanning…",
+      "scanNow": "Scan now",
+      "scanError": "The last scan did not finish: {{error}}",
+      "noFiles": "The last scan found no book files. Check that the library folder is mounted, then scan again. Your decisions were kept.",
+      "truncated": "This library is larger than one scan lists. Adopt or ignore some books and scan again to see the rest."
+    },
+    "empty": {
+      "filteredTitle": "No books match these filters",
+      "filteredBody": "Try another search, or clear the filters to see every book.",
+      "clear": "Clear filters",
+      "ignoredTitle": "Nothing is ignored",
+      "ignoredBody": "Books you ignore land here, and you can bring any of them back.",
+      "adoptedTitle": "Nothing adopted yet",
+      "adoptedBody": "Books you adopt stay here for 30 days, with Undo.",
+      "neverTitle": "Your library has not been scanned yet",
+      "neverBody": "A scan looks through your library folders and lists every book it cannot match to your library, so you can decide what each one is. Files are never moved.",
+      "scanLibrary": "Scan library",
+      "doneTitle": "Every book in your library is matched",
+      "doneBody": "Nothing needs a decision. New files show up here after the next scan."
+    }
   },
   "search": {
     "heading": "Search Indexers",

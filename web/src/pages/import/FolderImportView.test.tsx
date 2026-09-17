@@ -17,7 +17,7 @@ vi.mock('react-i18next', () => ({
   }),
 }))
 
-vi.mock('../api/client', () => ({
+vi.mock('../../api/client', () => ({
   api: {
     scanFolder: vi.fn(),
     batchImport: vi.fn(),
@@ -30,9 +30,9 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-import { api } from '../api/client'
-import type { Book, FolderScanResponse } from '../api/client'
-import ManualImportPage from './ManualImportPage'
+import { api } from '../../api/client'
+import type { Book, FolderScanResponse } from '../../api/client'
+import FolderImportView from './FolderImportView'
 
 const mockScan = api.scanFolder as ReturnType<typeof vi.fn>
 const mockBatch = api.batchImport as ReturnType<typeof vi.fn>
@@ -68,7 +68,7 @@ function scanResult(): FolderScanResponse {
 
 async function scan() {
   mockScan.mockResolvedValue(scanResult())
-  render(<ManualImportPage />)
+  render(<FolderImportView />)
   fireEvent.change(screen.getByPlaceholderText('manualImport.pathPlaceholder'), { target: { value: '/dl' } })
   fireEvent.click(screen.getByText('manualImport.scan'))
   await waitFor(() => expect(screen.getByText('Confident Book')).toBeInTheDocument())
@@ -79,7 +79,7 @@ function rowImportButtons() {
   return screen.getAllByText('manualImport.import') as HTMLButtonElement[]
 }
 
-describe('ManualImportPage', () => {
+describe('FolderImportView', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('renders scan results grouped by match status', async () => {

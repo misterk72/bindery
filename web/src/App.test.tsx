@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import App from './App'
+import { api } from './api/client'
 
 const { authState, logoutMock } = vi.hoisted(() => ({
   authState: {
@@ -50,6 +51,8 @@ vi.mock('./api/client', () => ({
     // SetupBanner (mounted in the admin shell) probes these on mount.
     listIndexers: vi.fn().mockResolvedValue([]),
     listDownloadClients: vi.fn().mockResolvedValue([]),
+    // The Import nav badge reads this once for an admin.
+    unmatchedSummary: vi.fn().mockResolvedValue({ pending: 0, pendingFiles: 0, ignored: 0, adopted: 0, scan: {} }),
   },
 }))
 
@@ -280,5 +283,23 @@ describe('Shell — mobile navigation', () => {
     fireEvent.click(btn)
     // Closed again: back to hamburger
     expect(btn.innerHTML).toContain('M4 6h16M4 12h16M4 18h16')
+  })
+})
+
+describe('Shell — Import nav badge', () => {
+  // Admins see how many library books still need a decision on the Import
+  // entry. The count comes from an admin only route, so nobody else asks.
+  it('shows the unmatched count for an admin', async () => {
+    vi.mocked(api.unmatchedSummary).mockResolvedValue({ pending: 38, pendingFiles: 412, ignored: 0, adopted: 0, scan: {} as never })
+    authState.value = { status: { authenticated: true, setupRequired: false, mode: 'enabled' }, logout: logoutMock, isAdmin: true }
+    renderShell()
+    const desktopNav = document.querySelector('nav.hidden.xl\\:flex') as HTMLElement
+    const importLink = () => Array.from(desktopNav.querySelectorAll('a')).find(a => a.getAttribute('href') === '/import')
+    await vi.waitFor(() => expect(importLink()?.textContent).toBe('Import38'))
+  })
+
+  it('never asks for the count as a non admin', () => {
+    renderShell()
+    expect(api.unmatchedSummary).not.toHaveBeenCalled()
   })
 })

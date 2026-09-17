@@ -12,6 +12,7 @@ import Logo from './components/Logo'
 import SetupBanner from './components/SetupBanner'
 import VersionBadge from './components/VersionBadge'
 import WhatsNewToast from './components/WhatsNewToast'
+import { useUnmatchedCount } from './components/useUnmatchedCount'
 import { useTheme } from './theme'
 
 // Route-scoped error boundary: a render crash in one page shows an inline error
@@ -35,7 +36,7 @@ const BooksPage = lazy(() => import('./pages/BooksPage'))
 const BookDetailPage = lazy(() => import('./pages/BookDetailPage'))
 const WantedPage = lazy(() => import('./pages/WantedPage'))
 const QueuePage = lazy(() => import('./pages/QueuePage'))
-const ManualImportPage = lazy(() => import('./pages/ManualImportPage'))
+const ImportPage = lazy(() => import('./pages/import/ImportPage'))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
 const UsersPage = lazy(() => import('./pages/UsersPage'))
 const HistoryPage = lazy(() => import('./pages/HistoryPage'))
@@ -109,6 +110,22 @@ function Shell() {
   const [menuOpen, setMenuOpen] = useState(false)
   const { status, logout, isAdmin } = useAuth()
   const signedIn = !!status?.authenticated && status.mode !== 'disabled'
+  // Books the library scan could not match, on the Import nav entry (admins
+  // only; the count comes from an admin only route).
+  const unmatched = useUnmatchedCount(isAdmin)
+  const navLabel = (key: string) => (
+    <>
+      {t(`nav.${key}`)}
+      {key === 'import' && unmatched > 0 && (
+        <span
+          className="ml-1.5 inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-amber-100 px-1.5 text-[11px] font-semibold text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+          aria-label={t('nav.importUnmatched', { count: unmatched, defaultValue: '{{count}} books need a decision' })}
+        >
+          {unmatched > 999 ? '999+' : unmatched}
+        </span>
+      )}
+    </>
+  )
 
   useEffect(() => {
     api.status().then(s => {
@@ -140,7 +157,7 @@ function Shell() {
             <nav className="hidden xl:flex gap-1">
               {NAV_KEYS.map(item => (
                 <NavLink key={item.to} to={item.to} end={item.end} className={linkClass}>
-                  {t(`nav.${item.key}`)}
+                  {navLabel(item.key)}
                 </NavLink>
               ))}
             </nav>
@@ -233,7 +250,7 @@ function Shell() {
                   className={mobileLinkClass}
                   onClick={() => setMenuOpen(false)}
                 >
-                  {t(`nav.${item.key}`)}
+                  {navLabel(item.key)}
                 </NavLink>
               ))}
               <NavLink
@@ -301,7 +318,7 @@ function Shell() {
             <Route path="/book/:id" element={<BookDetailPage />} />
             <Route path="/wanted" element={<WantedPage />} />
             <Route path="/queue" element={<QueuePage />} />
-            <Route path="/import" element={<ManualImportPage />} />
+            <Route path="/import" element={<ImportPage />} />
             <Route path="/history" element={<HistoryPage />} />
             <Route path="/series" element={<SeriesPage />} />
             <Route path="/calendar" element={<CalendarPage />} />
