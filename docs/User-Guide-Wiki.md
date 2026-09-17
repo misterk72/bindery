@@ -518,7 +518,9 @@ and each new book is monitored or not according to the author's monitor mode.
   selected authors is running, discovery stops until the next hour. A
   **Refresh metadata** click on an author discovery is checking right then
   says so; try again a minute later. A bulk refresh that reaches that author
-  waits for the check to finish, so nothing is added or announced twice.
+  waits while the check writes its new books, so nothing is added or
+  announced twice. That wait lasts at most as long as one author's check, 10
+  minutes at worst. Adding a single book never waits for it.
 - **Changes since the hour started:** an author you unmonitor, delete or set
   to *Don't add them* while a pass is running is skipped.
 - **Grabbing:** discovery only adds books. A new monitored book is picked up
@@ -528,9 +530,14 @@ and each new book is monitored or not according to the author's monitor mode.
   either.
 - **When a provider struggles:** when OpenLibrary or Hardcover refuses with a
   rate limit, the pass stops and the remaining authors wait for the next
-  hour. When three authors in a row fail for any reason, the pass stops too
-  and those authors keep their place in the queue. A single author that keeps
-  failing is counted as checked, so it cannot hold up everyone else.
+  hour. When three authors in a row fail because the provider is down (server
+  errors, network failures, timeouts), the pass stops too, and those three
+  are tried again in about six hours rather than a week later. An error about
+  one author, such as an author the provider no longer knows, counts that
+  author as checked, so broken authors cannot hold up everyone else.
+- **Covers:** discovery looks up covers only for the books it adds. A book you
+  already have that has no cover gets one from **Refresh metadata**, not from
+  discovery, which saves a provider call for every such book.
 - **Getting told:** a webhook with **New book** turned on receives one
   `bookAnnounced` message per author run that added books to an author you
   already had, listing up to ten titles. It is **off for every webhook until
