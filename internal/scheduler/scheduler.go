@@ -893,7 +893,7 @@ func (s *Scheduler) searchAndGrabFormat(ctx context.Context, book models.Book, m
 		}
 	}
 	crit := indexer.MatchCriteria{
-		Title:            book.Title,
+		Title:            indexer.SearchTitle(book, allowedLangs),
 		Author:           authorName,
 		MediaType:        mediaType,
 		ASIN:             book.ASIN,

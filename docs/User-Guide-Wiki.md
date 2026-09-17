@@ -226,6 +226,14 @@ still created and still marked wanted, so the Wanted page is complete when
 you come back to it. Searches also fire when an author is added
 ("Search for books on add") and when a book flips to wanted.
 
+**Two language titles.** A translated book whose title is stored as
+"translated / original", such as "El imperio final / The Final Empire", is
+searched under the translated part only, because no release is named with
+both. This applies when the title is exactly two parts joined by a spaced
+slash and the book, or your metadata profile, names a language other than
+English. An English bundle such as "Second Nature / One Summer" is searched
+whole.
+
 **Daily query limits.** A sweep searches every wanted book against every
 enabled indexer back to back, so on a large library it can be thousands of
 requests in one burst. Private trackers with a daily API allowance do not

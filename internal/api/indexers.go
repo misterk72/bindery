@@ -526,7 +526,7 @@ func (h *IndexerHandler) SearchBook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	crit := indexer.MatchCriteria{
-		Title:            book.Title,
+		Title:            indexer.SearchTitle(*book, allowedLangs),
 		Author:           authorName,
 		MediaType:        book.MediaType,
 		ASIN:             book.ASIN,

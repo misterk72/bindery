@@ -1276,3 +1276,48 @@ func TestIndexerList_ReportsCooldown(t *testing.T) {
 		t.Errorf("cooldown = %s %q, want %s", out[0].CooldownUntil, *out[0].CooldownReason, until)
 	}
 }
+
+// TestSearchBook_SearchesTheLocalizedHalfOfABilingualTitle: interactive search
+// builds its criteria the same way auto-grab does, so a book stored as
+// "localized / original" is searched under the half a release is named with
+// (#211, #2391).
+func TestSearchBook_SearchesTheLocalizedHalfOfABilingualTitle(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	ctx := context.Background()
+
+	authorRepo := db.NewAuthorRepo(database)
+	author := &models.Author{
+		ForeignID: "OL1A", Name: "Brandon Sanderson", SortName: "Sanderson, Brandon",
+		MetadataProvider: "openlibrary", Monitored: true,
+	}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+	bookRepo := db.NewBookRepo(database)
+	book := &models.Book{
+		Title: "El imperio final / The Final Empire", Language: "spa",
+		ForeignID: "OL1M", AuthorID: author.ID, MediaType: models.MediaTypeEbook, Monitored: true,
+	}
+	if err := bookRepo.Create(ctx, book); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockIndexerSearcher{}
+	h := NewIndexerHandler(db.NewIndexerRepo(database), bookRepo, authorRepo,
+		db.NewMetadataProfileRepo(database), mock, db.NewSettingsRepo(database), db.NewBlocklistRepo(database))
+
+	rec := httptest.NewRecorder()
+	req := withURLParam(httptest.NewRequest(http.MethodGet, "/indexer/book/1/search", nil),
+		"id", strconv.FormatInt(book.ID, 10))
+	h.SearchBook(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got, want := mock.criteria().Title, "El imperio final"; got != want {
+		t.Errorf("search title = %q, want %q", got, want)
+	}
+}

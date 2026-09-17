@@ -136,3 +136,19 @@ func TestSearchAndGrabFormat_GrabsAllowedLanguage(t *testing.T) {
 		t.Errorf("grabbed GUID = %q, want g-ita", rows[0].GUID)
 	}
 }
+
+// TestSearchAndGrabFormat_SearchesTheLocalizedHalfOfABilingualTitle: a book
+// stored as "localized / original" used to be searched under the whole
+// string, which no release is named, so it never grabbed (#211, #2391). The
+// profile's language is the evidence the pair is a translation.
+func TestSearchAndGrabFormat_SearchesTheLocalizedHalfOfABilingualTitle(t *testing.T) {
+	ctx := context.Background()
+	s, ss, _, book := languageFixture(t, "ita", nil)
+	book.Title = "L'impero finale / The Final Empire"
+
+	s.searchAndGrabFormat(ctx, book, models.MediaTypeEbook, nil)
+
+	if got, want := ss.lastCrit.Title, "L'impero finale"; got != want {
+		t.Errorf("search title = %q, want %q", got, want)
+	}
+}
