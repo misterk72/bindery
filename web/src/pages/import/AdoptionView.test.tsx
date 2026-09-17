@@ -47,7 +47,11 @@ function listResponse(items: AdoptionItem[], overrides: Partial<AdoptionListResp
 }
 
 const suggested = item({
-  id: 1, parsedTitle: 'A Martyrs Tale', relPath: 'Andy Weir/A Martyrs Tale.epub',
+  id: 1, parsedTitle: 'The Martian', relPath: 'Andy Weir/The Martian.epub',
+  candidates: [{ book: martian, score: 0.97 }], topScore: 0.97,
+})
+const weak = item({
+  id: 4, parsedTitle: 'A Martyrs Tale', relPath: 'Andy Weir/A Martyrs Tale.epub',
   candidates: [{ book: martian, score: 0.82 }], topScore: 0.82,
 })
 const unsuggested = item({ id: 2, parsedTitle: 'Mystery Notes', relPath: 'Andy Weir/Mystery Notes.epub' })
@@ -80,7 +84,7 @@ afterEach(() => {
 })
 
 describe('AdoptionView', () => {
-  it('confirms a suggestion in one click, then undoes it', async () => {
+  it('confirms a strong suggestion in one click, then undoes it', async () => {
     serve(listResponse([suggested, unsuggested]))
     let adoptBody: unknown = null
     server.use(
@@ -92,8 +96,8 @@ describe('AdoptionView', () => {
     )
     const table = await renderView()
 
-    const row = within(table).getByRole('row', { name: 'A Martyrs Tale' })
-    expect(within(row).getByText(/Closest match is The Martian by Andy Weir \(82%\)/)).toBeInTheDocument()
+    const row = within(table).getByRole('row', { name: 'The Martian' })
+    expect(within(row).getByText('Strong match')).toBeInTheDocument()
     fireEvent.click(within(row).getByRole('button', { name: 'Confirm' }))
 
     expect(await within(row).findByText(/Adopted as The Martian by Andy Weir\./)).toBeInTheDocument()
@@ -110,11 +114,27 @@ describe('AdoptionView', () => {
         HttpResponse.json({ error: 'Provenance.epub already belongs to a book in your library.' }, { status: 409 })),
     )
     const table = await renderView()
-    const row = within(table).getByRole('row', { name: 'A Martyrs Tale' })
+    const row = within(table).getByRole('row', { name: 'The Martian' })
     fireEvent.click(within(row).getByRole('button', { name: 'Confirm' }))
 
     expect(await within(row).findByRole('alert')).toHaveTextContent('already belongs to a book')
     expect(within(row).getByRole('button', { name: 'Confirm' })).toBeInTheDocument()
+  })
+
+  it('offers a weak suggestion as a possible match that opens the editor preselected', async () => {
+    serve(listResponse([weak]))
+    server.use(http.get(apiUrl('/book'), () => HttpResponse.json({ items: [], total: 0 })))
+    const table = await renderView()
+    const row = within(table).getByRole('row', { name: 'A Martyrs Tale' })
+
+    expect(within(row).getByText('Possible match')).toBeInTheDocument()
+    expect(within(row).queryByRole('button', { name: 'Confirm' })).toBeNull()
+    expect(within(row).getByRole('button', { name: 'Choose book' })).toBeInTheDocument()
+
+    fireEvent.click(within(row).getByRole('button', { name: 'The Martian' }))
+    const editor = await screen.findByRole('region', { name: 'Which book is A Martyrs Tale?' })
+    expect(within(editor).getByRole('radio', { name: /The Martian/ })).toBeChecked()
+    expect(within(editor).getByRole('button', { name: 'Adopt as The Martian' })).toBeEnabled()
   })
 
   it('asks a metadata provider only when the search is submitted', async () => {
@@ -170,14 +190,14 @@ describe('AdoptionView', () => {
     render(<MemoryRouter><AdoptionView /></MemoryRouter>)
     expect(await screen.findByText('Your library has not been scanned yet')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Scan library' })).toBeInTheDocument()
-    expect(screen.getByText('Not scanned yet')).toBeInTheDocument()
+    expect(screen.getByText('never')).toBeInTheDocument()
   })
 
   it('shows the all matched state after a scan with nothing left', async () => {
     serve(listResponse([]))
     render(<MemoryRouter><AdoptionView /></MemoryRouter>)
     expect(await screen.findByText('Every book in your library is matched')).toBeInTheDocument()
-    expect(screen.getByText('Nothing needs a decision')).toBeInTheDocument()
+    expect(screen.getByText('books need a decision')).toBeInTheDocument()
   })
 
   it('says when the scan was truncated and when one is running', async () => {
@@ -203,13 +223,30 @@ describe('AdoptionView', () => {
     expect(within(table).getByRole('button', { name: 'Unignore' })).toBeInTheDocument()
   })
 
-  it('offers Add author for a folder whose author is not in the library', async () => {
-    serve(listResponse([unsuggested], {
-      facets: { reasons: [], formats: [], folders: [{ folder: 'Becky Chambers', units: 4, files: 40, notInLibrary: 4, author: 'Becky Chambers' }] },
+  it('shows books whose author is missing as one group with a single Add author', async () => {
+    const becky = (id: number, title: string) => item({
+      id, parsedTitle: title, parsedAuthor: 'Becky Chambers', authorFolder: 'Becky Chambers',
+      relPath: `Becky Chambers/${title}.epub`, reason: 'author_not_in_library', fileCount: 7,
+    })
+    serve(listResponse([becky(11, 'Record of a Spaceborn Few'), unsuggested, becky(12, 'A Closed and Common Orbit')], {
+      facets: { reasons: [], formats: [], folders: [{ folder: 'Becky Chambers', units: 2, files: 14, notInLibrary: 2, author: 'Becky Chambers' }] },
     }))
-    await renderView()
+    const table = await renderView()
+
+    const group = within(table).getByRole('row', { name: 'Becky Chambers, 2 books' })
+    expect(within(group).getByText('2 books, 14 files')).toBeInTheDocument()
+    expect(within(table).getAllByRole('button', { name: 'Add author' })).toHaveLength(1)
+    expect(within(table).queryByRole('row', { name: 'Record of a Spaceborn Few' })).toBeNull()
+
+    // The rail is navigation only: one item per folder, no actions.
     const rail = screen.getByRole('navigation', { name: 'Folders with the most books to decide' })
-    expect(within(rail).getByText('Becky Chambers is not in your library')).toBeInTheDocument()
-    expect(within(rail).getByRole('button', { name: 'Add author' })).toBeInTheDocument()
+    expect(within(rail).queryByRole('button', { name: 'Add author' })).toBeNull()
+    expect(within(rail).getByRole('button', { name: /Becky Chambers/ })).toHaveAttribute('title', 'Becky Chambers is not in your library')
+
+    fireEvent.click(within(group).getByRole('button', { name: /14 files/ }))
+    const inner = await within(table).findByRole('row', { name: 'Record of a Spaceborn Few' })
+    expect(within(inner).getByRole('button', { name: 'Choose book' })).toBeInTheDocument()
+    expect(within(inner).getByRole('button', { name: 'More actions for Record of a Spaceborn Few' })).toBeInTheDocument()
+    expect(within(inner).queryByRole('button', { name: 'Add author' })).toBeNull()
   })
 })

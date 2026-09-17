@@ -96,10 +96,9 @@ export default function AdoptionView() {
       <div className={folders.length > 0 ? 'lg:grid lg:grid-cols-[15rem_minmax(0,1fr)] lg:gap-6' : ''}>
         <AdoptionRail
           folders={folders}
+          total={state.summary?.pending ?? 0}
           activeFolder={filters.authorFolder}
           onShow={folder => list.setFilter({ authorFolder: folder })}
-          onAddAuthor={name => setAddAuthor(name)}
-          onIgnoreFolder={folder => void ignoreFolder(folder)}
         />
         <div className="min-w-0">
           <AdoptionFacets ref={searchRef} filters={filters} facets={state.facets} summary={state.summary} onChange={list.setFilter} />
@@ -113,7 +112,7 @@ export default function AdoptionView() {
             emptyState()
           ) : (
             <div className={state.loading ? 'opacity-60 transition-opacity' : 'transition-opacity'} aria-busy={state.loading}>
-              <AdoptionTable list={list} onSearchShortcut={() => searchRef.current?.focus()} onAddAuthor={setAddAuthor} />
+              <AdoptionTable list={list} onSearchShortcut={() => searchRef.current?.focus()} onAddAuthor={setAddAuthor} onIgnoreFolder={folder => void ignoreFolder(folder)} />
             </div>
           )}
           <Pagination {...list.paginationProps} />

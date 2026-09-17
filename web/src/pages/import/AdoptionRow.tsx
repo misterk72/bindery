@@ -4,9 +4,12 @@ import { useTranslation } from 'react-i18next'
 import type { AdoptionItem } from '../../api/client'
 import { btn, btnSize } from '../../components/buttons'
 import MediaBadge from '../../components/MediaBadge'
+import MoreMenu, { type MoreMenuItem } from '../../components/MoreMenu'
 import { formatBytes } from '../../util/format'
-import { adoptionHint, scorePercent, unitDisplayName } from './adoptionHint'
+import { adoptionHint, unitDisplayName } from './adoptionHint'
+import { matchStrength, shortHint } from './adoptionMatch'
 import type { Outcome } from './adoptionReducer'
+import { rowCls, cellCls, actionCellCls } from './adoptionStyles'
 
 interface Props {
   item: AdoptionItem
@@ -14,156 +17,138 @@ interface Props {
   error: string | undefined
   expanded: boolean
   focusable: boolean
+  inGroup: boolean
   editorId: string
   onFocusRow: () => void
   onKeyDown: (e: KeyboardEvent<HTMLTableRowElement>) => void
-  onToggle: () => void
+  onOpen: (showFiles: boolean) => void
   onConfirm: () => void
   onIgnore: () => void
   onUndo: () => void
   onAddAuthor: (name: string) => void
 }
 
-// A score pill reads green when the suggestion is close, amber when it is a
-// real question.
-function scoreCls(percent: number): string {
-  return percent >= 80
-    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
-    : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
-}
-
-// AdoptionRow is one book in the collapsed list: what it is, a sentence about
-// why it is here, and the action that most likely settles it. With a
-// suggestion that is a single Confirm. A decision replaces the sentence and
-// actions with a quiet line that keeps Undo until the next fetch.
+// AdoptionRow is one book: what it is, one line on why it is here, and a fixed
+// action cell holding the single most likely action plus a More menu. Only a
+// strong suggestion (adoptionMatch) earns a one click Confirm; a possible one
+// is a quiet link that opens the editor with it preselected. A decision turns
+// the middle cell into a quiet line and the action into Undo, until the next
+// fetch.
 const AdoptionRow = forwardRef<HTMLTableRowElement, Props>(function AdoptionRow(
-  { item, outcome, error, expanded, focusable, editorId, onFocusRow, onKeyDown, onToggle, onConfirm, onIgnore, onUndo, onAddAuthor }, ref,
+  { item, outcome, error, expanded, focusable, inGroup, editorId, onFocusRow, onKeyDown, onOpen, onConfirm, onIgnore, onUndo, onAddAuthor }, ref,
 ) {
   const { t } = useTranslation()
   const name = unitDisplayName(item)
-  const hint = adoptionHint(item, t)
   const top = item.candidates[0]
+  const strength = matchStrength(item)
+  const full = adoptionHint(item, t)
+  const tooltip = [full.sentence, full.tooltip].filter(Boolean).join('\n')
   const size = formatBytes(item.sizeBytes)
-  const cell = 'block md:table-cell px-3 py-1 md:py-2.5 align-top'
+  const pending = item.state === 'pending' && !outcome
+  const authorFirst = pending && !inGroup && !top && item.reason === 'author_not_in_library' && item.parsedAuthor !== ''
 
   const outcomeLine = (() => {
-    if (!outcome) return null
-    switch (outcome.kind) {
-      case 'adopting':
-        return t('adoption.outcome.adopting', { title: outcome.preview?.title ?? name, defaultValue: 'Adopting as {{title}}…' })
+    switch (outcome?.kind) {
+      case undefined: return null
+      case 'adopting': return t('adoption.outcome.adopting', { title: outcome.preview?.title ?? name, defaultValue: 'Adopting as {{title}}…' })
       case 'adopted': {
         const book = outcome.item.book
         const base = t('adoption.outcome.adopted', { title: book?.title ?? name, author: book?.authorName ?? '', defaultValue: 'Adopted as {{title}} by {{author}}.' })
         return outcome.item.bookCreated ? `${base} ${t('adoption.outcome.created', 'Added to your library, unmonitored.')}` : base
       }
       case 'ignoring':
-      case 'ignored':
-        return t('adoption.outcome.ignored', 'Ignored. Later scans keep it out of this list.')
-      case 'undoing':
-        return t('adoption.outcome.undoing', 'Undoing…')
-      case 'restored':
-        return t('adoption.outcome.restored', 'Back in Needs a decision.')
+      case 'ignored': return t('adoption.outcome.ignored', 'Ignored. Later scans keep it out of this list.')
+      case 'undoing': return t('adoption.outcome.undoing', 'Undoing…')
+      case 'restored': return t('adoption.outcome.restored', 'Back in Needs a decision.')
     }
   })()
   const canUndo = outcome?.kind === 'adopted' || outcome?.kind === 'ignored'
-  // When the scan could not place the author at all, adding the author is the
-  // decision; choosing a book stays available beside it.
-  const addAuthorFirst = item.state === 'pending' && !top && item.reason === 'author_not_in_library' && item.parsedAuthor !== ''
+
+  const menu: MoreMenuItem[] = []
+  if (pending) {
+    if (strength === 'strong' || authorFirst) menu.push({ label: t('adoption.choose', 'Choose book'), onSelect: () => onOpen(false) })
+    if (item.fileCount > 1) menu.push({ label: t('adoption.showFiles', 'Show files'), onSelect: () => onOpen(true) })
+    menu.push({ label: t('adoption.ignore', 'Ignore'), onSelect: onIgnore })
+  }
+
+  let primary: React.ReactNode
+  if (canUndo) {
+    primary = <button type="button" onClick={onUndo} aria-keyshortcuts="u" className={`${btn.secondary} ${btnSize.sm}`}>{t('adoption.undo', 'Undo')}</button>
+  } else if (outcome) {
+    primary = null
+  } else if (item.state === 'ignored' || item.state === 'adopted') {
+    primary = (
+      <button type="button" onClick={onUndo} aria-keyshortcuts="u" className={`${btn.secondary} ${btnSize.sm}`}>
+        {item.state === 'ignored' ? t('adoption.unignore', 'Unignore') : t('adoption.undo', 'Undo')}
+      </button>
+    )
+  } else if (strength === 'strong') {
+    primary = <button type="button" onClick={onConfirm} className={`${btn.primary} ${btnSize.sm}`}>{t('adoption.confirm', 'Confirm')}</button>
+  } else if (authorFirst) {
+    primary = <button type="button" onClick={() => onAddAuthor(item.parsedAuthor)} className={`${btn.primary} ${btnSize.sm}`}>{t('adoption.addAuthor', 'Add author')}</button>
+  } else {
+    primary = (
+      <button type="button" onClick={() => onOpen(false)} aria-expanded={expanded} aria-controls={editorId} className={`${btn.secondary} ${btnSize.sm}`}>
+        {t('adoption.choose', 'Choose book')}
+      </button>
+    )
+  }
 
   return (
-    <tr
-      ref={ref}
-      tabIndex={focusable ? 0 : -1}
+    <tr ref={ref} tabIndex={focusable ? 0 : -1} aria-label={name} onKeyDown={onKeyDown}
       onFocus={e => { if (e.target === e.currentTarget) onFocusRow() }}
-      onKeyDown={onKeyDown}
-      aria-label={name}
-      className={`block md:table-row mb-3 md:mb-0 rounded-lg md:rounded-none border md:border-0 border-slate-200 dark:border-zinc-800 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-500 ${
-        expanded ? 'bg-emerald-500/5' : 'bg-slate-100/50 dark:bg-zinc-900/50 hover:bg-slate-200/50 dark:hover:bg-zinc-800/50'
-      }`}
+      className={rowCls(expanded, inGroup)}
     >
-      <td className={`${cell} pt-3 md:pt-2.5 min-w-0 md:w-[36%]`}>
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-medium text-slate-800 dark:text-zinc-200">{name}</span>
+      <td className={`${cellCls} md:w-[42%] ${inGroup ? 'md:pl-9' : ''}`}>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate font-medium text-slate-800 dark:text-zinc-200">{name}</span>
           <MediaBadge type={item.format} />
-          <span className="text-[11px] text-fg-muted">
+        </div>
+        <p className="mt-0.5 truncate text-xs text-fg-muted" title={`${item.rootPath}/${item.relPath}`}>
+          <span className="tabular-nums">
             {t('adoption.row.files', { count: item.fileCount, defaultValue: '{{count}} files' })}{size ? ` · ${size}` : ''}
           </span>
-        </div>
-        <div className="mt-0.5 max-w-md truncate font-mono text-xs text-slate-500 dark:text-zinc-500" title={`${item.rootPath}/${item.relPath}`}>
-          {item.relPath}
-        </div>
+          <span className="font-mono"> · {item.relPath}</span>
+        </p>
       </td>
-
-      {outcomeLine ? (
-        <td className={`${cell} pb-3 md:pb-2.5`} colSpan={2}>
-          <p role="status" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-emerald-700 dark:text-emerald-400">
-            <span>{outcome?.kind === 'adopted' || outcome?.kind === 'ignored' ? '✓ ' : ''}{outcomeLine}</span>
-            {canUndo && (
-              <button type="button" onClick={onUndo} aria-keyshortcuts="u" className="font-medium underline-offset-2 hover:underline">
-                {t('adoption.undo', 'Undo')}
+      <td className={`${cellCls} md:w-[36%]`}>
+        {outcomeLine ? (
+          <p role="status" className="truncate text-xs text-emerald-700 dark:text-emerald-400" title={outcomeLine}>{outcomeLine}</p>
+        ) : item.state === 'adopted' && item.book ? (
+          <p className="truncate text-xs text-fg-muted">
+            {t('adoption.row.adoptedAs', 'Adopted as')}{' '}
+            <Link to={`/book/${item.book.id}`} className="font-medium text-slate-800 dark:text-zinc-200 hover:text-emerald-600">{item.book.title}</Link>
+          </p>
+        ) : top ? (
+          <p className="flex min-w-0 items-center gap-2 text-xs" title={tooltip}>
+            <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${strength === 'strong' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300' : 'bg-slate-200 text-slate-700 dark:bg-zinc-800 dark:text-zinc-300'}`}>
+              {strength === 'strong' ? t('adoption.match.strong', 'Strong match') : t('adoption.match.possible', 'Possible match')}
+            </span>
+            {strength === 'strong' ? (
+              <span className="truncate text-slate-700 dark:text-zinc-300">{top.book.title}</span>
+            ) : (
+              <button type="button" onClick={() => onOpen(false)} className="truncate text-slate-700 dark:text-zinc-300 underline decoration-dotted underline-offset-2 hover:text-emerald-700 dark:hover:text-emerald-400">
+                {top.book.title}
               </button>
             )}
           </p>
-        </td>
-      ) : (
-        <>
-          <td className={`${cell} md:w-[30%]`}>
-            <p className="text-xs text-slate-600 dark:text-zinc-400" title={hint.tooltip || undefined}>
-              {item.state === 'adopted' && item.book ? (
-                <>
-                  {t('adoption.row.adoptedAs', 'Adopted as')}{' '}
-                  <Link to={`/book/${item.book.id}`} className="font-medium text-slate-800 dark:text-zinc-200 hover:text-emerald-600">{item.book.title}</Link>
-                  {item.book.authorName ? ` · ${item.book.authorName}` : ''}
-                </>
-              ) : hint.sentence}
-            </p>
-            {error && <p role="alert" className="mt-1 text-xs text-red-600 dark:text-red-400">{error}</p>}
-          </td>
-          <td className={`${cell} pb-3 md:pb-2.5 md:text-right md:whitespace-nowrap`}>
-            <div className="flex flex-wrap md:flex-nowrap items-center gap-2 md:justify-end">
-              {item.state === 'pending' && top && (
-                <>
-                  <span className="max-w-[12rem] truncate text-xs text-slate-700 dark:text-zinc-300" title={`${top.book.title} · ${top.book.authorName}`}>
-                    {top.book.title}
-                  </span>
-                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${scoreCls(scorePercent(top.score))}`}>
-                    {scorePercent(top.score)}%
-                  </span>
-                  <button type="button" onClick={onConfirm} className={`${btn.primary} ${btnSize.sm}`}>
-                    {t('adoption.confirm', 'Confirm')}
-                  </button>
-                </>
-              )}
-              {addAuthorFirst && (
-                <button type="button" onClick={() => onAddAuthor(item.parsedAuthor)} className={`${btn.secondary} ${btnSize.sm}`}>
-                  {t('adoption.rail.addAuthor', 'Add author')}
-                </button>
-              )}
-              {item.state === 'pending' && (
-                <button
-                  type="button"
-                  onClick={onToggle}
-                  aria-expanded={expanded}
-                  aria-controls={editorId}
-                  className={`${top || addAuthorFirst ? btn.ghost : btn.secondary} ${btnSize.sm}`}
-                >
-                  {top ? t('adoption.other', 'Other book') : t('adoption.choose', 'Choose book')}
-                </button>
-              )}
-              {item.state === 'pending' && (
-                <button type="button" onClick={onIgnore} aria-keyshortcuts="i" className={`${btn.ghost} ${btnSize.sm}`}>
-                  {t('adoption.ignore', 'Ignore')}
-                </button>
-              )}
-              {(item.state === 'ignored' || item.state === 'adopted') && (
-                <button type="button" onClick={onUndo} aria-keyshortcuts="u" className={`${btn.secondary} ${btnSize.sm}`}>
-                  {item.state === 'ignored' ? t('adoption.unignore', 'Unignore') : t('adoption.undo', 'Undo')}
-                </button>
-              )}
-            </div>
-          </td>
-        </>
-      )}
+        ) : inGroup ? (
+          // The group row above already says why; repeating it per book is noise.
+          <span className="sr-only">{shortHint(item, t)}</span>
+        ) : (
+          <p className="truncate text-xs text-fg-muted" title={tooltip}>{shortHint(item, t)}</p>
+        )}
+        {error && <p role="alert" className="mt-0.5 truncate text-xs text-red-600 dark:text-red-400" title={error}>{error}</p>}
+      </td>
+      <td className={actionCellCls}>
+        <div className="flex items-center gap-1.5 md:justify-end">
+          {primary}
+          {menu.length > 0 && (
+            <MoreMenu items={menu} label={t('adoption.more', 'More')} ariaLabel={t('adoption.moreFor', { name, defaultValue: 'More actions for {{name}}' })}
+              buttonClassName={`${btn.ghost} ${btnSize.sm}`} />
+          )}
+        </div>
+      </td>
     </tr>
   )
 })

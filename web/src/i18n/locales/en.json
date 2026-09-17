@@ -130,7 +130,7 @@
     "failed": "Failed: {{error}}",
     "searchLabel": "Search your library",
     "searchPlaceholder": "Search your library for the book…",
-    "noResults": "No matching books in your library. Search metadata below to add it.",
+    "noResults": "No matching books in your library.",
     "metadataOpen": "Not in your library? Search metadata",
     "metadataLabel": "Search metadata",
     "metadataPlaceholder": "Title, author, ISBN, or ASIN",
@@ -169,20 +169,20 @@
       "no_title_parsed": "No title read"
     },
     "confirm": "Confirm",
-    "other": "Other book",
     "choose": "Choose book",
     "ignore": "Ignore",
     "unignore": "Unignore",
     "undo": "Undo",
     "hint": {
       "reasonTooltip": "Scan reason: {{code}}",
-      "suggestion": "Closest match is {{title}} by {{author}} ({{percent}}%). Confirm it or choose another book.",
       "authorMissing": "{{author}} is not in your library yet. Add the author, then scan again.",
       "authorUnreadable": "No author could be read from these files. Choose the book they are.",
       "noCandidates": "{{author}} has no book in your library waiting for these files. Choose the book or search metadata.",
       "noTitle": "No title could be read from the file names or tags. Choose the book they are.",
       "noTitleMatch": "No book by {{author}} has a title close to this one. Choose the book it is.",
-      "noTitleMatchNoAuthor": "No book in your library has a title close to this one. Choose the book it is."
+      "noTitleMatchNoAuthor": "No book in your library has a title close to this one. Choose the book it is.",
+      "strong": "Strong match: {{title}} by {{author}}. Confirm it or choose another book.",
+      "possible": "Possible match: {{title}} by {{author}}, {{percent}}% title similarity. Check it, then adopt it or choose another book."
     },
     "row": {
       "files_one": "{{count}} file",
@@ -216,8 +216,8 @@
     },
     "col": {
       "book": "Book",
-      "why": "Why it is here",
-      "match": "Best match"
+      "match": "Best match",
+      "actions": "Actions"
     },
     "caption": {
       "pending": "Books in your library that need a decision",
@@ -228,13 +228,9 @@
     "rail": {
       "label": "Folders with the most books to decide",
       "heading": "Folders",
-      "counts_one": "{{count}} book, {{files}} files",
-      "counts_other": "{{count}} books, {{files}} files",
       "notInLibrary": "{{author}} is not in your library",
-      "addAuthor": "Add author",
-      "show": "Show",
-      "showAll": "Show all",
-      "ignore": "Ignore folder"
+      "ignore": "Ignore folder",
+      "all": "All folders"
     },
     "ignoreFolder": {
       "title": "Ignore every book in {{folder}}?",
@@ -244,19 +240,22 @@
     "summary": {
       "label": "Library scan summary",
       "scanning": "Scanning your library…",
-      "pending_one": "{{count}} book needs a decision, {{files}} files",
-      "pending_other": "{{count}} books need a decision, {{files}} files",
       "none": "Nothing needs a decision",
-      "lastScan": "Last scan {{when}}",
-      "neverScanned": "Not scanned yet",
-      "ignored": "{{count}} ignored",
-      "adopted": "{{count}} adopted",
       "nudge": "Author added. Scan now to match their files.",
       "scanningButton": "Scanning…",
       "scanNow": "Scan now",
       "scanError": "The last scan did not finish: {{error}}",
       "noFiles": "The last scan found no book files. Check that the library folder is mounted, then scan again. Your decisions were kept.",
-      "truncated": "This library is larger than one scan lists. Adopt or ignore some books and scan again to see the rest."
+      "truncated": "This library is larger than one scan lists. Adopt or ignore some books and scan again to see the rest.",
+      "needDecision_one": "book needs a decision",
+      "needDecision_other": "books need a decision",
+      "files_one": "file",
+      "files_other": "files",
+      "never": "never",
+      "lastScanLabel": "last scan",
+      "adoptedLabel": "adopted",
+      "ignoredLabel": "ignored",
+      "justNow": "just now"
     },
     "empty": {
       "filteredTitle": "No books match these filters",
@@ -271,6 +270,29 @@
       "scanLibrary": "Scan library",
       "doneTitle": "Every book in your library is matched",
       "doneBody": "Nothing needs a decision. New files show up here after the next scan."
+    },
+    "addAuthor": "Add author",
+    "showFiles": "Show files",
+    "more": "More",
+    "moreFor": "More actions for {{name}}",
+    "match": {
+      "strong": "Strong match",
+      "possible": "Possible match"
+    },
+    "short": {
+      "authorMissing": "{{author}} is not in your library",
+      "authorUnreadable": "No author could be read",
+      "noCandidates": "No book by {{author}} is waiting for a file",
+      "noTitle": "No title could be read",
+      "noTitleMatch": "No close title by {{author}}",
+      "noTitleMatchNoAuthor": "No close title in your library"
+    },
+    "group": {
+      "label": "{{author}}, {{count}} books",
+      "counts": "{{count}} books, {{files}} files",
+      "sentence": "Author not in your library yet",
+      "show": "Show books",
+      "hide": "Hide books"
     }
   },
   "search": {

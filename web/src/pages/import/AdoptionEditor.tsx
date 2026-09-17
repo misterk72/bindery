@@ -4,12 +4,14 @@ import type { AdoptionBookRef, AdoptionItem, AdoptTarget, Book } from '../../api
 import { btn, btnSize } from '../../components/buttons'
 import BookPicker from '../../components/import/BookPicker'
 import CatalogueAdder from '../../components/import/CatalogueAdder'
-import { scorePercent, unitDisplayName } from './adoptionHint'
+import { adoptionHint, scorePercent, unitDisplayName } from './adoptionHint'
 
 interface Props {
   item: AdoptionItem
   onAdopt: (target: AdoptTarget, preview: AdoptionBookRef | null) => void | Promise<void>
   onCancel: () => void
+  // Opens the file list, for the row's Show files action.
+  showFiles?: boolean
 }
 
 function refFromBook(b: Book): AdoptionBookRef {
@@ -23,7 +25,7 @@ function refFromBook(b: Book): AdoptionBookRef {
 // suggestions as radio rows with their scores, a search of the library,
 // prefilled and focused, and a collapsed metadata search that asks a provider
 // only when submitted. Esc closes it and focus goes back to the row.
-export default function AdoptionEditor({ item, onAdopt, onCancel }: Props) {
+export default function AdoptionEditor({ item, onAdopt, onCancel, showFiles = false }: Props) {
   const { t } = useTranslation()
   const headingId = useId()
   const searchRef = useRef<HTMLInputElement>(null)
@@ -32,7 +34,7 @@ export default function AdoptionEditor({ item, onAdopt, onCancel }: Props) {
   const [format, setFormat] = useState(item.format)
   const name = unitDisplayName(item)
 
-  useEffect(() => { searchRef.current?.focus() }, [])
+  useEffect(() => { searchRef.current?.focus({ preventScroll: showFiles }) }, [showFiles])
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Escape') {
@@ -57,6 +59,7 @@ export default function AdoptionEditor({ item, onAdopt, onCancel }: Props) {
       <h4 id={headingId} className="text-sm font-semibold text-slate-800 dark:text-zinc-200">
         {t('adoption.editor.heading', { name, defaultValue: 'Which book is {{name}}?' })}
       </h4>
+      <p className="-mt-2 text-xs text-fg-muted">{adoptionHint(item, t).sentence}</p>
 
       {options.length > 0 && (
         <fieldset>
@@ -134,7 +137,7 @@ export default function AdoptionEditor({ item, onAdopt, onCancel }: Props) {
             </div>
           </div>
           {item.members.length > 1 && (
-            <details className="text-xs">
+            <details className="text-xs" open={showFiles}>
               <summary className="cursor-pointer text-slate-600 dark:text-zinc-400">
                 {t('adoption.editor.files', { count: item.fileCount, defaultValue: '{{count}} files' })}
               </summary>

@@ -1,5 +1,6 @@
 import type { TFunction } from 'i18next'
 import type { AdoptionItem } from '../../api/client'
+import { matchStrength } from './adoptionMatch'
 
 // The one sentence a row says about itself. It is written from facts the scan
 // recorded (the parsed author, the closest title) and ends in the thing to do
@@ -25,13 +26,17 @@ export function adoptionHint(item: AdoptionItem, t: TFunction): AdoptionHintText
   const top = item.candidates[0]
 
   if (top) {
+    const strong = matchStrength(item) === 'strong'
     return {
-      sentence: t('adoption.hint.suggestion', {
-        title: top.book.title,
-        author: top.book.authorName,
-        percent: scorePercent(top.score),
-        defaultValue: 'Closest match is {{title}} by {{author}} ({{percent}}%). Confirm it or choose another book.',
-      }),
+      sentence: strong
+        ? t('adoption.hint.strong', {
+          title: top.book.title, author: top.book.authorName,
+          defaultValue: 'Strong match: {{title}} by {{author}}. Confirm it or choose another book.',
+        })
+        : t('adoption.hint.possible', {
+          title: top.book.title, author: top.book.authorName, percent: scorePercent(top.score),
+          defaultValue: 'Possible match: {{title}} by {{author}}, {{percent}}% title similarity. Check it, then adopt it or choose another book.',
+        }),
       tooltip,
     }
   }

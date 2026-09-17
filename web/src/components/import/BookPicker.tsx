@@ -70,7 +70,7 @@ const BookPicker = forwardRef<HTMLInputElement, Props>(function BookPicker({ onP
         {loading && <p className="py-2 text-xs text-slate-500 dark:text-zinc-500">{t('common.loading', 'Loading...')}</p>}
         {!loading && term.trim().length >= 2 && results.length === 0 && (
           <p className="py-2 text-xs text-slate-500 dark:text-zinc-500">
-            {t('manualImport.noResults', 'No matching books in your library. Search metadata below to add it.')}
+            {t('manualImport.noResults', 'No matching books in your library.')}
           </p>
         )}
         {results.map(b => (

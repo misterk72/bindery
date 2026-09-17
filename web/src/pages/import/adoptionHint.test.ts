@@ -3,6 +3,7 @@ import type { TFunction } from 'i18next'
 import en from '../../i18n/locales/en.json'
 import type { AdoptionItem } from '../../api/client'
 import { adoptionHint, scorePercent } from './adoptionHint'
+import { STRONG_MATCH_SCORE, authorsMatch, matchStrength } from './adoptionMatch'
 
 const lookup = (key: string): unknown =>
   key.split('.').reduce<unknown>((n, p) => (n && typeof n === 'object' ? (n as Record<string, unknown>)[p] : undefined), en)
@@ -39,10 +40,29 @@ describe('adoptionHint', () => {
       .toBe('Becky Chambers is not in your library yet. Add the author, then scan again.')
   })
 
-  it('leads with the suggestion when there is one', () => {
-    const book = { id: 9, title: 'The Martian', authorId: 1, authorName: 'Andy Weir', status: 'wanted', mediaType: 'ebook', monitored: true }
-    expect(adoptionHint(item({ candidates: [{ book, score: 0.816 }] }), t).sentence)
-      .toBe('Closest match is The Martian by Andy Weir (82%). Confirm it or choose another book.')
+  const martian = { id: 9, title: 'The Martian', authorId: 1, authorName: 'Andy Weir', status: 'wanted', mediaType: 'ebook', monitored: true }
+
+  it('calls a close title by the same author a strong match', () => {
+    const strong = item({ parsedAuthor: 'Andy Weir', candidates: [{ book: martian, score: 0.95 }] })
+    expect(matchStrength(strong)).toBe('strong')
+    expect(adoptionHint(strong, t).sentence).toBe('Strong match: The Martian by Andy Weir. Confirm it or choose another book.')
+  })
+
+  it('calls anything weaker a possible match, never a one click confirm', () => {
+    // 0.82 is the "A Martyrs Tale" against "The Martian" case.
+    const weak = item({ parsedAuthor: 'Andy Weir', candidates: [{ book: martian, score: 0.82 }] })
+    expect(matchStrength(weak)).toBe('possible')
+    expect(adoptionHint(weak, t).sentence).not.toContain('Confirm')
+    // A near identical title by another author is still only possible.
+    expect(matchStrength(item({ parsedAuthor: 'Ann Leckie', candidates: [{ book: martian, score: 0.99 }] }))).toBe('possible')
+    expect(STRONG_MATCH_SCORE).toBe(0.92)
+  })
+
+  it('matches authors by their words', () => {
+    expect(authorsMatch('Weir', 'Andy Weir')).toBe(true)
+    expect(authorsMatch('Álvaro Enrigue', 'Alvaro Enrigue')).toBe(true)
+    expect(authorsMatch('Andy Weir', 'Ann Leckie')).toBe(false)
+    expect(authorsMatch('', 'Andy Weir')).toBe(false)
   })
 
   it('clamps scores to a percentage', () => {
