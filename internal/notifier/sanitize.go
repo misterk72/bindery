@@ -43,8 +43,15 @@ func CleanText(s string, maxRunes int) string {
 //   - "<" and ">" Slack and Discord escapes (<!channel>, <!here>, <@U123>,
 //     <#C123>, <https://link|label>);
 //   - "[" and "]" markdown links ([text](https://evil.example)), which cannot
-//     form without the brackets.
+//     form without the brackets;
+//   - "://" in a bare URL, which Discord, Slack, Telegram and Matrix turn
+//     into a clickable link. The slashes become fullwidth solidi, so the
+//     address still reads but no longer links.
+//
+// Backticks, underscores and other formatting are left alone: they change
+// how text looks, not where a click goes.
 var chatMarkup = strings.NewReplacer(
+	"://", ":\uFF0F\uFF0F",
 	"@", "\uFF20",
 	"<", "\uFF1C",
 	">", "\uFF1E",

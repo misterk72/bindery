@@ -84,3 +84,34 @@ func TestRequestRepo_ReopenRespectsCap(t *testing.T) {
 		t.Fatalf("reopen under the cap: %v", err)
 	}
 }
+
+// TestRequestRepo_CapCountsRequestsBeingApproved: a request an admin is
+// approving still counts against its owner's cap, for creates and reopens.
+// The second review found that counting only 'pending' survived every test.
+func TestRequestRepo_CapCountsRequestsBeingApproved(t *testing.T) {
+	_, repo, users := newRequestsFixture(t)
+	ctx := context.Background()
+	admin := mustUser(t, users, "admin")
+	owner := mustUser(t, users, "reader")
+	claimedReq := mustRequest(t, repo, owner.ID, models.RequestKindBook, "OL1W")
+	if _, err := repo.Claim(ctx, claimedReq.ID, admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	next := &models.LibraryRequest{OwnerUserID: owner.ID, Kind: models.RequestKindBook, ForeignID: "OL2W", PayloadJSON: "{}"}
+	if err := repo.Create(ctx, next, 1); !errors.Is(err, ErrRequestCapReached) {
+		t.Fatalf("create at the cap with one request being approved: %v, want ErrRequestCapReached", err)
+	}
+
+	// Reopen: an approved request, with another one being approved.
+	approved := mustRequest(t, repo, owner.ID, models.RequestKindBook, "OL3W")
+	c, err := repo.Claim(ctx, approved.ID, admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Complete(ctx, approved.ID, c.ClaimToken, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Reopen(ctx, approved.ID, owner.ID, "", "{}", 1); !errors.Is(err, ErrRequestCapReached) {
+		t.Fatalf("reopen at the cap with one request being approved: %v, want ErrRequestCapReached", err)
+	}
+}

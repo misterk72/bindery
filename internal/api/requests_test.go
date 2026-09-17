@@ -387,6 +387,8 @@ type fakeAdder struct {
 	mu         sync.Mutex
 	last       addBookParams
 	lastAuthor createAuthorParams
+	// panicWith, when set, makes addBookCore panic with its value.
+	panicWith atomic.Pointer[string]
 }
 
 func (a *fakeAdder) addBookCore(ctx context.Context, req addBookParams) (addBookResult, error) {
@@ -395,6 +397,9 @@ func (a *fakeAdder) addBookCore(ctx context.Context, req addBookParams) (addBook
 	a.lastCtx, a.last = ctx, req
 	a.mu.Unlock()
 	time.Sleep(a.hold)
+	if p := a.panicWith.Load(); p != nil {
+		panic(*p)
+	}
 	if a.err != nil {
 		return addBookResult{}, a.err
 	}

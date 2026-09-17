@@ -231,3 +231,93 @@ func newJSONRequest(method, target, body string) *http.Request {
 }
 
 func newRecorder() *httptest.ResponseRecorder { return httptest.NewRecorder() }
+
+// Second review, finding 1: a panicking add core left the renewer running
+// and the request stuck in approving. The approval now stops the renewer and
+// releases the claim before re-raising the panic for chi's Recoverer.
+func TestRequestsApprove_PanicReleasesClaim(t *testing.T) {
+	adder := &fakeAdder{}
+	msg := "add core exploded"
+	adder.panicWith.Store(&msg)
+	f := newRequestsFixture(t, wellsRequestStub(), adder)
+	f.requests.WithClaimTTL(90 * time.Millisecond)
+	created := decodeRequest(t, f.create(t, f.requester, `{"kind":"book","foreignId":"OL27482W"}`))
+
+	func() {
+		defer func() {
+			if p := recover(); p == nil {
+				t.Fatal("the panic was swallowed; Recoverer must still see it")
+			}
+		}()
+		f.approve(f.admin, created.ID, `{}`)
+	}()
+
+	if n := f.h.activeRenewers.Load(); n != 0 {
+		t.Fatalf("%d claim renewers still running after the panic", n)
+	}
+	row, _ := f.requests.GetByID(context.Background(), created.ID)
+	if row.Status != models.RequestStatusPending {
+		t.Fatalf("status after a panicking approval = %q, want pending", row.Status)
+	}
+	adder.panicWith.Store(nil)
+	if code := f.approve(f.admin, created.ID, `{}`).Code; code != http.StatusOK {
+		t.Fatalf("second approval after the panic: %d, want 200", code)
+	}
+}
+
+// Second review, finding 3: per item suppression alone let a requester cycle
+// through different ids and send one webhook per create. At most
+// requestNotifyPerOwner per hour per requester; other requesters are separate.
+func TestRequestsNotify_PerOwnerCap(t *testing.T) {
+	stub := wellsRequestStub()
+	for i := 0; i < 15; i++ {
+		id := fmt.Sprintf("OL-CAP-%d", i)
+		stub.getBookByID[id] = &models.Book{ForeignID: id, Title: "Book " + id}
+	}
+	f := newRequestsFixture(t, stub, &fakeAdder{})
+	capture := &countingNotifier{}
+	f.h.WithNotifier(capture, f.users)
+	for i := 0; i < 15; i++ {
+		rec := f.create(t, f.requester, fmt.Sprintf(`{"kind":"book","foreignId":"OL-CAP-%d"}`, i))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create %d: %d %s", i, rec.Code, rec.Body.String())
+		}
+		created := decodeRequest(t, rec)
+		f.h.Withdraw(newRecorder(), withID(asUser(newJSONRequest(http.MethodDelete, "/", ""), f.requester), created.ID))
+	}
+	if rec := f.create(t, f.other, `{"kind":"book","foreignId":"OL-CAP-0"}`); rec.Code != http.StatusCreated {
+		t.Fatalf("other requester: %d", rec.Code)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if n := len(capture.snapshot()); n != requestNotifyPerOwner+1 {
+		t.Fatalf("sent %d webhooks, want %d for the first requester plus 1 for the other", n, requestNotifyPerOwner)
+	}
+}
+
+func TestOwnerBudget_WindowAndBound(t *testing.T) {
+	b := newOwnerBudget(2, time.Hour, 3)
+	now := time.Unix(1_700_000_000, 0)
+	b.now = func() time.Time { return now }
+	if ok, _ := b.allow(1); !ok {
+		t.Fatal("first")
+	}
+	if ok, _ := b.allow(1); !ok {
+		t.Fatal("second")
+	}
+	if ok, first := b.allow(1); ok || !first {
+		t.Fatalf("third: ok=%v firstRefusal=%v, want refused and logged", ok, first)
+	}
+	if _, first := b.allow(1); first {
+		t.Fatal("fourth refusal logged again")
+	}
+	for id := int64(2); id < 10; id++ {
+		b.allow(id)
+		if len(b.owners) > 3 {
+			t.Fatalf("holds %d owners, bound is 3", len(b.owners))
+		}
+	}
+	now = now.Add(2 * time.Hour)
+	if ok, _ := b.allow(1); !ok {
+		t.Fatal("after the window the owner may notify again")
+	}
+}

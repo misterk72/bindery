@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -88,6 +89,11 @@ type RequestHandler struct {
 	// notified suppresses a repeat requestCreated for the same request within
 	// requestNotifyWindow: create and withdraw in a loop is one webhook.
 	notified *recentKeys
+	// ownerNotifies caps requestCreated webhooks per requester per hour, so
+	// cycling through different ids cannot flood the admin's channel.
+	ownerNotifies *ownerBudget
+	// activeRenewers counts running claim renewal goroutines.
+	activeRenewers atomic.Int32
 }
 
 // requestNotifyWindow is how long a requestCreated for one (owner, kind,
@@ -138,6 +144,68 @@ func (k *recentKeys) first(key string) bool {
 	return true
 }
 
+// requestNotifyPerOwner is how many requestCreated webhooks one requester can
+// cause in requestNotifyWindow. Requests past it are stored and shown in the
+// queue as usual; only the webhook is skipped.
+const requestNotifyPerOwner = 10
+
+// ownerBudget allows each owner limit events per window, holding at most max
+// owners. An owner over the limit is logged once per window.
+type ownerBudget struct {
+	mu     sync.Mutex
+	owners map[int64]*ownerWindow
+	limit  int
+	window time.Duration
+	max    int
+	now    func() time.Time
+}
+
+type ownerWindow struct {
+	start  time.Time
+	count  int
+	logged bool
+}
+
+func newOwnerBudget(limit int, window time.Duration, max int) *ownerBudget {
+	return &ownerBudget{owners: make(map[int64]*ownerWindow), limit: limit, window: window, max: max, now: time.Now}
+}
+
+// allow spends one event for owner and reports whether it is within the
+// limit, and whether this is the first refusal in the window (to log once).
+func (b *ownerBudget) allow(owner int64) (ok, firstRefusal bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := b.now()
+	w, found := b.owners[owner]
+	if found && now.Sub(w.start) >= b.window {
+		found = false
+	}
+	if !found {
+		if _, exists := b.owners[owner]; !exists && len(b.owners) >= b.max {
+			for id, other := range b.owners {
+				if now.Sub(other.start) >= b.window {
+					delete(b.owners, id)
+				}
+			}
+			if len(b.owners) >= b.max {
+				for id := range b.owners {
+					delete(b.owners, id)
+					break
+				}
+			}
+		}
+		w = &ownerWindow{start: now}
+		b.owners[owner] = w
+	}
+	if w.count < b.limit {
+		w.count++
+		return true, false
+	}
+	first := !w.logged
+	w.logged = true
+	return false, first
+}
+
 // WithProviderLimiter replaces the provider bucket Create spends from.
 func (h *RequestHandler) WithProviderLimiter(l *auth.RequesterLimiter) *RequestHandler {
 	h.providerLimit = l
@@ -184,6 +252,15 @@ func (h *RequestHandler) notifyCreated(ctx context.Context, req models.LibraryRe
 	if h.notified != nil && !h.notified.first(fmt.Sprintf("%d|%s|%s", req.OwnerUserID, req.Kind, req.ForeignID)) {
 		return
 	}
+	if h.ownerNotifies != nil {
+		if ok, firstRefusal := h.ownerNotifies.allow(req.OwnerUserID); !ok {
+			if firstRefusal {
+				slog.Warn("requests: requestCreated webhooks for this requester paused for the rest of the hour",
+					"owner_user_id", req.OwnerUserID, "limit", requestNotifyPerOwner)
+			}
+			return
+		}
+	}
 	username := ""
 	if h.users != nil {
 		if u, err := h.users.GetByID(ctx, req.OwnerUserID); err == nil && u != nil {
@@ -205,6 +282,7 @@ func NewRequestHandler(requests *db.RequestRepo, books *db.BookRepo, authors *db
 		requests: requests, books: books, authors: authors, settings: settings, meta: meta, adder: adder,
 		providerLimit: auth.DefaultRequesterProviderLimiter(),
 		notified:      newRecentKeys(requestNotifyWindow, requestNotifyMaxKeys),
+		ownerNotifies: newOwnerBudget(requestNotifyPerOwner, requestNotifyWindow, requestNotifyMaxKeys),
 	}
 }
 
@@ -724,7 +802,25 @@ func (h *RequestHandler) Approve(w http.ResponseWriter, r *http.Request) {
 	// background, but their provider lookups and addBookCore's row poll can
 	// still take a while, and a claim that went stale mid add could be
 	// retaken by a second approval.
-	stopRenew := h.renewClaim(req.ID, req.ClaimToken)
+	//
+	// If the add panics, the renewer must still stop and the claim must still
+	// be released: chi's Recoverer keeps the server up, and without this the
+	// request would sit in approving, renewed forever and counted against the
+	// requester's cap, until restart. The panic is re-raised so Recoverer
+	// still logs it.
+	var stopOnce sync.Once
+	renewStop := h.renewClaim(req.ID, req.ClaimToken)
+	stopRenew := func() { stopOnce.Do(renewStop) }
+	defer func() {
+		if p := recover(); p != nil {
+			stopRenew()
+			if relErr := h.requests.Release(context.WithoutCancel(ctx), req.ID, req.ClaimToken); relErr != nil {
+				slog.Error("requests: release claim after a panicking approval", "id", req.ID, "error", relErr)
+			}
+			panic(p)
+		}
+	}()
+	defer stopRenew()
 	bookID, authorID, status, msg, err := h.runApproval(ctx, req, body)
 	stopRenew()
 	if err != nil || msg != "" {
@@ -767,8 +863,10 @@ func (h *RequestHandler) renewClaim(id int64, token string) (stop func()) {
 	}
 	done := make(chan struct{})
 	finished := make(chan struct{})
+	h.activeRenewers.Add(1)
 	go func() {
 		defer close(finished)
+		defer h.activeRenewers.Add(-1)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
