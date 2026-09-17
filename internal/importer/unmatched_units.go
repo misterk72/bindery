@@ -185,6 +185,11 @@ func groupUnmatched(files []unmatchedScanFile, roots []string) (groups []unmatch
 			}
 		}
 		rep := representative(a.members)
+		// A disc set's tracks parse their title from the disc folder ("CD 1");
+		// the book is the folder above it, so the unit is named after that.
+		if a.folder != "" && filepath.Dir(a.members[0].path) != a.folder {
+			rep.title = cleanLayoutTitle(filepath.Base(a.folder))
+		}
 		u.ParsedTitle, u.ParsedAuthor, u.Reason = rep.title, rep.author, rep.reason
 		groups = append(groups, unmatchedGroup{unit: u, rep: rep})
 	}

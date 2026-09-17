@@ -50,6 +50,15 @@ func TestGroupUnmatched_Table(t *testing.T) {
 			want: []want{{"/lib/Weir/Artemis", "folder", "audiobook", "Weir", "Weir/Artemis", "Artemis", 2}},
 		},
 		{
+			name: "a disc set is named after its book folder, not a disc",
+			files: []unmatchedScanFile{
+				audioFile("/lib/Sanderson/Rhythm of War/CD1/01.mp3", "CD 1"),
+				audioFile("/lib/Sanderson/Rhythm of War/CD2/01.mp3", "CD 2"),
+				audioFile("/lib/Sanderson/Rhythm of War/CD2/02.mp3", "CD 2"),
+			},
+			want: []want{{"/lib/Sanderson/Rhythm of War", "folder", "audiobook", "Sanderson", "Sanderson/Rhythm of War", "Rhythm of War", 3}},
+		},
+		{
 			name: "a disc folder straight under the root is its own unit",
 			files: []unmatchedScanFile{
 				audioFile("/lib/CD1/01.mp3", "Something"),
