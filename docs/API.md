@@ -521,7 +521,7 @@ without a custom template:
 | `format` | `ebook` \| `audiobook` on `bookImported` and `upgrade`. **Omitted for Apprise targets only** (a URL with a `/notify` path segment) — Apprise reserves `format` for the body markup and rejects anything but `text`/`html`/`markdown` with HTTP 400. Every other consumer still receives it |
 | `mediaFormat` | the same value as `format`, always present. Use this one if your relay is Apprise, or if you want a key that is never stripped |
 | event extras | `author`, `size`, `path`, `status`, `clientId` when relevant |
-| `requestCreated` extras | `kind` (`book` \| `author`), `username`, `mediaType`, `requestId`. `title`, `author` and `username` have control and invisible characters removed, are length capped, and have every `@` replaced with the fullwidth `＠`, so a title or username cannot mention a chat channel. The event is off on every webhook until its **Request** toggle is turned on |
+| `requestCreated` extras | `kind` (`book` \| `author`), `username`, `mediaType`, `requestId`. `title`, `author` and `username` have control and invisible characters removed, are length capped, and have `@`, `<`, `>`, `[` and `]` replaced with fullwidth lookalikes, so a title or username cannot mention a channel, use a Slack escape such as `<!channel>`, or form a markdown link. The same request from the same person notifies at most once an hour. The event is off on every webhook until its **Request** toggle is turned on |
 
 Which events a webhook receives is set per notification by `onGrab`,
 `onImport`, `onUpgrade`, `onFailure`, `onHealth`, `onBookAnnounced` and
@@ -659,7 +659,7 @@ provider reports. Answers:
 |--------|---------|
 | `201` | the request, as below |
 | `409` | already in the library, already requested by this user (pending or declined); the `error` field says which |
-| `429` | this user already has `requests.max_pending_per_user` requests waiting (default 25) |
+| `429` | this user already has `requests.max_pending_per_user` requests waiting (default 25), or a requester made creates or searches faster than the per user allowance (burst of 20, then one every 3 seconds; `Retry-After` says when). The cap is checked in the same statement as the insert, so concurrent creates cannot pass it |
 | `502`, `404` | the provider did not answer, or has no such id |
 
 A request as the API returns it:
@@ -685,13 +685,14 @@ each item has only `id`, `title`, `authorName`, `series`, `seriesPosition`,
 `audiobookRootFolderId`, `monitorMode`, `monitorLatestCount` and
 `monitorNewItems` apply to an author request; `mediaType` and `searchOnAdd`
 apply to both kinds. The approval is claimed atomically, so of two concurrent
-approvals one adds and the other gets `409`. A request whose item reached the
+approvals one adds and the other gets `409`, and a running approval renews its
+claim so a slow add cannot be taken over. A request whose item reached the
 library in the meantime answers `409`, and a failed add leaves the request
 pending. Unknown fields are refused with `400`.
 
 A requester may call only `/requests`, `/requests/{id}` (DELETE),
 `/requests/library`, the three metadata searches (`/search/author`,
-`/search/book`, `/book/lookup`, rate limited per user), `/images`, `/health`
+`/search/book`, `/book/lookup`, rate limited per user), `/images` (rate limited per user with a larger allowance), `/health`
 and the session routes under `/auth`. Every other route answers `403` for
 that role, and `/opds` does too.
 
