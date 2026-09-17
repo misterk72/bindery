@@ -423,22 +423,29 @@ supplying the answer, so **Undo** can take it back exactly.
 
 How to work through the list:
 
-- **A row with a suggestion** shows the closest book in your library and how
-  close the title is. **Confirm** adopts it in one click.
-- **Other book** or **Choose book** opens the row in place: the suggestions
-  with their scores, a search of your library (prefilled from the file), and
-  a collapsed **Search metadata**. Metadata providers are only asked when you
-  press Search there, so opening rows never spends provider quota. **Add and
-  adopt** adds the book from metadata and adopts the files in one step.
-- **The folder rail** lists the author folders with the most books to decide.
-  When no book in a folder matched because its author is not in your library,
-  that is one decision for the whole folder: **Add author**, then **Scan now**,
-  and the scan attaches what it can by itself. **Show** filters the list to a
-  folder, and **Ignore folder** sets all of its books aside.
-- **Ignore** hides a row that is not a book you want tracked. Later scans keep
+- **Strong match** means the title is very close and the author is the same.
+  **Confirm** adopts it in one click.
+- **Possible match** means the title is only similar, or the author differs.
+  Click the suggested title to check it in the editor, where it is already
+  selected, and adopt it from there.
+- **Choose book** opens the row in place: the suggestions with their scores,
+  a search of your library (prefilled from the file), and a collapsed
+  **Search metadata**. Metadata providers are only asked when you press Search
+  there, so opening rows never spends provider quota. **Add and adopt** adds
+  the book from metadata and adopts the files in one step.
+- **Books whose author is not in your library** and that share a folder are
+  one row: that is one decision. **Add author**, then **Scan now**, and the
+  scan attaches what it can by itself. Open the row to see its books, which
+  you can still choose or ignore one by one. Its **More** menu has **Ignore
+  folder** to set all of them aside.
+- **More** on any row holds the rest: Choose book, Show files, Ignore.
+  **Ignore** hides a row that is not a book you want tracked. Later scans keep
   it hidden. The **Ignored** list brings any of them back.
-- The sentence on each row says what the scan found and what to do next.
-  Hovering it shows the scanner's reason code, for bug reports.
+- **The folder list** on the left filters the table to one author folder. An
+  amber dot marks a folder whose author is not in your library.
+- Each row says in one line what the scan found. Hovering it shows the full
+  explanation and the scanner's reason code, for bug reports; the editor
+  shows the explanation too.
 - Keyboard: arrow keys move between rows, **Enter** opens one, **Esc** closes
   it, **i** ignores, **u** undoes, **/** jumps to the search.
 
