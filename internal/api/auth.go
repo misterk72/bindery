@@ -319,16 +319,24 @@ func (h *AuthHandler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	resp := authConfigResponse{
 		Mode: string(h.mode(ctx)),
 	}
-	// Only expose the API key to admin users — it grants full access.
-	if auth.UserRoleFromContext(ctx) == "admin" {
-		resp.APIKey = h.apiKey(ctx)
-	}
+	// Only expose the API key to admin users — it grants full access. The
+	// context role is not enough on its own: an auth mode grant can stamp
+	// admin on a signed in person's request, so when the request names a
+	// user, that user's stored role must be admin too.
+	canSeeKey := auth.UserRoleFromContext(ctx) == auth.RoleAdmin
 	if uid := auth.UserIDFromContext(ctx); uid != 0 {
-		if u, _ := h.users.GetByID(ctx, uid); u != nil {
+		u, _ := h.users.GetByID(ctx, uid)
+		if u != nil {
 			resp.Username = u.Username
+		}
+		if u == nil || u.Role != auth.RoleAdmin {
+			canSeeKey = false
 		}
 	} else if list, err := h.listAllUsers(ctx); err == nil && len(list) == 1 {
 		resp.Username = list[0].Username
+	}
+	if canSeeKey {
+		resp.APIKey = h.apiKey(ctx)
 	}
 	writeOK(w, resp)
 }

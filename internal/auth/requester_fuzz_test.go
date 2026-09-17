@@ -47,7 +47,7 @@ func FuzzRequesterAllowList(f *testing.F) {
 		reachedMethod = r.Method
 		w.WriteHeader(http.StatusNoContent)
 	})
-	guard := restrictRequester(defaultRequesterMatcher, newRequesterLimiter(1<<30, 1<<30, 0, 4))
+	guard := restrictRequester(defaultRequesterMatcher, NewRequesterLimiter(1<<30, 1<<30, 0, 4), NewRequesterLimiter(1<<30, 1<<30, 0, 4))
 	asRequester := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := WithUserRole(WithUserID(r.Context(), 42), RoleRequester)

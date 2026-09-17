@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"path"
@@ -16,10 +17,25 @@ import (
 type RequesterRoute struct {
 	Method  string
 	Pattern string
-	// Limited routes spend metadata provider quota, so a requester's calls to
-	// them go through the per user limiter (see requesterLimiter).
-	Limited bool
+	// Limit names the per user bucket a requester's calls to this route
+	// spend from. LimitNone for routes that cost nothing outside Bindery.
+	Limit RequesterLimit
 }
+
+// RequesterLimit selects a per user token bucket.
+type RequesterLimit int
+
+const (
+	// LimitNone spends nothing.
+	LimitNone RequesterLimit = iota
+	// LimitProvider is for calls that reach a metadata provider: the three
+	// searches and POST /requests, whose lookup reaches the provider too.
+	LimitProvider
+	// LimitImage is for the image proxy, which fetches from the internet on a
+	// cache miss. Its bucket is far larger, because one library page loads a
+	// cover per book.
+	LimitImage
+)
 
 // RequesterAllowList is every API route a requester may call. It is the whole
 // of the requester's API surface: RestrictRequester answers 403 for any
@@ -51,16 +67,19 @@ var RequesterAllowList = []RequesterRoute{
 
 	// The metadata searches the Add dialog runs. Each call spends provider
 	// quota, hence Limited.
-	{Method: http.MethodGet, Pattern: "/api/v1/search/author", Limited: true},
-	{Method: http.MethodGet, Pattern: "/api/v1/search/book", Limited: true},
-	{Method: http.MethodGet, Pattern: "/api/v1/book/lookup", Limited: true},
+	{Method: http.MethodGet, Pattern: "/api/v1/search/author", Limit: LimitProvider},
+	{Method: http.MethodGet, Pattern: "/api/v1/search/book", Limit: LimitProvider},
+	{Method: http.MethodGet, Pattern: "/api/v1/book/lookup", Limit: LimitProvider},
 
 	// Cover images, through the SSRF guarded proxy.
-	{Method: http.MethodGet, Pattern: "/api/v1/images"},
+	{Method: http.MethodGet, Pattern: "/api/v1/images", Limit: LimitImage},
 
-	// The requester's own requests and the read only library projection.
+	// The requester's own requests and the read only library projection. A
+	// create looks the item up at the provider, so it spends the provider
+	// bucket; the handler spends it again itself if the guard did not, so the
+	// limit holds even if this table changes.
 	{Method: http.MethodGet, Pattern: "/api/v1/requests"},
-	{Method: http.MethodPost, Pattern: "/api/v1/requests"},
+	{Method: http.MethodPost, Pattern: "/api/v1/requests", Limit: LimitProvider},
 	{Method: http.MethodDelete, Pattern: "/api/v1/requests/{id}"},
 	{Method: http.MethodGet, Pattern: "/api/v1/requests/library"},
 }
@@ -69,15 +88,15 @@ var RequesterAllowList = []RequesterRoute{
 // (plan item P6) and shared by every request.
 type requesterMatcher struct {
 	mux     *chi.Mux
-	limited map[string]bool // "METHOD pattern" -> Limited
+	limited map[string]RequesterLimit // "METHOD pattern" -> Limit
 }
 
 func newRequesterMatcher(routes []RequesterRoute) *requesterMatcher {
-	m := &requesterMatcher{mux: chi.NewRouter(), limited: make(map[string]bool, len(routes))}
+	m := &requesterMatcher{mux: chi.NewRouter(), limited: make(map[string]RequesterLimit, len(routes))}
 	noop := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
 	for _, rt := range routes {
 		m.mux.Method(rt.Method, rt.Pattern, noop)
-		m.limited[rt.Method+" "+rt.Pattern] = rt.Limited
+		m.limited[rt.Method+" "+rt.Pattern] = rt.Limit
 	}
 	return m
 }
@@ -98,24 +117,24 @@ var defaultRequesterMatcher = newRequesterMatcher(RequesterAllowList)
 // HEAD is matched as GET, the way net/http treats it. The method is r.Method
 // only; X-HTTP-Method-Override and similar headers are never consulted, and a
 // chi routing method that disagrees with r.Method is refused.
-func (m *requesterMatcher) match(r *http.Request) (allowed, limited bool) {
+func (m *requesterMatcher) match(r *http.Request) (allowed bool, limit RequesterLimit) {
 	method := r.Method
 	if rctx := chi.RouteContext(r.Context()); rctx != nil && rctx.RouteMethod != "" && rctx.RouteMethod != method {
-		return false, false
+		return false, LimitNone
 	}
 	if method == http.MethodHead {
 		method = http.MethodGet
 	}
 	if r.URL == nil || r.URL.RawPath != "" {
-		return false, false
+		return false, LimitNone
 	}
 	p := r.URL.Path
 	if !canonicalRequesterPath(p) {
-		return false, false
+		return false, LimitNone
 	}
 	pattern := m.mux.Find(chi.NewRouteContext(), method, p)
 	if pattern == "" {
-		return false, false
+		return false, LimitNone
 	}
 	return true, m.limited[method+" "+pattern]
 }
@@ -155,16 +174,40 @@ func restrictedRole(role string, userID int64) bool {
 // useAPIAuth (cmd/bindery/sensitive_routes.go), so it covers both the /api/v1
 // tree and the Arr compatible /api tree.
 //
-// Admin and user requests pass untouched. So do requests the auth mode admits
-// as the install (API key, disabled mode, a trusted local client in
-// local-only mode): Middleware stamps those admin, even when a requester's
-// cookie rides along. The requester role therefore only restricts anything
-// when the auth mode is enabled or proxy.
+// Admin and user requests pass untouched, and so does a request carrying the
+// API key, which Middleware stamps admin. A requester's session is never
+// elevated by the auth mode: Middleware keeps the requester role in disabled
+// and local-only mode too, so these restrictions hold in every mode.
 func RestrictRequester(next http.Handler) http.Handler {
-	return restrictRequester(defaultRequesterMatcher, defaultRequesterLimiter)(next)
+	return restrictRequester(defaultRequesterMatcher, defaultProviderLimiter, defaultImageLimiter)(next)
 }
 
-func restrictRequester(m *requesterMatcher, limiter *requesterLimiter) func(http.Handler) http.Handler {
+type providerChargedCtxKey struct{}
+
+// RequesterProviderCharged reports whether the guard already spent a provider
+// token for this request.
+func RequesterProviderCharged(ctx context.Context) bool {
+	v, _ := ctx.Value(providerChargedCtxKey{}).(bool)
+	return v
+}
+
+// DefaultRequesterProviderLimiter is the provider bucket the guard spends
+// from, for handlers that spend it themselves (see AllowRequester).
+func DefaultRequesterProviderLimiter() *RequesterLimiter { return defaultProviderLimiter }
+
+// AllowRequester spends one token from l for a restricted caller and reports
+// whether the call may go ahead, with the whole seconds to wait when not.
+// Admins, users and install requests always may. A request the guard already
+// charged from the provider bucket is not charged twice.
+func (l *RequesterLimiter) AllowRequester(ctx context.Context) (bool, int) {
+	uid := UserIDFromContext(ctx)
+	if l == nil || !restrictedRole(UserRoleFromContext(ctx), uid) || RequesterProviderCharged(ctx) {
+		return true, 0
+	}
+	return l.allow(uid)
+}
+
+func restrictRequester(m *requesterMatcher, provider, images *RequesterLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
@@ -173,7 +216,7 @@ func restrictRequester(m *requesterMatcher, limiter *requesterLimiter) func(http
 				next.ServeHTTP(w, r)
 				return
 			}
-			allowed, limited := m.match(r)
+			allowed, limit := m.match(r)
 			if !allowed {
 				// The path is caller controlled; log only its length and the
 				// method so a probing requester cannot write into the log.
@@ -184,13 +227,23 @@ func restrictRequester(m *requesterMatcher, limiter *requesterLimiter) func(http
 				_, _ = w.Write([]byte(`{"error":"not available to requesters"}`))
 				return
 			}
-			if limited && limiter != nil {
-				if ok, retry := limiter.allow(uid); !ok {
+			var bucket *RequesterLimiter
+			switch limit {
+			case LimitProvider:
+				bucket = provider
+			case LimitImage:
+				bucket = images
+			}
+			if bucket != nil {
+				if ok, retry := bucket.allow(uid); !ok {
 					w.Header().Set("Content-Type", "application/json")
 					w.Header().Set("Retry-After", strconv.Itoa(retry))
 					w.WriteHeader(http.StatusTooManyRequests)
-					_, _ = w.Write([]byte(`{"error":"too many searches, try again shortly"}`))
+					_, _ = w.Write([]byte(`{"error":"too many requests, try again shortly"}`))
 					return
+				}
+				if limit == LimitProvider {
+					r = r.WithContext(context.WithValue(r.Context(), providerChargedCtxKey{}, true))
 				}
 			}
 			next.ServeHTTP(w, r)

@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// requesterLimiter is a per user token bucket for the requester routes that
+// RequesterLimiter is a per user token bucket for the requester routes that
 // spend metadata provider quota (security review item S4). Hardcover has a
 // daily limit and Bindery had no general limiter, so without this one
 // requester could drain the quota every other user depends on.
@@ -16,7 +16,7 @@ import (
 // than maxUsers entries. When it is full after a sweep, the least recently
 // used bucket is evicted; that user's next call starts with a full bucket,
 // which is a bounded gift, never a lockout.
-type requesterLimiter struct {
+type RequesterLimiter struct {
 	mu        sync.Mutex
 	buckets   map[int64]*tokenBucket
 	capacity  float64
@@ -42,10 +42,24 @@ const (
 	requesterLimiterMaxUser = 1024
 )
 
-var defaultRequesterLimiter = newRequesterLimiter(requesterSearchBurst, requesterSearchRefill, requesterLimiterIdle, requesterLimiterMaxUser)
+// Covers: 240 up front, then four a second. The library page loads up to 60
+// covers per page and the browser caches them, so an ordinary session never
+// comes near it; a script pulling arbitrary URLs through the proxy does.
+const (
+	requesterImageBurst  = 240
+	requesterImageRefill = 4.0
+)
 
-func newRequesterLimiter(capacity int, refillPerSecond float64, idle time.Duration, maxUsers int) *requesterLimiter {
-	return &requesterLimiter{
+var (
+	defaultProviderLimiter = NewRequesterLimiter(requesterSearchBurst, requesterSearchRefill, requesterLimiterIdle, requesterLimiterMaxUser)
+	defaultImageLimiter    = NewRequesterLimiter(requesterImageBurst, requesterImageRefill, requesterLimiterIdle, requesterLimiterMaxUser)
+)
+
+// NewRequesterLimiter returns a limiter holding capacity tokens per user,
+// refilled at refillPerSecond, with buckets idle longer than idle dropped and
+// at most maxUsers buckets held.
+func NewRequesterLimiter(capacity int, refillPerSecond float64, idle time.Duration, maxUsers int) *RequesterLimiter {
+	return &RequesterLimiter{
 		buckets:  make(map[int64]*tokenBucket),
 		capacity: float64(capacity),
 		refill:   refillPerSecond,
@@ -57,7 +71,7 @@ func newRequesterLimiter(capacity int, refillPerSecond float64, idle time.Durati
 
 // allow spends one token for userID. When none is left it returns false and
 // the whole seconds until the next token.
-func (l *requesterLimiter) allow(userID int64) (bool, int) {
+func (l *RequesterLimiter) allow(userID int64) (bool, int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
@@ -86,7 +100,7 @@ func (l *requesterLimiter) allow(userID int64) (bool, int) {
 	return false, wait
 }
 
-func (l *requesterLimiter) sweep(now time.Time) {
+func (l *RequesterLimiter) sweep(now time.Time) {
 	if l.lastSweep.IsZero() {
 		l.lastSweep = now
 	}
@@ -101,7 +115,7 @@ func (l *requesterLimiter) sweep(now time.Time) {
 	}
 }
 
-func (l *requesterLimiter) evictOldest() {
+func (l *RequesterLimiter) evictOldest() {
 	var oldestID int64
 	var oldest time.Time
 	first := true
@@ -115,7 +129,7 @@ func (l *requesterLimiter) evictOldest() {
 	}
 }
 
-func (l *requesterLimiter) size() int {
+func (l *RequesterLimiter) size() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return len(l.buckets)

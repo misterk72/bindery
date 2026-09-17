@@ -158,6 +158,7 @@ func newRequesterFixture(t *testing.T, urlBase string) *requesterFixture {
 		useAPIAuth(r, provider)
 		r.Get("/health", ok)
 		r.Get("/auth/status", ok)
+		r.Get("/auth/config", api.NewAuthHandler(users, settings, auth.NewLoginLimiter(10, time.Minute)).GetConfig)
 		r.Get("/search/book", ok)
 		r.Get("/book/lookup", ok)
 		r.Get("/images", ok)
@@ -186,8 +187,13 @@ func newRequesterFixture(t *testing.T, urlBase string) *requesterFixture {
 }
 
 func (f *requesterFixture) do(method, target string, cookie *http.Cookie) *httptest.ResponseRecorder {
+	// Not local, so local-only cannot grant admin.
+	return f.doFrom(method, target, cookie, "203.0.113.9:4000")
+}
+
+func (f *requesterFixture) doFrom(method, target string, cookie *http.Cookie, remote string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, target, nil)
-	req.RemoteAddr = "203.0.113.9:4000" // not local, so local-only cannot grant admin
+	req.RemoteAddr = remote
 	if cookie != nil {
 		req.AddCookie(cookie)
 	}
@@ -302,18 +308,47 @@ func TestRequesterGuard_EnumerableRoutes(t *testing.T) {
 	}
 }
 
-// TestRequesterGuard_AdminGrantingModesUnaffected: disabled mode and the API
-// key admit the install as admin, and a requester cookie riding along does
-// not change that. The requester role restricts only under enabled or proxy.
-func TestRequesterGuard_AdminGrantingModesUnaffected(t *testing.T) {
+// TestRequesterGuard_ModeNeverElevatesARequester: local-only and disabled
+// mode grant admin to the caller, but not to a requester's own session. From
+// 127.0.0.1 in local-only mode a requester used to be served as the admin,
+// read the API key from /auth/config and keep it after the mode changed back.
+// Role user in local-only mode is unchanged (still granted admin), and the
+// API key still acts as the admin whatever cookie rides along.
+func TestRequesterGuard_ModeNeverElevatesARequester(t *testing.T) {
 	f := newRequesterFixture(t, "")
 	ctx := context.Background()
-	if err := f.settings.Set(ctx, api.SettingAuthMode, string(auth.ModeDisabled)); err != nil {
+	if err := f.settings.Set(ctx, api.SettingAuthAPIKey, "k-requester-test"); err != nil {
 		t.Fatal(err)
 	}
-	if rec := f.do(http.MethodGet, "/api/v1/queue", f.cookie); rec.Code != http.StatusNoContent {
-		t.Fatalf("disabled mode with a requester cookie: status %d, want 204", rec.Code)
+	for _, mode := range []auth.Mode{auth.ModeLocalOnly, auth.ModeDisabled} {
+		if err := f.settings.Set(ctx, api.SettingAuthMode, string(mode)); err != nil {
+			t.Fatal(err)
+		}
+		if rec := f.doFrom(http.MethodGet, "/api/v1/queue", f.cookie, "127.0.0.1:5555"); rec.Code != http.StatusForbidden {
+			t.Errorf("%s mode, requester cookie from 127.0.0.1, GET /queue: status %d, want 403", mode, rec.Code)
+		}
+		rec := f.doFrom(http.MethodGet, "/api/v1/auth/config", f.cookie, "127.0.0.1:5555")
+		if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "k-requester-test") {
+			t.Errorf("%s mode, requester /auth/config: status %d body %s, want 200 with no API key", mode, rec.Code, rec.Body.String())
+		}
 	}
+
+	// Role user in local-only mode keeps the admin grant.
+	if err := f.settings.Set(ctx, api.SettingAuthMode, string(auth.ModeLocalOnly)); err != nil {
+		t.Fatal(err)
+	}
+	if rec := f.doFrom(http.MethodGet, "/api/v1/queue", f.userCookie, "127.0.0.1:5555"); rec.Code != http.StatusNoContent {
+		t.Errorf("local-only, role user cookie from 127.0.0.1, GET /queue: status %d, want 204", rec.Code)
+	}
+	if rec := f.doFrom(http.MethodGet, "/api/v1/indexer", f.userCookie, "127.0.0.1:5555"); rec.Code != http.StatusNoContent {
+		t.Errorf("local-only, role user cookie from 127.0.0.1, admin route: status %d, want 204 (grant unchanged)", rec.Code)
+	}
+	// With no cookie at all the local client is still the admin.
+	rec := f.doFrom(http.MethodGet, "/api/v1/auth/config", nil, "127.0.0.1:5555")
+	if !strings.Contains(rec.Body.String(), "k-requester-test") {
+		t.Errorf("local-only anonymous local client /auth/config: %s, want the API key", rec.Body.String())
+	}
+
 	if err := f.settings.Set(ctx, api.SettingAuthMode, string(auth.ModeEnabled)); err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +359,7 @@ func TestRequesterGuard_AdminGrantingModesUnaffected(t *testing.T) {
 	req.RemoteAddr = "203.0.113.9:4000"
 	req.AddCookie(f.cookie)
 	req.Header.Set("X-Api-Key", "k-requester-test")
-	rec := httptest.NewRecorder()
+	rec = httptest.NewRecorder()
 	f.handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("API key with a requester cookie: status %d, want 204", rec.Code)
@@ -395,6 +430,38 @@ func TestRequesterGuard_OPDSDenied(t *testing.T) {
 		opds.ServeHTTP(rec, req)
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("requester Basic GET %s: status %d, want 403", p, rec.Code)
+		}
+	}
+}
+
+// TestRequesterGuard_OPDSModeNeverElevatesARequester: the OPDS tree's
+// disabled and local-only bypasses do not admit a requester's session either.
+func TestRequesterGuard_OPDSModeNeverElevatesARequester(t *testing.T) {
+	f := newRequesterFixture(t, "")
+	ctx := context.Background()
+	opds := chi.NewRouter()
+	opds.Route("/opds", func(r chi.Router) {
+		r.Use(api.OPDSAuth(f.provider, f.users, auth.NewLoginLimiter(50, time.Minute)))
+		r.Get("/", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	})
+	for _, mode := range []auth.Mode{auth.ModeLocalOnly, auth.ModeDisabled} {
+		if err := f.settings.Set(ctx, api.SettingAuthMode, string(mode)); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range []struct {
+			cookie *http.Cookie
+			want   int
+		}{{f.cookie, http.StatusForbidden}, {f.userCookie, http.StatusOK}, {nil, http.StatusOK}} {
+			req := httptest.NewRequest(http.MethodGet, "/opds/", nil)
+			req.RemoteAddr = "127.0.0.1:5555"
+			if c.cookie != nil {
+				req.AddCookie(c.cookie)
+			}
+			rec := httptest.NewRecorder()
+			opds.ServeHTTP(rec, req)
+			if rec.Code != c.want {
+				t.Errorf("%s mode, OPDS from 127.0.0.1 with cookie %v: status %d, want %d", mode, c.cookie != nil, rec.Code, c.want)
+			}
 		}
 	}
 }

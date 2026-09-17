@@ -457,6 +457,15 @@ func Middleware(p Provider) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
+			// A requester's own session is never elevated by the auth mode.
+			// Without this, local-only served a requester on the LAN (and
+			// disabled mode served every requester) as the admin, API key
+			// included. Only the requester role is excluded here; what the mode
+			// grant does for admin and user sessions is unchanged.
+			if (cookieValid || proxyValid) && UserRoleFromContext(r.Context()) == RoleRequester {
+				next.ServeHTTP(w, r)
+				return
+			}
 			if ModeGrantsAdmin(mode, r, p.TrustedProxyCIDRs()) {
 				// The mode itself admits the caller (disabled: everyone;
 				// local-only: a trusted local client), so the request acts as

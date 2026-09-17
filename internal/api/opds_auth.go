@@ -36,6 +36,13 @@ func OPDSAuth(p auth.Provider, users *db.UserRepo, limiter *auth.LoginLimiter) f
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			mode := p.Mode()
 
+			// A requester's session is refused before the mode bypasses below,
+			// matching auth.Middleware: the mode never elevates a requester.
+			if opdsSessionIsRequester(r, p, users) {
+				opdsRoleAllowed(w, auth.RoleRequester)
+				return
+			}
+
 			if mode == auth.ModeDisabled {
 				next.ServeHTTP(w, r)
 				return
@@ -132,6 +139,25 @@ func OPDSAuth(p auth.Provider, users *db.UserRepo, limiter *auth.LoginLimiter) f
 			}
 		})
 	}
+}
+
+// opdsSessionIsRequester reports whether r carries a valid, current session
+// cookie for a user whose role is requester.
+func opdsSessionIsRequester(r *http.Request, p auth.Provider, users *db.UserRepo) bool {
+	c, err := r.Cookie(auth.SessionCookieName)
+	if err != nil {
+		return false
+	}
+	uid, epoch, err := auth.VerifySessionMultiWithEpoch(p.SessionSecrets(), c.Value)
+	if err != nil {
+		return false
+	}
+	if users != nil {
+		if live, err := users.GetSessionEpoch(r.Context(), uid); err != nil || live != epoch {
+			return false
+		}
+	}
+	return p.UserRole(r.Context(), uid) == auth.RoleRequester
 }
 
 // opdsRoleAllowed answers 403 and returns false when role may not read the

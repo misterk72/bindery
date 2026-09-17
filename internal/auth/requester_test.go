@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -150,7 +151,7 @@ func requesterRequest(method, target string) *http.Request {
 func serveGuard(t *testing.T, req *http.Request) (int, bool) {
 	t.Helper()
 	reached := false
-	h := restrictRequester(defaultRequesterMatcher, newRequesterLimiter(1000, 1000, time.Minute, 16))(
+	h := restrictRequester(defaultRequesterMatcher, NewRequesterLimiter(1000, 1000, time.Minute, 16), NewRequesterLimiter(1000, 1000, time.Minute, 16))(
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			reached = true
 			w.WriteHeader(http.StatusNoContent)
@@ -277,10 +278,10 @@ func TestRestrictRequester_ChiRouteMethodMismatchDenied(t *testing.T) {
 }
 
 func TestRestrictRequester_LimitsSearches(t *testing.T) {
-	limiter := newRequesterLimiter(3, 0.5, time.Minute, 16)
+	limiter := NewRequesterLimiter(3, 0.5, time.Minute, 16)
 	now := time.Unix(1_700_000_000, 0)
 	limiter.now = func() time.Time { return now }
-	h := restrictRequester(defaultRequesterMatcher, limiter)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := restrictRequester(defaultRequesterMatcher, limiter, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	serve := func(target string, uid int64) *httptest.ResponseRecorder {
@@ -322,7 +323,7 @@ func TestRestrictRequester_LimitsSearches(t *testing.T) {
 }
 
 func TestRequesterLimiter_BoundedWithIdleEviction(t *testing.T) {
-	limiter := newRequesterLimiter(5, 1, time.Minute, 4)
+	limiter := NewRequesterLimiter(5, 1, time.Minute, 4)
 	now := time.Unix(1_700_000_000, 0)
 	limiter.now = func() time.Time { return now }
 	for id := int64(1); id <= 50; id++ {
@@ -335,5 +336,71 @@ func TestRequesterLimiter_BoundedWithIdleEviction(t *testing.T) {
 	limiter.allow(999)
 	if n := limiter.size(); n != 1 {
 		t.Fatalf("after the idle period the limiter holds %d buckets, want only the new one", n)
+	}
+}
+
+// TestRestrictRequester_CreateAndImagesAreLimited: POST /requests spends the
+// provider bucket (its lookup reaches the provider) and the image proxy spends
+// its own bucket, so neither is an unlimited way to make Bindery fetch.
+func TestRestrictRequester_CreateAndImagesAreLimited(t *testing.T) {
+	provider := NewRequesterLimiter(2, 0.001, time.Minute, 16)
+	images := NewRequesterLimiter(3, 0.001, time.Minute, 16)
+	var charged []bool
+	h := restrictRequester(defaultRequesterMatcher, provider, images)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		charged = append(charged, RequesterProviderCharged(r.Context()))
+		w.WriteHeader(http.StatusOK)
+	}))
+	serve := func(method, target string) int {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, requesterRequest(method, target))
+		return rec.Code
+	}
+	for i := 0; i < 2; i++ {
+		if code := serve(http.MethodPost, "/api/v1/requests"); code != http.StatusOK {
+			t.Fatalf("create %d: %d", i, code)
+		}
+	}
+	if code := serve(http.MethodPost, "/api/v1/requests"); code != http.StatusTooManyRequests {
+		t.Fatalf("third create: %d, want 429", code)
+	}
+	if code := serve(http.MethodGet, "/api/v1/search/book?term=x"); code != http.StatusTooManyRequests {
+		t.Fatalf("search after creates drained the provider bucket: %d, want 429", code)
+	}
+	if len(charged) != 2 || !charged[0] || !charged[1] {
+		t.Fatalf("handler saw provider charged = %v, want true for both creates", charged)
+	}
+	for i := 0; i < 3; i++ {
+		if code := serve(http.MethodGet, "/api/v1/images?url=https://x/"+strconv.Itoa(i)); code != http.StatusOK {
+			t.Fatalf("image %d: %d", i, code)
+		}
+	}
+	if code := serve(http.MethodGet, "/api/v1/images?url=https://x/9"); code != http.StatusTooManyRequests {
+		t.Fatalf("fourth image: %d, want 429", code)
+	}
+}
+
+// TestRequesterLimiter_AllowRequester: a handler spending the bucket itself
+// charges a restricted caller once, never charges one the guard already
+// charged, and never limits admins or users.
+func TestRequesterLimiter_AllowRequester(t *testing.T) {
+	l := NewRequesterLimiter(1, 0.001, time.Minute, 16)
+	ctx := WithUserRole(WithUserID(context.Background(), 5), RoleRequester)
+	if ok, _ := l.AllowRequester(ctx); !ok {
+		t.Fatal("first call refused")
+	}
+	if ok, retry := l.AllowRequester(ctx); ok || retry < 1 {
+		t.Fatalf("second call ok=%v retry=%d, want refused with a wait", ok, retry)
+	}
+	charged := context.WithValue(ctx, providerChargedCtxKey{}, true)
+	if ok, _ := l.AllowRequester(charged); !ok {
+		t.Fatal("a request the guard already charged was charged again")
+	}
+	for _, role := range []string{RoleAdmin, RoleUser} {
+		c := WithUserRole(WithUserID(context.Background(), 5), role)
+		for i := 0; i < 5; i++ {
+			if ok, _ := l.AllowRequester(c); !ok {
+				t.Fatalf("role %s limited", role)
+			}
+		}
 	}
 }
