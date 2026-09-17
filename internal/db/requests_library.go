@@ -53,6 +53,7 @@ func (r *RequestRepo) ListLibraryProjection(ctx context.Context, scopeUserID int
 
 	// The series is the book's primary series, ordered the way
 	// SeriesRepo.GetPrimarySeriesForBook orders it.
+	// #nosec G202 -- from and bookTitleOrder are constants, and where is built from QueryScopeForIncludingNull and one fixed LIKE clause per search token; the scope id and the escaped search patterns are bound args
 	q := `SELECT books.id, books.title, COALESCE(au.name, ''),
 		COALESCE((SELECT s.title FROM series_books sb JOIN series s ON s.id = sb.series_id
 		          WHERE sb.book_id = books.id

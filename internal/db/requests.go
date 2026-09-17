@@ -189,6 +189,7 @@ func (r *RequestRepo) list(ctx context.Context, where string, args []any, limit,
 		return nil, 0, fmt.Errorf("count requests: %w", err)
 	}
 	pageArgs := append(append([]any{}, args...), limit, offset)
+	// #nosec G202 -- requestColumns and requestJoins are package constants and where is one of three fixed literals chosen in ListByOwner or ListAll; the owner id and status are bound args
 	rows, err := r.db.QueryContext(ctx, `SELECT `+requestColumns+` `+requestJoins+` `+where+`
 		ORDER BY r.created_at DESC, r.id DESC LIMIT ? OFFSET ?`, pageArgs...)
 	if err != nil {
