@@ -54,6 +54,10 @@ func (h *stubSensitiveHandler) TestConfig(w http.ResponseWriter, _ *http.Request
 	h.record("test-config", w)
 }
 
+func (h *stubSensitiveHandler) Diagnose(w http.ResponseWriter, _ *http.Request) {
+	h.record("diagnose", w)
+}
+
 func (h *stubSensitiveHandler) Sync(w http.ResponseWriter, _ *http.Request) {
 	h.record("sync", w)
 }
@@ -258,6 +262,7 @@ func TestSensitiveRoutesRequireAdmin(t *testing.T) {
 		{name: "update download client", method: http.MethodPut, path: "/downloadclient/1"},
 		{name: "delete download client", method: http.MethodDelete, path: "/downloadclient/1"},
 		{name: "test download client", method: http.MethodPost, path: "/downloadclient/1/test"},
+		{name: "diagnose download client", method: http.MethodPost, path: "/downloadclient/1/diagnose"},
 		{name: "test download client config", method: http.MethodPost, path: "/downloadclient/test"},
 		// Migrate imports — pull in indexer/client credentials, so admin-only.
 		{name: "import csv", method: http.MethodPost, path: "/migrate/csv"},
@@ -322,6 +327,7 @@ func TestSensitiveRoutesAllowAdmin(t *testing.T) {
 		{name: "update download client", method: http.MethodPut, path: "/downloadclient/1", called: "update"},
 		{name: "delete download client", method: http.MethodDelete, path: "/downloadclient/1", called: "delete"},
 		{name: "test download client", method: http.MethodPost, path: "/downloadclient/1/test", called: "test"},
+		{name: "diagnose download client", method: http.MethodPost, path: "/downloadclient/1/diagnose", called: "diagnose"},
 		{name: "test download client config", method: http.MethodPost, path: "/downloadclient/test", called: "test-config"},
 		// Migrate imports — admin must still reach each handler (guards against
 		// accidentally mounting them outside the group so they 404 instead).

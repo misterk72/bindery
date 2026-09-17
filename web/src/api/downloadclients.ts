@@ -55,12 +55,39 @@ export interface PathVisibility {
   path?: string
 }
 
+// Diagnose (the download client path doctor) answers with an ordered
+// checklist. code is stable; message and fix are English sentences from the
+// server. A check after a failure comes back as 'skipped'.
+export type DiagnoseStatus = 'pass' | 'warn' | 'fail' | 'skipped' | 'unknown'
+
+export interface DiagnoseCheck {
+  code: string
+  status: DiagnoseStatus
+  message: string
+  fix?: string
+}
+
+export interface DiagnoseHardlinkRow {
+  root: string
+  linkable: boolean
+  reason?: string
+}
+
+export interface DiagnoseResult {
+  clientType: string
+  checks: DiagnoseCheck[]
+  paths: { clientPath: string; remapRule: string; localPath: string }
+  hardlinks: DiagnoseHardlinkRow[]
+  primaryFix: string
+}
+
 export const downloadClientsApi = {
   // Download clients
   listDownloadClients: () => request<DownloadClient[]>('/downloadclient'),
   addDownloadClient: (data: Partial<DownloadClient>) => request<DownloadClient>('/downloadclient', { method: 'POST', body: JSON.stringify(data) }),
   updateDownloadClient: (id: number, data: DownloadClientUpdate) => request<DownloadClient>(`/downloadclient/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteDownloadClient: (id: number) => request<void>(`/downloadclient/${id}`, { method: 'DELETE' }),
+  diagnoseDownloadClient: (id: number) => request<DiagnoseResult>(`/downloadclient/${id}/diagnose`, { method: 'POST' }),
   testDownloadClient: (id: number) => request<{ message: string; health?: DownloadClientHealth; pathVisibility?: PathVisibility }>(`/downloadclient/${id}/test`, { method: 'POST' }),
   // Test an unsaved download-client config (Add/Edit form Test button). Does
   // not persist; mirrors testDownloadClient's response (minus async health).

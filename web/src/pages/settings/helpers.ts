@@ -1,6 +1,8 @@
 // Non-component helpers shared between Settings tabs. Kept out of the
 // component files so React Fast Refresh stays happy.
 
+import type { DiagnoseResult } from '../../api/client'
+
 // parseCats parses a comma-separated list of Newznab category IDs.
 export function parseCats(s: string): number[] {
   return s.split(',').map(t => parseInt(t.trim(), 10)).filter(n => !isNaN(n))
@@ -47,4 +49,22 @@ export function downloadClientPathRemapHelp(type: string) {
     return "Map the path rTorrent reports to the path Bindery can read. Seedbox installs almost always need this — e.g. rTorrent writes to /home/user/downloads while Bindery mounts that share at /media/books, so use /home/user/downloads:/media/books. Bindery also uses this in reverse when setting a new torrent's download directory, and to locate files when you remove a download with its data."
   }
   return "Optional and separate from ABS remaps. Use when this download client reports paths under a different mount than Bindery."
+}
+
+// buildDiagnoseReport is the text behind "Copy report". It is built from an
+// allow list of fields (client type, check codes and statuses, the three
+// paths, the hardlink rows) so a report pasted into a public issue or Discord
+// never carries the host, port, username or URL base, and never the server's
+// sentences, which can quote the address.
+export function buildDiagnoseReport(result: DiagnoseResult): string {
+  const lines = [
+    'Bindery download client diagnosis',
+    `client type: ${result.clientType}`,
+    ...result.checks.map(c => `${c.code}: ${c.status}`),
+    `client path: ${result.paths.clientPath || '(none)'}`,
+    `remap rule: ${result.paths.remapRule || '(none)'}`,
+    `local path: ${result.paths.localPath || '(none)'}`,
+    ...result.hardlinks.map(h => `hardlink ${h.root}: ${h.linkable ? 'yes' : 'no'}`),
+  ]
+  return lines.join('\n')
 }

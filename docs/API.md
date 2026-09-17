@@ -284,6 +284,7 @@ GET    /api/v1/downloadclient/{id}                fetch one (admin)
 PUT    /api/v1/downloadclient/{id}                update (admin)
 DELETE /api/v1/downloadclient/{id}                remove (admin)
 POST   /api/v1/downloadclient/{id}/test           probe connectivity (admin)
+POST   /api/v1/downloadclient/{id}/diagnose       path doctor: ordered checks with a fix each (admin)
 POST   /api/v1/downloadclient/test                probe an unsaved config (admin)
 
 GET    /api/v1/queue                              active downloads with live downloader overlay
@@ -359,6 +360,50 @@ the saved client's `id` and the handler fills in a credential you left blank
 from that row, but only while `type`, `host`, `port`, `useSsl` and `urlBase`
 still match it. Point the probe anywhere else and it runs with whatever
 credential the body carried.
+
+#### Diagnosing a download client
+
+`POST /api/v1/downloadclient/{id}/diagnose` runs an ordered list of checks
+against a saved client and answers `200` with the result. It takes the id
+only, never a path, and it runs only when called.
+
+```json
+{
+  "clientType": "qbittorrent",
+  "checks": [
+    {"code": "config", "status": "pass", "message": "The saved settings are usable."},
+    {"code": "connect", "status": "pass", "message": "Connected to qBittorrent."},
+    {"code": "category", "status": "pass", "message": "qBittorrent has the category \"books\"."},
+    {"code": "client_path", "status": "pass", "message": "qBittorrent saves completed downloads to \"/torrents/books\" (its category save path)."},
+    {"code": "remap", "status": "pass", "message": "No path remap applies, so Bindery looks for \"/torrents/books\" at the same path."},
+    {"code": "local_path", "status": "fail", "message": "Bindery would look for completed downloads in \"/torrents/books\", which is outside every folder it is configured to use (download folder \"/downloads\"). Bindery did not look inside it.", "fix": "Add a path remap on this client ..."},
+    {"code": "hardlinks", "status": "skipped", "message": "Skipped because an earlier check failed."},
+    {"code": "indexer_reach", "status": "unknown", "message": "Bindery cannot test whether the download client can reach your indexers, trackers or Usenet servers.", "fix": "..."}
+  ],
+  "paths": {"clientPath": "/torrents/books", "remapRule": "none", "localPath": "/torrents/books"},
+  "hardlinks": [],
+  "primaryFix": "Add a path remap on this client ..."
+}
+```
+
+* `code` is stable: `config`, `connect`, `category`, `client_path`, `remap`, `local_path`, `hardlinks`, `indexer_reach`. `message` and `fix` are English sentences.
+* `status` is `pass`, `warn`, `fail`, `skipped` or `unknown`. Every check after a `fail` is `skipped` without running, except `indexer_reach`, which is always `unknown` because Bindery cannot test the client's own route to indexers.
+* `remapRule` is `client` (this client's path remap changed the path), `global` (`BINDERY_DOWNLOAD_PATH_REMAP` did) or `none`.
+* `hardlinks` has one row per library root, `{root, linkable, reason}`. Roots on the same filesystem share one probe.
+* `primaryFix` is the fix of the first failure, or of the first warning when nothing failed.
+
+Bindery only looks at the filesystem (a stat, a directory listing for a letter
+case mismatch, a temporary write probe and a hardlink probe) when the remapped
+path is at or under `BINDERY_DOWNLOAD_DIR`, `BINDERY_AUDIOBOOK_DOWNLOAD_DIR` or
+a library root, both as written and after following symbolic links. A client
+that reports any other folder gets `local_path: fail` saying so, and nothing
+there is touched. SABnzbd is asked for `complete_dir` and the one category
+only, Transmission for `download-dir` only, and Deluge for its three download
+location keys only. Error text from a client passes through the same secret
+redaction as other outbound errors, and the stored API key and password are
+removed from every sentence and path in the response. SABnzbd answers
+`client_path: unknown` rather than a failure when its key is an NZB key, which
+cannot read folder settings.
 
 ### Notifications, backups, system
 

@@ -58,67 +58,34 @@ func CheckCompletedPathVisibility(ctx context.Context, client *models.DownloadCl
 		return PathVisibility{Status: PathUnknown}
 	}
 	switch client.Type {
-	case "qbittorrent":
-		return qbittorrentPathVisibility(ctx, client, downloadDir, audiobookDownloadDir, globalRemap)
-	case "nzbget":
-		return nzbgetPathVisibility(ctx, client, downloadDir, audiobookDownloadDir, globalRemap)
-	case "rtorrent":
-		return rtorrentPathVisibility(ctx, client, downloadDir, audiobookDownloadDir, globalRemap)
+	case "qbittorrent", "nzbget", "rtorrent":
+		return completedPathVisibility(ctx, client, downloadDir, audiobookDownloadDir, globalRemap)
 	default:
-		// SABnzbd's complete dir requires get_config (not introspected here),
-		// and Transmission/Deluge resolve a download dir per-torrent rather than
-		// a static completed folder. Skip gracefully.
+		// CompletedPath can answer for SABnzbd, Transmission and Deluge too,
+		// but the health job and the Test button deliberately stay unknown for
+		// them: SABnzbd needs a full API key to read its folders, and
+		// Transmission and Deluge resolve a download dir per torrent rather
+		// than a static completed folder. The on demand diagnose action is
+		// where those answers are shown, with that caveat attached.
 		return PathVisibility{Status: PathUnknown}
 	}
 }
 
-// rtorrentPathVisibility checks Bindery can read where rTorrent lands completed
-// files. Unlike Transmission and Deluge, rTorrent exposes a single global
-// default download directory (directory.default), so there is a concrete path
-// to stat — which matters because rTorrent is very often on a seedbox, i.e. the
-// exact remote-instance case #1182 was filed for.
-func rtorrentPathVisibility(ctx context.Context, client *models.DownloadClient, downloadDir, audiobookDownloadDir, globalRemap string) PathVisibility {
-	rt := RtorrentFor(client)
-	defaultDir, err := rt.DefaultDirectory(ctx)
-	if err != nil || strings.TrimSpace(defaultDir) == "" {
-		// Connection already passed; treat an introspection failure as "can't
-		// tell" rather than a path warning, to avoid false alarms.
+// completedPathVisibility stats the path CompletedPath reports for the client.
+// Any introspection failure, or a client that reports no path, is PathUnknown
+// rather than a warning: the connection already passed, so "can't tell" is the
+// honest answer and avoids false alarms.
+//
+// rTorrent has one global default directory, so both media types land in the
+// same place; the hint still names both configured directories when the
+// client serves audiobooks separately, rather than pointing only at the ebook
+// one (#1984, the half left over from #1993).
+func completedPathVisibility(ctx context.Context, client *models.DownloadClient, downloadDir, audiobookDownloadDir, globalRemap string) PathVisibility {
+	info, err := CompletedPath(ctx, client)
+	if err != nil || strings.TrimSpace(info.Path) == "" {
 		return PathVisibility{Status: PathUnknown}
 	}
-	// rTorrent has one global default directory, so both media types land in
-	// the same place; the hint still names both configured directories when the
-	// client serves audiobooks separately, rather than pointing only at the
-	// ebook one (#1984, the half left over from #1993).
-	return statRemappedPath(client, defaultDir, clientExpectedHint(client, downloadDir, audiobookDownloadDir), globalRemap)
-}
-
-func qbittorrentPathVisibility(ctx context.Context, client *models.DownloadClient, downloadDir, audiobookDownloadDir, globalRemap string) PathVisibility {
-	category := strings.TrimSpace(client.Category)
-	if category == "" {
-		return PathVisibility{Status: PathUnknown}
-	}
-	qb := QbittorrentFor(client)
-	categories, err := qb.GetCategories(ctx)
-	if err != nil {
-		// Connection already passed; treat an introspection failure as "can't
-		// tell" rather than a path warning, to avoid false alarms.
-		return PathVisibility{Status: PathUnknown}
-	}
-	qbCategory, ok := categories[category]
-	if !ok {
-		return PathVisibility{Status: PathUnknown}
-	}
-	savePath := strings.TrimSpace(qbCategory.SavePath)
-	if savePath == "" {
-		if defaultPath, derr := qb.GetDefaultSavePath(ctx); derr == nil {
-			savePath = strings.TrimSpace(defaultPath)
-		}
-	}
-	if savePath == "" {
-		return PathVisibility{Status: PathUnknown}
-	}
-	expected := clientExpectedHint(client, downloadDir, audiobookDownloadDir)
-	return statRemappedPath(client, savePath, expected, globalRemap)
+	return statRemappedPath(client, info.Path, clientExpectedHint(client, downloadDir, audiobookDownloadDir), globalRemap)
 }
 
 // clientExpectedHint describes the local directories Bindery is configured to
@@ -145,30 +112,40 @@ func clientExpectedHint(client *models.DownloadClient, downloadDir, audiobookDow
 	return strings.Join(hints, " and ")
 }
 
-func nzbgetPathVisibility(ctx context.Context, client *models.DownloadClient, downloadDir, audiobookDownloadDir, globalRemap string) PathVisibility {
-	ng := NzbgetFor(client)
-	completeDir, err := ng.CompletedDir(ctx, client.Category)
-	if err != nil || strings.TrimSpace(completeDir) == "" {
-		return PathVisibility{Status: PathUnknown}
-	}
-	return statRemappedPath(client, completeDir, clientExpectedHint(client, downloadDir, audiobookDownloadDir), globalRemap)
-}
+// Remap rules reported by RemapClientPath.
+const (
+	RemapRuleClient = "client"
+	RemapRuleGlobal = "global"
+	RemapRuleNone   = "none"
+)
 
-// remapClientPath resolves a client-reported path the same way the importer does
-// (see Scanner.remapDownloadClientPath): apply the client's own PathRemap first,
-// and only if that leaves the path unchanged fall back to the global
-// BINDERY_DOWNLOAD_PATH_REMAP. This keeps the Test action's verdict consistent
-// with what the importer will actually resolve at import time (#1182).
-func remapClientPath(client *models.DownloadClient, rawPath, globalRemap string) string {
+// RemapClientPath resolves a client-reported path the way the importer, the
+// health job and the diagnose action all must: apply the client's own
+// PathRemap first, and only if that leaves the path unchanged fall back to the
+// global BINDERY_DOWNLOAD_PATH_REMAP. It is the single definition of that
+// precedence, so the Test verdict matches what the importer resolves at import
+// time (#1182). The second result names the rule that changed the path:
+// RemapRuleClient, RemapRuleGlobal or RemapRuleNone.
+func RemapClientPath(client *models.DownloadClient, rawPath string, global *pathmap.Remapper) (string, string) {
 	if client != nil && strings.TrimSpace(client.PathRemap) != "" {
 		if localPath := pathmap.Parse(client.PathRemap).Apply(rawPath); localPath != rawPath {
-			return localPath
+			return localPath, RemapRuleClient
 		}
 	}
-	return pathmap.Parse(globalRemap).Apply(rawPath)
+	if localPath := global.Apply(rawPath); localPath != rawPath {
+		return localPath, RemapRuleGlobal
+	}
+	return rawPath, RemapRuleNone
 }
 
-// statRemappedPath resolves a client-reported path via remapClientPath (client
+// remapClientPath is RemapClientPath for callers holding the global remap as
+// its raw setting string and needing only the path.
+func remapClientPath(client *models.DownloadClient, rawPath, globalRemap string) string {
+	localPath, _ := RemapClientPath(client, rawPath, pathmap.Parse(globalRemap))
+	return localPath
+}
+
+// statRemappedPath resolves a client-reported path via RemapClientPath (client
 // PathRemap then global remap fallback) and os.Stats the result. expectedHint,
 // when non-empty, is included in the warning message as the configured local
 // directory description Bindery was expected to read from.

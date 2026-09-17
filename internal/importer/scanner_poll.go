@@ -1242,12 +1242,8 @@ func (s *Scanner) qbittorrentFilesFor(ctx context.Context, qb *qbittorrent.Clien
 }
 
 func (s *Scanner) remapDownloadClientPath(client *models.DownloadClient, rawPath string) string {
-	if client != nil && strings.TrimSpace(client.PathRemap) != "" {
-		if localPath := ParseRemap(client.PathRemap).Apply(rawPath); localPath != rawPath {
-			return localPath
-		}
-	}
-	return s.remapper.Apply(rawPath)
+	localPath, _ := downloader.RemapClientPath(client, rawPath, s.remapper)
+	return localPath
 }
 
 // resolveQbitContentPath returns the on-disk content path for a completed torrent.

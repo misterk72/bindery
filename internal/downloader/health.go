@@ -345,14 +345,31 @@ func findCaseInsensitivePath(p string) (resolved, divergedAt string) {
 		return "", ""
 	}
 	sep := string(filepath.Separator)
-	parts := strings.Split(strings.TrimPrefix(filepath.Clean(p), sep), sep)
-	cur := sep
+	return walkCaseInsensitive(sep, strings.TrimPrefix(filepath.Clean(p), sep), true)
+}
+
+// walkCaseInsensitive does the work for findCaseInsensitivePath and
+// FindCaseInsensitivePathUnder, starting at the existing directory cur and
+// resolving each separator-joined component of rest. It only ever lists cur
+// and directories it has descended into. With followLinks false it never
+// descends through a symlink, so the listing cannot leave the starting tree.
+func walkCaseInsensitive(cur, rest string, followLinks bool) (resolved, divergedAt string) {
+	sep := string(filepath.Separator)
+	parts := strings.Split(rest, sep)
 	for _, part := range parts {
 		if part == "" {
 			continue
 		}
 		candidate := filepath.Join(cur, part)
-		if _, err := os.Stat(candidate); err == nil {
+		if !followLinks {
+			if info, err := os.Lstat(candidate); err == nil {
+				if info.Mode()&os.ModeSymlink != 0 {
+					return "", ""
+				}
+				cur = candidate
+				continue
+			}
+		} else if _, err := os.Stat(candidate); err == nil {
 			cur = candidate
 			continue
 		}
@@ -362,6 +379,9 @@ func findCaseInsensitivePath(p string) (resolved, divergedAt string) {
 		}
 		var match string
 		for _, entry := range entries {
+			if !followLinks && entry.Type()&os.ModeSymlink != 0 {
+				continue
+			}
 			if strings.EqualFold(entry.Name(), part) {
 				match = entry.Name()
 				break

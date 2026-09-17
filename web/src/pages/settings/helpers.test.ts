@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { rtorrentScgiIgnoredFields, downloadClientPathRemapHelp } from './helpers'
+import { rtorrentScgiIgnoredFields, downloadClientPathRemapHelp, buildDiagnoseReport } from './helpers'
 
 // rTorrent's SCGI listener speaks neither TLS nor any authentication — that is
 // the protocol, not a gap in Bindery. The form still shows Use SSL, Username
@@ -36,5 +36,28 @@ describe('downloadClientPathRemapHelp', () => {
     const help = downloadClientPathRemapHelp('rtorrent')
     expect(help).toContain('rTorrent')
     expect(help).toContain('remove a download with its data')
+  })
+})
+
+// The copy report is meant for pasting into a public issue, so it is built
+// from an allow list and must not carry the server's sentences, which can
+// quote the client's address.
+describe('buildDiagnoseReport', () => {
+  it('keeps codes, statuses, paths and hardlinks and drops the sentences', () => {
+    const report = buildDiagnoseReport({
+      clientType: 'sabnzbd',
+      checks: [
+        { code: 'connect', status: 'fail', message: 'could not reach SABnzbd at http://sab.lan:8080', fix: 'Check the host' },
+      ],
+      paths: { clientPath: '/data/complete', remapRule: 'client', localPath: '/downloads/complete' },
+      hardlinks: [{ root: '/books', linkable: false, reason: 'different filesystems' }],
+      primaryFix: 'Check the host',
+    })
+    expect(report).toContain('client type: sabnzbd')
+    expect(report).toContain('connect: fail')
+    expect(report).toContain('local path: /downloads/complete')
+    expect(report).toContain('hardlink /books: no')
+    expect(report).not.toContain('sab.lan')
+    expect(report).not.toContain('Check the host')
   })
 })

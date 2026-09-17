@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { useState } from 'react'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import ClientsTab from './ClientsTab'
-import { api, type DownloadClient } from '../../api/client'
+import { api, type DiagnoseResult, type DownloadClient } from '../../api/client'
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -21,6 +21,7 @@ vi.mock('../../api/client', async importOriginal => {
       deleteDownloadClient: vi.fn(),
       testDownloadClient: vi.fn(),
       testDownloadClientConfig: vi.fn(),
+      diagnoseDownloadClient: vi.fn(),
     },
   }
 })
@@ -193,5 +194,62 @@ describe('download client add form', () => {
     await waitFor(() => expect(addDownloadClient).toHaveBeenCalled())
     expect(addDownloadClient.mock.calls[0][0]).toMatchObject({ apiKey: 'fresh-key', password: '' })
     addDownloadClient.mockRestore()
+  })
+})
+
+function makeDiagnosis(overrides: Partial<DiagnoseResult> = {}): DiagnoseResult {
+  return {
+    clientType: 'qbittorrent',
+    checks: [
+      { code: 'connect', status: 'pass', message: 'Connected to qBittorrent.' },
+      { code: 'local_path', status: 'fail', message: 'Bindery would look outside every folder.', fix: 'Add a path remap.' },
+      { code: 'hardlinks', status: 'skipped', message: 'Skipped because an earlier check failed.' },
+      { code: 'indexer_reach', status: 'unknown', message: 'Bindery cannot test indexer reach.', fix: 'Check the client network.' },
+    ],
+    paths: { clientPath: '/torrents/books', remapRule: 'none', localPath: '/torrents/books' },
+    hardlinks: [],
+    primaryFix: 'Add a path remap.',
+    ...overrides,
+  }
+}
+
+describe('download client diagnose', () => {
+  it('runs for the saved client and shows the fix, the checklist and the paths inline', async () => {
+    vi.mocked(api.diagnoseDownloadClient).mockResolvedValue(makeDiagnosis())
+    renderTab([makeClient({ id: 7, type: 'qbittorrent' })])
+
+    fireEvent.click(screen.getByRole('button', { name: 'settings.clients.diagnose.button' }))
+
+    const panel = await screen.findByRole('region', { name: 'settings.clients.diagnose.heading' })
+    expect(api.diagnoseDownloadClient).toHaveBeenCalledWith(7)
+    expect(screen.getByRole('alert')).toHaveTextContent('Add a path remap.')
+    expect(panel).toHaveTextContent('Bindery would look outside every folder.')
+    expect(panel).toHaveTextContent('Bindery cannot test indexer reach.')
+    expect(panel).toHaveTextContent('/torrents/books')
+
+    fireEvent.click(screen.getByRole('button', { name: 'settings.clients.diagnose.close' }))
+    expect(screen.queryByRole('region', { name: 'settings.clients.diagnose.heading' })).not.toBeInTheDocument()
+  })
+
+  it('says so when nothing needs fixing and lists hardlinks per library folder', async () => {
+    vi.mocked(api.diagnoseDownloadClient).mockResolvedValue(makeDiagnosis({
+      checks: [{ code: 'connect', status: 'pass', message: 'Connected.' }],
+      primaryFix: '',
+      hardlinks: [{ root: '/books', linkable: true }, { root: '/audiobooks', linkable: false, reason: 'different filesystems' }],
+    }))
+    renderTab([makeClient()])
+    fireEvent.click(screen.getByRole('button', { name: 'settings.clients.diagnose.button' }))
+
+    expect(await screen.findByText('settings.clients.diagnose.allClear')).toBeInTheDocument()
+    const table = screen.getByRole('table', { name: 'settings.clients.diagnose.hardlinksCaption' })
+    expect(table).toHaveTextContent('/audiobooks')
+    expect(table).toHaveTextContent('different filesystems')
+  })
+
+  it('shows an error when the request fails', async () => {
+    vi.mocked(api.diagnoseDownloadClient).mockRejectedValue(new Error('boom'))
+    renderTab([makeClient()])
+    fireEvent.click(screen.getByRole('button', { name: 'settings.clients.diagnose.button' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('settings.clients.diagnose.failed')
   })
 })

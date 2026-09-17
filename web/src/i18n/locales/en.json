@@ -700,7 +700,51 @@
       "passwordEditLabel": "Password (leave blank to keep current)",
       "apiKeyEditLabel": "API Key (leave blank to keep current)",
       "credentialKeepHint": "Bindery no longer sends a saved password or API key back to the browser. Leave this blank to keep the one already stored.",
-      "credentialUnsetHint": "No credential is stored for this client yet."
+      "credentialUnsetHint": "No credential is stored for this client yet.",
+      "diagnose": {
+        "button": "Diagnose",
+        "running": "Diagnosing...",
+        "failed": "Diagnose could not run: {{error}}",
+        "heading": "Diagnosis",
+        "copyReport": "Copy report",
+        "copied": "Copied",
+        "close": "Close",
+        "primaryFix": "Fix first:",
+        "allClear": "Nothing needs fixing. Bindery can reach this client and read what it downloads.",
+        "checksLabel": "Checks",
+        "clientPath": "Client reports",
+        "remapRule": "Path remap",
+        "localPath": "Bindery looks in",
+        "none": "none",
+        "hardlinksCaption": "Whether imports can hardlink into each library folder",
+        "libraryFolder": "Library folder",
+        "hardlinks": "Hardlinks",
+        "reason": "Why not",
+        "yes": "Yes",
+        "no": "No",
+        "remap": {
+          "client": "This client's remap",
+          "global": "Global remap",
+          "none": "No remap applies"
+        },
+        "status": {
+          "pass": "Pass",
+          "warn": "Warning",
+          "fail": "Failed",
+          "skipped": "Skipped",
+          "unknown": "Unknown"
+        },
+        "check": {
+          "config": "Saved settings",
+          "connect": "Connection",
+          "category": "Category",
+          "client_path": "Client folder",
+          "remap": "Path remap",
+          "local_path": "Folder inside Bindery",
+          "hardlinks": "Hardlinks",
+          "indexer_reach": "Client reaching indexers"
+        }
+      }
     },
     "notifications": {
       "heading": "Webhook Notifications",

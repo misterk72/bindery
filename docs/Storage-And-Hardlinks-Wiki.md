@@ -24,6 +24,8 @@ Set the import mode in **Settings → General → File Naming**.
 | **move** | none | **broken** | Moves the file out of the download location, so a torrent can no longer seed it. Only suitable for Usenet, or when you do not seed. |
 | **external** | none | kept | Hands off to a sibling tool (Calibre, CWA, Grimmory, Storyteller). Bindery stops after grabbing; the external tool processes and places the file, then Bindery reconciles it on the next library scan. Can drop the file into a configured watch folder. |
 
+To check a real setup, press **Diagnose** on a download client in **Settings → Download clients**. It tries a hardlink from the folder that client saves into to every library folder and reports one row per folder, with the reason when a link fails (different filesystems, separate Docker bind mounts that share a device ID, or a filesystem that refuses links). Library folders on the same filesystem share one probe. Bindery only runs the probe when the client's folder, after the path remap, is under a configured download or library folder.
+
 If you pick **hardlink** on a setup that cannot hardlink — separate Docker volume mounts for downloads and library are the usual cause, and they look like sibling paths — the selector warns right under the buttons and says why. Imports still work; they just copy. Put both under one mount, or use **auto**, which makes that decision per download.
 
 ## Multi-disc audiobook flattening

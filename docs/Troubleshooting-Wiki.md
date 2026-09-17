@@ -66,6 +66,15 @@ You may see `add torrent failed: {"added_torrent_ids":...}` or `failed to send t
 
 ### Bindery cannot read the completed files
 
+**Start with Diagnose.** In **Settings → Download clients**, press **Diagnose** on the client. It asks the client where it saves finished downloads, applies the path remap the same way the importer does, checks that Bindery can read and write the result, and tries a hardlink into each library folder. The panel puts the first thing to fix at the top and shows the three paths side by side: what the client reports, which remap applied, and where Bindery looks. **Copy report** copies the check results and paths without the host, port or username, so it is safe to paste into an issue or Discord.
+
+A few answers need explaining:
+
+* **Outside every folder it is configured to use.** The remapped path is not under `BINDERY_DOWNLOAD_DIR`, `BINDERY_AUDIOBOOK_DOWNLOAD_DIR` or a library folder. Bindery does not look inside such a folder at all. Almost always a missing or wrong path remap.
+* **Differs only in letter case.** Linux folder names are case sensitive, so `/Downloads` and `/downloads` are different folders. Fix the case in the remap.
+* **SABnzbd did not share its folder settings.** SABnzbd only gives its folders to the full API key. With the NZB key the folder rows stay unknown; that is not a failure.
+* **Client reaching indexers: unknown.** This row is always unknown. Bindery fetches NZB and torrent files itself, but it cannot test the client's own network, VPN or DNS.
+
 If Bindery and the download client see the storage at different paths (different container mounts), Bindery cannot find the finished download. This usually surfaces as `importFailed` in the Queue with *nothing at `<path>` on this host*.
 
 That message lists three causes, because all three produce the same missing path and only you can tell them apart:
