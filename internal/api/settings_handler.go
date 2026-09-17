@@ -768,6 +768,14 @@ func validateSettingValue(key, value string) error {
 		if err != nil || n <= 0 {
 			return fmt.Errorf("author.default_monitor_latest_count %q must be a positive integer", value)
 		}
+	case SettingRequestsMaxPendingPerUser:
+		if value == "" {
+			return nil
+		}
+		n, err := strconv.Atoi(value)
+		if err != nil || n <= 0 || n > 10000 {
+			return fmt.Errorf("requests.max_pending_per_user %q must be an integer from 1 to 10000", value)
+		}
 	case SettingDefaultLibraryRootFolderID:
 		// Empty = unset (fall back to env-var default); non-empty must be a
 		// positive integer representing an existing root_folder.id.

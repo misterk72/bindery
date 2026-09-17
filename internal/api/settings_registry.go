@@ -135,6 +135,11 @@ var settingDescriptors = []SettingDescriptor{
 		State:       SettingStateActive,
 	},
 	{
+		Key: SettingRequestsMaxPendingPerUser, Type: SettingTypeInt, Default: "25", Min: "1", Max: "10000",
+		Description: "How many requests one requester may have waiting for an admin's decision. Further requests answer 429 until some are decided.",
+		State:       SettingStateActive,
+	},
+	{
 		Key: SettingDefaultLibraryRootFolderID, Type: SettingTypeInt, Default: "", Min: "1",
 		Description: "root_folder.id used as the library path for authors with no root folder of their own. Empty falls back to BINDERY_LIBRARY_DIR.",
 		State:       SettingStateActive,

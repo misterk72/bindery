@@ -1,0 +1,76 @@
+package api
+
+import (
+	"net/http"
+	"strings"
+
+	"github.com/vavallee/bindery/internal/auth"
+	"github.com/vavallee/bindery/internal/models"
+)
+
+// requesterLibraryBook is everything a requester may learn about a library
+// book (security review item S1). It is a projection built field by field,
+// not a copy of models.Book with fields blanked: a field added to models.Book
+// later cannot reach a requester unless someone adds it here, and
+// TestRequesterLibraryBook_FieldAllowList fails when they do.
+//
+// There are no file paths, no owner, no provider ids, no monitored flag and
+// no download or file links.
+type requesterLibraryBook struct {
+	ID             int64    `json:"id"`
+	Title          string   `json:"title"`
+	AuthorName     string   `json:"authorName"`
+	Series         string   `json:"series,omitempty"`
+	SeriesPosition string   `json:"seriesPosition,omitempty"`
+	CoverURL       string   `json:"coverUrl,omitempty"`
+	Status         string   `json:"status"`
+	Formats        []string `json:"formats"`
+}
+
+type requesterLibraryResponse struct {
+	Items  []requesterLibraryBook `json:"items"`
+	Total  int                    `json:"total"`
+	Limit  int                    `json:"limit"`
+	Offset int                    `json:"offset"`
+}
+
+// Library is the read only library browse for requesters.
+// GET /requests/library?search=&limit=&offset=
+//
+// With tenancy off (the default) every user's books are listed, which is what
+// the docs tell operators. With BINDERY_ENFORCE_TENANCY on, the list is scoped
+// the way the Books page scopes it.
+func (h *RequestHandler) Library(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	limit, offset := parseLimitOffset(r, 60, 200)
+	search := r.URL.Query().Get("search")
+	if len(search) > 200 {
+		search = search[:200]
+	}
+	rows, total, err := h.requests.ListLibraryProjection(ctx, auth.ListScopeUserID(ctx), strings.TrimSpace(search), limit, offset)
+	if err != nil {
+		writeServerError(w, r, err)
+		return
+	}
+	items := make([]requesterLibraryBook, 0, len(rows))
+	for _, row := range rows {
+		formats := make([]string, 0, 2)
+		if row.HasEbook {
+			formats = append(formats, models.MediaTypeEbook)
+		}
+		if row.HasAudiobook {
+			formats = append(formats, models.MediaTypeAudiobook)
+		}
+		items = append(items, requesterLibraryBook{
+			ID:             row.ID,
+			Title:          row.Title,
+			AuthorName:     row.AuthorName,
+			Series:         row.SeriesTitle,
+			SeriesPosition: row.SeriesPosition,
+			CoverURL:       ProxyImageURL(row.ImageURL),
+			Status:         row.Status,
+			Formats:        formats,
+		})
+	}
+	writeJSON(w, http.StatusOK, requesterLibraryResponse{Items: items, Total: total, Limit: limit, Offset: offset})
+}

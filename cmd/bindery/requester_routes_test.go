@@ -64,6 +64,13 @@ func (s universalStub) AutoLinkHardcover(w http.ResponseWriter, _ *http.Request)
 func (s universalStub) PutHardcoverLink(w http.ResponseWriter, _ *http.Request)      { s.h(w) }
 func (s universalStub) DeleteHardcoverLink(w http.ResponseWriter, _ *http.Request)   { s.h(w) }
 func (s universalStub) HardcoverDiff(w http.ResponseWriter, _ *http.Request)         { s.h(w) }
+func (s universalStub) ListMine(w http.ResponseWriter, _ *http.Request)              { s.h(w) }
+func (s universalStub) Withdraw(w http.ResponseWriter, _ *http.Request)              { s.h(w) }
+func (s universalStub) Library(w http.ResponseWriter, _ *http.Request)               { s.h(w) }
+func (s universalStub) Queue(w http.ResponseWriter, _ *http.Request)                 { s.h(w) }
+func (s universalStub) PendingCount(w http.ResponseWriter, _ *http.Request)          { s.h(w) }
+func (s universalStub) Approve(w http.ResponseWriter, _ *http.Request)               { s.h(w) }
+func (s universalStub) Decline(w http.ResponseWriter, _ *http.Request)               { s.h(w) }
 
 // registerEnumerableRoutes mounts every register* helper main() uses.
 func registerEnumerableRoutes(r chi.Router) {
@@ -81,6 +88,7 @@ func registerEnumerableRoutes(r chi.Router) {
 	registerGrimmorySyncRoutes(r, s)
 	registerCalibreIntegrationRoutes(r, s, s, s)
 	registerMigrateRoutes(r, s)
+	registerRequestRoutes(r, s)
 }
 
 type requesterFixture struct {
@@ -185,6 +193,9 @@ func (f *requesterFixture) do(method, target string, cookie *http.Cookie) *httpt
 	}
 	if method != http.MethodGet && method != http.MethodHead {
 		req.Header.Set("X-Requested-With", "bindery-ui")
+		if cookie != nil {
+			req.Header.Set("X-CSRF-Token", auth.MakeCSRFToken(f.provider.SessionSecret(), cookie.Value))
+		}
 	}
 	rec := httptest.NewRecorder()
 	f.handler.ServeHTTP(rec, req)
@@ -216,7 +227,7 @@ func TestRequesterGuard_BothAPITreesAndURLBase(t *testing.T) {
 		}
 		for _, d := range denied {
 			rec := f.do(d.method, base+d.path, f.cookie)
-			if rec.Code != http.StatusForbidden {
+			if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "not available to requesters") {
 				t.Errorf("base %q requester %s %s: status %d, want 403 (body %s)", base, d.method, d.path, rec.Code, rec.Body.String())
 			}
 		}
@@ -226,9 +237,26 @@ func TestRequesterGuard_BothAPITreesAndURLBase(t *testing.T) {
 			{http.MethodGet, "/api/v1/search/book?term=dune"},
 			{http.MethodGet, "/api/v1/book/lookup?isbn=9780441013593"},
 			{http.MethodGet, "/api/v1/images?url=https://covers.example/x.jpg"},
+			{http.MethodGet, "/api/v1/requests"},
+			{http.MethodPost, "/api/v1/requests"},
+			{http.MethodDelete, "/api/v1/requests/7"},
+			{http.MethodGet, "/api/v1/requests/library?search=dune"},
 		} {
 			if rec := f.do(a.method, base+a.path, f.cookie); rec.Code != http.StatusNoContent {
 				t.Errorf("base %q requester %s %s: status %d, want the handler's 204", base, a.method, a.path, rec.Code)
+			}
+		}
+		// The admin half of the requests API stays admin only for everyone else.
+		for _, d := range []struct{ method, path string }{
+			{http.MethodGet, "/api/v1/requests/queue"},
+			{http.MethodGet, "/api/v1/requests/pending-count"},
+			{http.MethodPost, "/api/v1/requests/7/approve"},
+			{http.MethodPost, "/api/v1/requests/7/decline"},
+		} {
+			for _, c := range []*http.Cookie{f.cookie, f.userCookie} {
+				if rec := f.do(d.method, base+d.path, c); rec.Code != http.StatusForbidden {
+					t.Errorf("base %q non admin %s %s: status %d, want 403", base, d.method, d.path, rec.Code)
+				}
 			}
 		}
 		// Role user is untouched by the guard.
@@ -261,7 +289,7 @@ func TestRequesterGuard_EnumerableRoutes(t *testing.T) {
 		}
 		n++
 		path := strings.NewReplacer("{id}", "7", "{bookId}", "8", "{runID}", "9").Replace(full)
-		if rec := f.do(method, path, f.cookie); rec.Code != http.StatusForbidden {
+		if rec := f.do(method, path, f.cookie); rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "not available to requesters") {
 			t.Errorf("requester %s %s: status %d, want 403", method, path, rec.Code)
 		}
 		return nil
@@ -315,7 +343,7 @@ func TestRequesterGuard_DemotionTakesEffectAtOnce(t *testing.T) {
 	if err := f.users.SetRole(context.Background(), plain.ID, auth.RoleRequester); err != nil {
 		t.Fatal(err)
 	}
-	if rec := f.do(http.MethodGet, "/api/v1/queue", f.userCookie); rec.Code != http.StatusForbidden {
+	if rec := f.do(http.MethodGet, "/api/v1/queue", f.userCookie); rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "not available to requesters") {
 		t.Fatalf("after demotion: status %d, want 403", rec.Code)
 	}
 }

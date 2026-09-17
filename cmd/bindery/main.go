@@ -780,6 +780,8 @@ func main() {
 		func() calibre.Config { return api.LoadCalibreConfig(appCtx, settingsRepo) },
 		func() calibre.Mode { return api.LoadCalibreMode(appCtx, settingsRepo) },
 	)
+	// Requester requests: approval adds through authorHandler's add cores.
+	requestHandler := api.NewRequestHandler(db.NewRequestRepo(database), bookRepo, authorRepo, settingsRepo, metaAgg, authorHandler)
 	recHandler := api.NewRecommendationHandler(recRepo, recEngine, authorRepo, bookRepo, sched).
 		WithFinder(seriesRepo, importScanner).
 		WithEditionHydration(editionRepo, metaAgg).
@@ -1079,6 +1081,10 @@ func main() {
 
 		// Series
 		registerSeriesRoutes(r, seriesHandler)
+
+		// Requests from the requester role, and the admin queue (see
+		// registerRequestRoutes).
+		registerRequestRoutes(r, requestHandler)
 
 		// Recommendations
 		r.Get("/recommendations", recHandler.List)
