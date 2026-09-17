@@ -775,12 +775,16 @@ describe('SettingsPage', () => {
     expect(screen.getByText('settings.general.scanNoFilesWarning')).toBeInTheDocument()
   })
 
-  it('hints to populate catalogue when files found but none matched', async () => {
+  it('counts unmatched books and links to the Import page instead of listing files', async () => {
+    // The per file table and its reason hints moved to the Import page's
+    // "In your library" view, where each book can be acted on. Settings keeps
+    // the count and the way there.
     vi.mocked(api.libraryScanStatus).mockResolvedValue({
     ran_at: new Date().toISOString(),
-    files_found: 12,
+    files_found: 212,
     reconciled: 0,
-    unmatched: 12,
+    unmatched: 212,
+    unmatched_units: 14,
     library_dir: '/books',
     scanned_paths: ['/books'],
     no_files_found: false,
@@ -789,91 +793,24 @@ describe('SettingsPage', () => {
     renderSettings()
 
     expect(await screen.findByText('settings.general.lastScan')).toBeInTheDocument()
-    expect(screen.getByText('settings.general.scanAllUnmatchedHint')).toBeInTheDocument()
-    // The no-files warning must NOT appear when files were found.
+    expect(screen.getByRole('link', { name: /settings\.general\.reviewUnmatched/ })).toHaveAttribute('href', '/import')
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
     expect(screen.queryByText('settings.general.scanNoFilesWarning')).not.toBeInTheDocument()
   })
 
-  it('names the parsed author instead of blaming the catalogue when no author matched', async () => {
-    // #1958: the catalogue hint sent a user author-refreshing for two weeks
-    // while their real problem was the file's tags. When every unmatched file
-    // reports author_not_in_library, the hint must name the parsed author and
-    // the old advice must not be shown.
+  it('shows no review link when nothing needs a decision', async () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValue({
     ran_at: new Date().toISOString(),
-    files_found: 1,
-    reconciled: 0,
-    unmatched: 1,
-    library_dir: '/books',
-    scanned_paths: ['/books'],
-    no_files_found: false,
-    unmatched_files: [{
-      path: '/books/Álvaro Enrigue/You Dreamed of Empires/You Dreamed of Empires.m4b',
-      parsed_title: 'You Dreamed of Empires',
-      parsed_author: 'Álvaro Enrigue, Natasha Wimmer - translator, Gabriel Porras',
-      reason: 'author_not_in_library',
-    }],
+    files_found: 3,
+    reconciled: 3,
+    unmatched: 0,
+    unmatched_units: 0,
     })
 
     renderSettings()
 
     expect(await screen.findByText('settings.general.lastScan')).toBeInTheDocument()
-    expect(screen.getByText('settings.general.scanUnmatchedAuthorUnknown')).toBeInTheDocument()
-    expect(screen.queryByText('settings.general.scanAllUnmatchedHint')).not.toBeInTheDocument()
-    // The per-file diagnosis is rendered alongside the parsed values.
-    expect(screen.getByText('settings.general.scanReason.author_not_in_library')).toBeInTheDocument()
-  })
-
-  it('does not generalise the author hint from a truncated unmatched sample', async () => {
-    // The scanner caps unmatched_files at 1000 entries. every() over that sample
-    // proves nothing about the other 4000, so the specific "your authors don't
-    // match" hint must fall back to the generic advice when the list is capped.
-    vi.mocked(api.libraryScanStatus).mockResolvedValue({
-    ran_at: new Date().toISOString(),
-    files_found: 5000,
-    reconciled: 0,
-    unmatched: 5000,
-    library_dir: '/books',
-    scanned_paths: ['/books'],
-    no_files_found: false,
-    unmatched_files: [{
-      path: '/books/Becky Chambers/A Psalm for the Wild-Built.epub',
-      parsed_title: 'A Psalm for the Wild-Built',
-      parsed_author: 'Becky Chambers',
-      reason: 'author_not_in_library',
-    }],
-    })
-
-    renderSettings()
-
-    expect(await screen.findByText('settings.general.lastScan')).toBeInTheDocument()
-    expect(screen.getByText('settings.general.scanAllUnmatchedHint')).toBeInTheDocument()
-    expect(screen.queryByText('settings.general.scanUnmatchedAuthorUnknown')).not.toBeInTheDocument()
-  })
-
-  it('keeps the catalogue hint when the author matched but has no candidate books', async () => {
-    // The original advice is right for #875's case, so a no_candidate_books
-    // diagnosis must still produce it — the fix narrows the message, it doesn't
-    // replace it.
-    vi.mocked(api.libraryScanStatus).mockResolvedValue({
-    ran_at: new Date().toISOString(),
-    files_found: 2,
-    reconciled: 0,
-    unmatched: 2,
-    library_dir: '/books',
-    scanned_paths: ['/books'],
-    no_files_found: false,
-    unmatched_files: [
-      { path: '/books/Andy Weir/Project Hail Mary.epub', parsed_title: 'Project Hail Mary', parsed_author: 'Andy Weir', reason: 'no_candidate_books' },
-      { path: '/books/Andy Weir/The Martian.epub', parsed_title: 'The Martian', parsed_author: 'Andy Weir', reason: 'author_not_in_library' },
-    ],
-    })
-
-    renderSettings()
-
-    expect(await screen.findByText('settings.general.lastScan')).toBeInTheDocument()
-    expect(screen.getByText('settings.general.scanAllUnmatchedHint')).toBeInTheDocument()
-    expect(screen.queryByText('settings.general.scanUnmatchedAuthorUnknown')).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /settings\.general\.reviewUnmatched/ })).not.toBeInTheDocument()
   })
 
   it('soft-navigates to Root Folders from the Default library location link', async () => {

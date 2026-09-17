@@ -191,9 +191,9 @@ describe('QueuePage', () => {
 
     expect(await screen.findByText('Queue is empty')).toBeInTheDocument()
     const manualImport = screen.getByRole('link', { name: 'Import them' })
-    expect(manualImport).toHaveAttribute('href', '/settings?tab=import')
+    expect(manualImport).toHaveAttribute('href', '/import?view=folder')
     const scanLibrary = screen.getByRole('link', { name: 'Scan Library' })
-    expect(scanLibrary).toHaveAttribute('href', '/settings?tab=general')
+    expect(scanLibrary).toHaveAttribute('href', '/import')
   })
 
   it('renders queue statuses, progress, fallback errors, and error prefixes', async () => {

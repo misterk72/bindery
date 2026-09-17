@@ -3,10 +3,9 @@ import { useTranslation } from 'react-i18next'
 import { btn, btnSize } from './buttons'
 
 // Discoverability CTA shown on empty Queue/Wanted states (#1184). New users who
-// already have files on disk often don't realise Manual Import / Scan Library
-// exist, so we point them straight at the existing flows rather than building a
-// new import UI. Both targets are Settings sub-tabs (deep-linked via ?tab=…):
-// Manual Import lives under Import / Migrate, Scan Library under General.
+// already have files on disk often don't realise Bindery can take them in, so
+// we point them straight at the Import page: its folder view for files
+// elsewhere, its library view for files already in the library folder.
 export default function ImportHints() {
   const { t } = useTranslation()
   return (
@@ -18,10 +17,10 @@ export default function ImportHints() {
         {t('importHints.body')}
       </p>
       <div className="mt-3 flex flex-wrap gap-2">
-        <Link to="/settings?tab=import" className={`${btn.primary} ${btnSize.md}`}>
+        <Link to="/import?view=folder" className={`${btn.primary} ${btnSize.md}`}>
           {t('importHints.manualImport')}
         </Link>
-        <Link to="/settings?tab=general" className={`${btn.secondary} ${btnSize.md}`}>
+        <Link to="/import" className={`${btn.secondary} ${btnSize.md}`}>
           {t('importHints.scanLibrary')}
         </Link>
       </div>

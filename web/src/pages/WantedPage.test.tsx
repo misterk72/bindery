@@ -199,9 +199,9 @@ describe('WantedPage', () => {
 
     expect(await screen.findByText('No wanted books. Add an author to start tracking.')).toBeInTheDocument()
     const manualImport = screen.getByRole('link', { name: 'Import them' })
-    expect(manualImport).toHaveAttribute('href', '/settings?tab=import')
+    expect(manualImport).toHaveAttribute('href', '/import?view=folder')
     const scanLibrary = screen.getByRole('link', { name: 'Scan Library' })
-    expect(scanLibrary).toHaveAttribute('href', '/settings?tab=general')
+    expect(scanLibrary).toHaveAttribute('href', '/import')
   })
 
   it('renders a row with the book title and its author', async () => {

@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useConfirmDialog } from '../../components/useConfirmDialog'
-import { api, AuthConfig, AuthStatus, StorageDirStatus, StorageHealth } from '../../api/client'
+import { api, AuthConfig, AuthStatus, BINDERY_BASE, StorageDirStatus, StorageHealth } from '../../api/client'
 import AuthSettings from '../../settings/AuthSettings'
 import ThemeToggle from '../../components/ThemeToggle'
 import LanguageSwitcher from '../../components/LanguageSwitcher'
@@ -42,9 +42,10 @@ export default function GeneralTab({ onNavigate }: GeneralTabProps = {}) {
     unmatched: number
     already_tracked?: number
     tag_read_failed?: number
-    // reason is one of the scanner's unmatchedReason* codes (#1958); absent on
-    // scan results persisted before that field existed.
-    unmatched_files?: Array<{ path: string; parsed_title: string; parsed_author: string; reason?: string }>
+    // Books (not files) the scan could not match, and how many are ignored.
+    // Absent on results persisted before library adoption.
+    unmatched_units?: number
+    ignored_units?: number
     library_dir?: string
     audiobook_dir?: string
     scanned_paths?: string[]
@@ -560,60 +561,16 @@ export default function GeneralTab({ onNavigate }: GeneralTabProps = {}) {
                   })}
                 </p>
               )}
-              {lastScan.files_found > 0 && lastScan.unmatched > 0 && lastScan.reconciled === 0 && (
-                <p className="mt-2 text-amber-600 dark:text-amber-400">
-                  {(() => {
-                    // The catalogue advice is only right when the author matched
-                    // but has no book to attach a file to. When every unmatched
-                    // file's parsed author matches NO author in the library,
-                    // refreshing an author cannot help — name the parsed author
-                    // instead, which is the evidence to act on (#1958).
-                    // unmatched_files is a sample capped at 1000 by the scanner;
-                    // every() over it says nothing about the rest, so a run with
-                    // 5000 unmatched files whose first 1000 happen to share a
-                    // reason must not claim the diagnosis holds library-wide.
-                    const files = lastScan.unmatched_files ?? []
-                    const truncated = files.length < lastScan.unmatched
-                    if (truncated || files.length === 0 || !files.every(f => f.reason === 'author_not_in_library')) {
-                      return t('settings.general.scanAllUnmatchedHint')
-                    }
-                    const authors = Array.from(new Set(files.map(f => f.parsed_author).filter(Boolean)))
-                    return authors.length === 1
-                      ? t('settings.general.scanUnmatchedAuthorUnknown', { author: authors[0] })
-                      : t('settings.general.scanUnmatchedAuthorsUnknown')
-                  })()}
+              {/* The unmatched files used to be listed here, capped at 1000
+                  per file rows with no way to act on one. They are books to
+                  decide about on the Import page now; this only counts them. */}
+              {(lastScan.unmatched_units ?? 0) > 0 && (
+                <p className="mt-2 flex flex-wrap items-center gap-x-2 text-slate-700 dark:text-zinc-300">
+                  <span>{t('settings.general.unmatchedUnits', { count: lastScan.unmatched_units, defaultValue: '{{count}} books need a decision.' })}</span>
+                  <a href={`${BINDERY_BASE}/import`} className="font-medium text-emerald-700 dark:text-emerald-400 hover:underline">
+                    {t('settings.general.reviewUnmatched', { count: lastScan.unmatched_units, defaultValue: 'Review {{count}} unmatched books' })}
+                  </a>
                 </p>
-              )}
-              {lastScan.unmatched_files && lastScan.unmatched_files.length > 0 && (
-                <details className="mt-3">
-                  <summary className="cursor-pointer font-medium text-slate-700 dark:text-zinc-300 hover:text-slate-900 dark:hover:text-zinc-100">
-                    Unmatched files ({lastScan.unmatched_files.length}{lastScan.unmatched_files.length >= 1000 && lastScan.unmatched > 1000 ? ' of ' + lastScan.unmatched : ''})
-                  </summary>
-                  <div className="mt-2 max-h-80 overflow-y-auto border border-slate-200 dark:border-zinc-800 rounded bg-slate-50 dark:bg-zinc-950/50">
-                    <table className="w-full text-xs">
-                      <thead className="sticky top-0 bg-slate-100 dark:bg-zinc-900 border-b border-slate-200 dark:border-zinc-800">
-                        <tr>
-                          <th className="text-left p-2 font-medium">{t('settings.general.scanUnmatchedPath')}</th>
-                          <th className="text-left p-2 font-medium">{t('settings.general.scanUnmatchedParsedTitle')}</th>
-                          <th className="text-left p-2 font-medium">{t('settings.general.scanUnmatchedParsedAuthor')}</th>
-                          <th className="text-left p-2 font-medium">{t('settings.general.scanUnmatchedWhy')}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {lastScan.unmatched_files.map((file, idx) => (
-                          <tr key={idx} className="border-b border-slate-100 dark:border-zinc-900 hover:bg-slate-100 dark:hover:bg-zinc-900/50">
-                            <td className="p-2 font-mono text-xs break-all">{file.path}</td>
-                            <td className="p-2">{file.parsed_title || '—'}</td>
-                            <td className="p-2">{file.parsed_author || '—'}</td>
-                            {/* Per-file diagnosis from the scanner (#1958). Blank
-                                for results persisted before the field existed. */}
-                            <td className="p-2">{file.reason ? t(`settings.general.scanReason.${file.reason}`) : '—'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </details>
               )}
             </div>
           )}

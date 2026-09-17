@@ -593,7 +593,6 @@
       "unmatched": "미일치:",
       "scannedPaths": "스캔 경로:",
       "scanNoFilesWarning": "{{path}} 아래에서 도서 파일을 찾을 수 없습니다 — BINDERY_LIBRARY_DIR이 라이브러리를 가리키는지 확인하세요.",
-      "scanAllUnmatchedHint": "파일은 발견되었으나 일치하는 도서가 없습니다. 미일치 파일은 해당 저자의 도서 목록이 먼저 채워져야 합니다. 저자를 새로고침하거나(또는 가져오기를 다시 실행해 도서를 가져온 후) 다시 스캔하세요.",
       "opds": "OPDS 피드",
       "opdsFeedUrl": "OPDS 피드 URL",
       "opdsHint": "KOReader, Moon+ Reader 또는 OPDS 클라이언트에서 이 URL을 사용하세요. API 키를 비밀번호로 입력해 인증하세요(사용자 이름은 비워 두거나 임의 값을 입력하세요).",

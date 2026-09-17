@@ -644,8 +644,8 @@
   "importHints": {
     "heading": "Already have files on disk?",
     "body": "Bindery only auto-imports downloads it grabbed itself. Point it at files you already have, or rescan your library folder.",
-    "manualImport": "Import them",
-    "scanLibrary": "Scan Library"
+    "manualImport": "Import from a folder",
+    "scanLibrary": "Review my library"
   },
   "blocklist": {
     "title": "Blocklist",
@@ -1007,20 +1007,11 @@
       "unmatched": "Unmatched:",
       "alreadyTracked": "Already tracked:",
       "scannedPaths": "Scanned:",
+      "unmatchedUnits_one": "{{count}} book needs a decision.",
+      "unmatchedUnits_other": "{{count}} books need a decision.",
+      "reviewUnmatched_one": "Review {{count}} unmatched book",
+      "reviewUnmatched_other": "Review {{count}} unmatched books",
       "scanNoFilesWarning": "No book files found under {{path}} — check BINDERY_LIBRARY_DIR points at your library.",
-      "scanAllUnmatchedHint": "Files were found but none matched a book. Unmatched files need their author's book catalogue populated first — refresh the author (or re-run the import so it fetches books) and scan again.",
-      "scanUnmatchedAuthorUnknown": "Files were found but none matched a book. The parsed author \"{{author}}\" doesn't match any author in your library, so no book could be considered — check the files' embedded tags and folder names against the Parsed Author column below. Refreshing an author won't help here.",
-      "scanUnmatchedAuthorsUnknown": "Files were found but none matched a book. None of their parsed authors match an author in your library, so no book could be considered — compare the Parsed Author column below with your authors' names. Refreshing an author won't help here.",
-      "scanReason": {
-        "author_not_in_library": "Parsed author isn't in your library",
-        "no_candidate_books": "Author matched, but has no book waiting for a file",
-        "no_title_match": "No book by that author matched this title",
-        "no_title_parsed": "No title could be read from this file's name or tags"
-      },
-      "scanUnmatchedPath": "Path",
-      "scanUnmatchedParsedTitle": "Parsed Title",
-      "scanUnmatchedParsedAuthor": "Parsed Author",
-      "scanUnmatchedWhy": "Why",
       "opds": "OPDS Feed",
       "opdsFeedUrl": "OPDS Feed URL",
       "opdsHint": "Use this URL in KOReader, Moon+ Reader, or any OPDS client. Authenticate with your API key as the password (leave the username blank or use any value).",
@@ -1159,7 +1150,10 @@
       "goodreadsCommitResult": "{{added}} added · {{skipped}} skipped · {{failed}} failed",
       "goodreadsNoResolved": "No rows could be resolved — nothing to import. Try widening the shelf filter or check the unmatched rows below.",
       "goodreadsUploadFailed": "Upload failed",
-      "configureHardcoverToken": "Configure the Hardcover API token in API Keys settings →"
+      "configureHardcoverToken": "Configure the Hardcover API token in API Keys settings →",
+      "folderMovedHeading": "Import from a folder",
+      "folderMovedBody": "Scanning a folder and importing what it matches is on the Import page now, beside the books a library scan could not match.",
+      "folderMovedLink": "Open Import"
     },
     "oidc": {
       "heading": "SSO / OIDC Providers",
