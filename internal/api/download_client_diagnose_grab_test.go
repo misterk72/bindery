@@ -250,17 +250,37 @@ func TestDiagnose_SlowFilesystemAnswersUnknown(t *testing.T) {
 	defer httpsec.AllowLoopbackForTests()()
 	downloads := t.TempDir()
 	host, port := qbitDiagServer(t, qbitCategory("books", downloads))
-	start := time.Now()
+	// The probe blocks until the test ends (or 20 seconds pass), standing in
+	// for a stat on a mount that never answers. Timing is measured from
+	// inside the probe so database setup under -race does not count.
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	var mu sync.Mutex
+	var entered time.Time
 	resp, _ := runDiagnose(t, diagnoseSetup{
 		downloadDir: downloads, roots: []string{t.TempDir()}, fsTimeout: 50 * time.Millisecond,
-		probe: func(string, string) (bool, string) { time.Sleep(time.Second); return true, "" },
+		probe: func(string, string) (bool, string) {
+			mu.Lock()
+			entered = time.Now()
+			mu.Unlock()
+			select {
+			case <-release:
+			case <-time.After(20 * time.Second):
+			}
+			return true, ""
+		},
 	}, qbitClient(host, port, "books", ""))
 	links := wantDiagStatus(t, resp, diagCodeHardlinks, diagUnknown)
 	if !strings.Contains(links.Message, "did not respond") {
 		t.Errorf("message = %q", links.Message)
 	}
-	if elapsed := time.Since(start); elapsed > 900*time.Millisecond {
-		t.Errorf("Diagnose took %v, want it to return at the filesystem deadline", elapsed)
+	mu.Lock()
+	defer mu.Unlock()
+	if entered.IsZero() {
+		t.Fatal("the probe never ran")
+	}
+	if elapsed := time.Since(entered); elapsed > 5*time.Second {
+		t.Errorf("Diagnose returned %v after the probe blocked, want it to return at the filesystem deadline", elapsed)
 	}
 }
 
