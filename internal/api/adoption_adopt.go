@@ -73,20 +73,29 @@ func (h *AdoptionHandler) Adopt(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	claimed, err := h.units.ClaimState(ctx, id, db.UnmatchedStatePending, db.UnmatchedStateAdopting)
+	token, err := h.units.Claim(ctx, id, db.UnmatchedStatePending, db.UnmatchedStateAdopting)
 	if err != nil {
 		writeServerError(w, r, err)
 		return
 	}
-	if !claimed {
+	if token == "" {
 		h.stateConflict(w, r, id)
 		return
 	}
 	// The request context may be cancelled once work has started; releasing
 	// the claim and compensating must still happen.
 	work := context.WithoutCancel(ctx)
-	if err := h.adopt(work, id, req); err != nil {
-		if _, rerr := h.units.ResetToPending(work, id, db.UnmatchedStateAdopting); rerr != nil {
+	if err := h.adopt(work, id, token, req); err != nil {
+		var unfinished *unfinishedReversalError
+		if errors.As(err, &unfinished) {
+			// The claim and its record stay, so stale claim recovery can finish
+			// the reversal; clearing them now would forget what to reverse.
+			slog.Warn("adoption: adopt failed and could not be fully reversed", "unit", id,
+				"error", unfinished.cause, "reverse_error", unfinished.reverse)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": unfinishedAdoptMessage})
+			return
+		}
+		if _, rerr := h.units.ResetToPending(work, id, db.UnmatchedStateAdopting, token); rerr != nil {
 			slog.Warn("adoption: could not release claim", "unit", id, "error", rerr)
 		}
 		h.writeAdoptionError(w, r, err)
@@ -95,7 +104,7 @@ func (h *AdoptionHandler) Adopt(w http.ResponseWriter, r *http.Request) {
 	h.writeUnit(w, r, id)
 }
 
-func (h *AdoptionHandler) adopt(ctx context.Context, id int64, req adoptRequest) error {
+func (h *AdoptionHandler) adopt(ctx context.Context, id int64, token string, req adoptRequest) error {
 	unit, err := h.units.Get(ctx, id)
 	if err != nil {
 		return err
@@ -159,12 +168,11 @@ func (h *AdoptionHandler) adopt(ctx context.Context, id int64, req adoptRequest)
 		rec.CreatedAuthorID = created.Author.ID
 	}
 	// The created rows are on record before any file is registered.
-	if err := h.progress(ctx, id, rec); err != nil {
-		h.reverse(ctx, id, rec)
-		return err
+	if err := h.progress(ctx, id, token, rec); err != nil {
+		return h.failAdopt(ctx, id, rec, err)
 	}
 
-	regErr := h.register(ctx, id, book.ID, format, paths, unit.MemberPaths, &rec)
+	regErr := h.register(ctx, id, token, book.ID, format, paths, unit.MemberPaths, &rec)
 	if regErr == nil && rec.CreatedBookID > 0 {
 		// A book this request created may also have picked up a file from
 		// the add's own library lookup. Everything on it came from this
@@ -184,25 +192,33 @@ func (h *AdoptionHandler) adopt(ctx context.Context, id int64, req adoptRequest)
 		}
 	}
 	if regErr != nil {
-		h.reverse(ctx, id, rec)
-		return regErr
+		return h.failAdopt(ctx, id, rec, regErr)
 	}
-	done, err := h.units.CompleteAdoption(ctx, id, rec)
+	done, err := h.units.CompleteAdoption(ctx, id, token, rec)
 	if err != nil || !done {
-		h.reverse(ctx, id, rec)
 		if err == nil {
 			err = refuse(http.StatusConflict, "This book changed while it was being adopted. Try again.")
 		}
-		return err
+		return h.failAdopt(ctx, id, rec, err)
 	}
 	slog.Info("adoption: registered files in place", "unit", id, "book_id", book.ID,
 		"files", len(rec.Registered), "book_created", rec.CreatedBookID > 0, "author_created", rec.CreatedAuthorID > 0)
 	return nil
 }
 
-// progress writes what the adopt has done so far into its row.
-func (h *AdoptionHandler) progress(ctx context.Context, id int64, rec db.AdoptionRecord) error {
-	ok, err := h.units.RecordAdoptionProgress(ctx, id, rec)
+// failAdopt reverses a failed adopt's writes. If the reversal itself fails
+// the result says so, and the caller keeps the claim for recovery.
+func (h *AdoptionHandler) failAdopt(ctx context.Context, id int64, rec db.AdoptionRecord, cause error) error {
+	if _, err := h.reverse(ctx, id, rec); err != nil {
+		return &unfinishedReversalError{cause: cause, reverse: err}
+	}
+	return cause
+}
+
+// progress writes what the adopt has done so far into its row, scoped to this
+// request's claim.
+func (h *AdoptionHandler) progress(ctx context.Context, id int64, token string, rec db.AdoptionRecord) error {
+	ok, err := h.units.RecordAdoptionProgress(ctx, id, token, rec)
 	if err != nil {
 		return err
 	}
@@ -279,7 +295,7 @@ func (h *AdoptionHandler) checkOwnership(ctx context.Context, paths []string, bo
 
 // register writes the book_files rows, recording each one in rec and in the
 // unit's row as soon as it is inserted. On error the caller reverses rec.
-func (h *AdoptionHandler) register(ctx context.Context, unitID, bookID int64, format string, paths, members []string, rec *db.AdoptionRecord) error {
+func (h *AdoptionHandler) register(ctx context.Context, unitID int64, token string, bookID int64, format string, paths, members []string, rec *db.AdoptionRecord) error {
 	// Re-check against the resolved book: a concurrent import may have taken
 	// a file in the moments since the first check.
 	if err := h.checkOwnership(ctx, append(append([]string{}, paths...), members...), bookID); err != nil {
@@ -292,7 +308,7 @@ func (h *AdoptionHandler) register(ctx context.Context, unitID, bookID int64, fo
 		}
 		if inserted {
 			rec.Registered = append(rec.Registered, db.RegisteredFile{Path: p, BookID: bookID})
-			if err := h.progress(ctx, unitID, *rec); err != nil {
+			if err := h.progress(ctx, unitID, token, *rec); err != nil {
 				return err
 			}
 		}

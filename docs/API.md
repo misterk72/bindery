@@ -443,8 +443,12 @@ only while it still belongs to the book it was registered to, and a book or
 author it created when nothing else holds them (books by the author count
 whether excluded or not) and the book has not been used since (monitored,
 edited, linked to a series, searched or downloaded). A kept book is reported in
-the response's `message`. The row returns to pending; a `409` means another
-request took the row before the undo finished. Adopt, undo, ignore and unignore each claim the row with a compare and
+the response's `message`. The row returns to pending only once every step
+succeeded; a `503` means a step failed (a busy database, say), the adoption
+is still on record and is completed automatically within a few minutes, and
+a `409` means another request took the row before the undo finished. An adopt
+that fails and cannot reverse what it did also answers `503` and is cleaned up
+the same way. Adopt, undo, ignore and unignore each claim the row with a compare and
 swap, so a double click or two admins acting at once get one `200` and one
 `409`.
 

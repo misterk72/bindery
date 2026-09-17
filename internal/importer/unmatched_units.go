@@ -111,17 +111,30 @@ func scanRootFor(path string, roots []string) string {
 }
 
 // discSetNameRe is the disc folder names library adoption treats as parts of
-// one book: CD 1, Disc 2, Disk 3, or a bare one or two digit number. It is
-// narrower than IsDiscFolderName, which also accepts Book, Part, Vol and
-// Chapter: in a library those name separate books of a series as often as
-// discs ("Mistborn/Book 1"), and merging separate books into one row would
-// adopt them all as one.
-var discSetNameRe = regexp.MustCompile(`(?i)^(cd|dis[ck])\s*[._-]?\s*\d+$|^\d{1,2}$`)
+// one book: CD 1, Disc 2, Disk 3. It is narrower than IsDiscFolderName, which
+// also accepts Book, Part, Vol, Chapter and bare numbers: in a library those
+// name separate books of a series as often as discs ("Mistborn/Book 1",
+// "Series/1"). Wherever the call is unclear adoption keeps folders apart,
+// because a split set can be adopted piece by piece into one book, while
+// separate books merged into one row cannot be adopted apart.
+var discSetNameRe = regexp.MustCompile(`(?i)^(cd|dis[ck])\s*[._-]?\s*\d+$`)
+
+// ignoredSubfolder reports whether a subfolder has no say in whether its
+// parent is a disc set: hidden and system folders (".hidden", Synology
+// "@eaDir", QNAP ".@__thumb", "#recycle") and folders with no audio anywhere
+// beneath them (an Artwork folder of jpgs).
+func ignoredSubfolder(dir string) bool {
+	name := filepath.Base(dir)
+	if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "@") || strings.HasPrefix(name, "#") {
+		return true
+	}
+	return !dirSubtreeHasAudio(dir)
+}
 
 // discSetChecker answers, once per folder, whether a folder is one multi disc
-// audiobook: the folder import walker's rule (AllDiscFolders over every
-// subfolder), with the narrower names above, and never for a library root or
-// a folder directly under one, which is an author folder.
+// audiobook: every subfolder that counts (ignoredSubfolder) has a disc name
+// and holds audio, as the folder import walker's AllDiscFolders requires. A
+// library root is never a disc set; a book folder directly under one can be.
 func discSetChecker(roots []string) func(folder string) bool {
 	cache := make(map[string]bool)
 	return func(folder string) bool {
@@ -129,25 +142,28 @@ func discSetChecker(roots []string) func(folder string) bool {
 			return v
 		}
 		result := false
-		parent := filepath.Dir(folder)
-		underRoot := false
+		isRoot := false
 		for _, r := range roots {
-			if r != "" && (filepath.Clean(r) == parent || filepath.Clean(r) == folder) {
-				underRoot = true
+			if r != "" && filepath.Clean(r) == folder {
+				isRoot = true
 			}
 		}
-		if !underRoot && scanRootFor(folder, roots) != "" {
+		if !isRoot && scanRootFor(folder, roots) != "" {
 			if entries, err := os.ReadDir(folder); err == nil {
-				var subdirs []string
+				var discs []string
 				names := true
 				for _, e := range entries {
 					if !e.IsDir() {
 						continue
 					}
-					subdirs = append(subdirs, filepath.Join(folder, e.Name()))
+					dir := filepath.Join(folder, e.Name())
+					if ignoredSubfolder(dir) {
+						continue
+					}
+					discs = append(discs, dir)
 					names = names && discSetNameRe.MatchString(e.Name())
 				}
-				result = names && AllDiscFolders(subdirs)
+				result = names && AllDiscFolders(discs)
 			}
 		}
 		cache[folder] = result
@@ -393,9 +409,10 @@ func (s *Scanner) recordUnmatchedUnits(ctx context.Context, c *unmatchedCollecto
 	// A truncated scan did not see every unit, so it removes and purges
 	// nothing: a unit beyond the cap is unlisted, not gone.
 	res, err := s.unmatchedUnits.ReconcileScan(ctx, units, db.ReconcileScanOptions{
-		StartedAt:      startedAt,
-		SkipDeletion:   truncated,
-		RootsWithFiles: rootsWithFiles,
+		StartedAt:       startedAt,
+		SkipDeletion:    truncated,
+		RootsWithFiles:  rootsWithFiles,
+		ConfiguredRoots: roots,
 	})
 	if err != nil {
 		slog.Warn("library scan: failed to store unmatched units", "error", err)

@@ -189,10 +189,11 @@ func TestReconcileScan_AdoptedRowSeenAgain(t *testing.T) {
 	book := seedAdoptionBook(t, database)
 	for _, p := range []string{"/lib/A/before.epub", "/lib/A/during.epub"} {
 		u := unitByPath(t, database, repo, p)
-		if ok, _ := repo.ClaimState(ctx, u.ID, UnmatchedStatePending, UnmatchedStateAdopting); !ok {
+		token, _ := repo.Claim(ctx, u.ID, UnmatchedStatePending, UnmatchedStateAdopting)
+		if token == "" {
 			t.Fatal("claim failed")
 		}
-		if ok, err := repo.CompleteAdoption(ctx, u.ID, AdoptionRecord{BookID: book.ID, Registered: []RegisteredFile{{Path: p, BookID: book.ID}}}); err != nil || !ok {
+		if ok, err := repo.CompleteAdoption(ctx, u.ID, token, AdoptionRecord{BookID: book.ID, Registered: []RegisteredFile{{Path: p, BookID: book.ID}}}); err != nil || !ok {
 			t.Fatalf("complete: ok=%v err=%v", ok, err)
 		}
 	}
@@ -277,7 +278,7 @@ func TestStaleClaims_DatedByClaimedAt(t *testing.T) {
 	if len(stale) != 1 || stale[0].UnitPath != "/lib/A/old.epub" {
 		t.Fatalf("stale claims = %+v, want only the hour old claim", stale)
 	}
-	if ok, err := repo.ResetToPending(ctx, stale[0].ID, UnmatchedStateAdopting); err != nil || !ok {
+	if ok, err := repo.ResetToPending(ctx, stale[0].ID, UnmatchedStateAdopting, stale[0].ClaimToken); err != nil || !ok {
 		t.Fatalf("reset: %v %v", ok, err)
 	}
 	if got := unitByPath(t, database, repo, "/lib/A/old.epub"); got.State != UnmatchedStatePending || got.ClaimedAt != nil {
@@ -502,10 +503,11 @@ func TestMigrate088_OverPopulatedDatabase(t *testing.T) {
 	if u.State != UnmatchedStatePending {
 		t.Fatalf("new row state = %q, want pending by default", u.State)
 	}
-	if _, err := repo.ClaimState(ctx, u.ID, UnmatchedStatePending, UnmatchedStateAdopting); err != nil {
+	token, err := repo.Claim(ctx, u.ID, UnmatchedStatePending, UnmatchedStateAdopting)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.CompleteAdoption(ctx, u.ID, AdoptionRecord{BookID: book.ID, CreatedBookID: book.ID, CreatedAuthorID: author.ID}); err != nil {
+	if _, err := repo.CompleteAdoption(ctx, u.ID, token, AdoptionRecord{BookID: book.ID, CreatedBookID: book.ID, CreatedAuthorID: author.ID}); err != nil {
 		t.Fatal(err)
 	}
 	if err := books.Delete(ctx, book.ID); err != nil {

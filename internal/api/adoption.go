@@ -45,10 +45,12 @@ type adoptionUnitStore interface {
 	Get(ctx context.Context, id int64) (*db.UnmatchedUnit, error)
 	BookRefs(ctx context.Context, ids []int64) (map[int64]db.UnmatchedBookRef, error)
 	ClaimState(ctx context.Context, id int64, from, to string) (bool, error)
-	RecordAdoptionProgress(ctx context.Context, id int64, rec db.AdoptionRecord) (bool, error)
-	CompleteAdoption(ctx context.Context, id int64, rec db.AdoptionRecord) (bool, error)
-	CompleteUndo(ctx context.Context, id int64) (bool, error)
-	ResetToPending(ctx context.Context, id int64, from string) (bool, error)
+	Claim(ctx context.Context, id int64, from, to string) (string, error)
+	ReleaseClaim(ctx context.Context, id int64, from, to, token string) (bool, error)
+	RecordAdoptionProgress(ctx context.Context, id int64, token string, rec db.AdoptionRecord) (bool, error)
+	CompleteAdoption(ctx context.Context, id int64, token string, rec db.AdoptionRecord) (bool, error)
+	CompleteUndo(ctx context.Context, id int64, token string) (bool, error)
+	ResetToPending(ctx context.Context, id int64, from, token string) (bool, error)
 	StaleClaims(ctx context.Context, before time.Time) ([]db.UnmatchedUnit, error)
 	BookFingerprint(ctx context.Context, bookID int64) (string, error)
 	IgnorePending(ctx context.Context, ids []int64, authorFolder string) (int64, error)
@@ -68,6 +70,9 @@ type AdoptionHandler struct {
 	// registerFile records one file against a book and reports whether this
 	// call inserted it. A seam so tests can fail registration part way.
 	registerFile func(ctx context.Context, bookID int64, format, path string) (bool, error)
+	// untrackFile removes one registered row while it still belongs to bookID.
+	// A seam so tests can fail a reversal part way.
+	untrackFile func(ctx context.Context, path string, bookID int64) (bool, error)
 }
 
 // NewAdoptionHandler wires the adoption routes. roots must be the library
@@ -83,6 +88,7 @@ func NewAdoptionHandler(units *db.UnmatchedUnitRepo, books *db.BookRepo, authors
 		h.scanner = scanner
 	}
 	h.registerFile = books.AddBookFileIfMissing
+	h.untrackFile = books.UntrackFilePathForBook
 	return h
 }
 

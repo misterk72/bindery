@@ -114,6 +114,18 @@ func TestUndo_KeepsACreatedBookSomeoneStartedUsing(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
+		{"blocklist entry", func(t *testing.T, f adoptionFixture, book *models.Book) {
+			if _, err := f.db.Exec(`INSERT INTO blocklist (book_id, guid, title) VALUES (?, 'guid-1', 'War of the Worlds retail')`, book.ID); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"calibre id", func(t *testing.T, f adoptionFixture, book *models.Book) {
+			// Written the way the Calibre integration writes it: the column
+			// alone, without touching updated_at.
+			if _, err := f.db.Exec(`UPDATE books SET calibre_id = 42 WHERE id = ?`, book.ID); err != nil {
+				t.Fatal(err)
+			}
+		}},
 		{"series link", func(t *testing.T, f adoptionFixture, book *models.Book) {
 			series := db.NewSeriesRepo(f.db)
 			s := &models.Series{ForeignID: "OL-series", Title: "Scientific Romances"}

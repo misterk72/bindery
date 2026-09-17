@@ -3,6 +3,7 @@ package importer
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/vavallee/bindery/internal/models"
@@ -24,51 +25,73 @@ func touchAudio(t *testing.T, root string, rels ...string) []unmatchedScanFile {
 	return out
 }
 
-// TestGroupUnmatched_DiscSetsFollowTheWalkerRule: only a folder whose
-// subfolders are all disc folders is one book. Numbered books in a series
-// folder, and numbered folders straight under an author, are separate books.
+// layoutEntry is one file or folder to create under a test root: a path
+// ending in "/" is an empty folder, an .mp3 is an audio track, anything else
+// a plain file.
+func buildLayout(t *testing.T, root string, entries []string) []unmatchedScanFile {
+	t.Helper()
+	var audio []string
+	for _, e := range entries {
+		p := filepath.Join(root, e)
+		if strings.HasSuffix(e, "/") {
+			if err := os.MkdirAll(p, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if filepath.Ext(e) == ".mp3" {
+			audio = append(audio, e)
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return touchAudio(t, root, audio...)
+}
+
+// TestGroupUnmatched_DiscSetsFollowTheWalkerRule: a folder is one multi disc
+// book only when every subfolder that holds audio is a CD, Disc or Disk
+// folder. Wherever the call is unclear the books stay apart, because a set
+// split in two can be adopted into one book, while separate books merged into
+// one row cannot be adopted apart.
 func TestGroupUnmatched_DiscSetsFollowTheWalkerRule(t *testing.T) {
 	tests := []struct {
-		name  string
-		rels  []string
-		units int
+		name    string
+		entries []string
+		units   int
 	}{
-		{"series of numbered books stays apart", []string{
-			"Brandon Sanderson/Mistborn/Book 1/01.mp3",
-			"Brandon Sanderson/Mistborn/Book 2/01.mp3",
-			"Brandon Sanderson/Mistborn/Book 3/01.mp3",
-		}, 3},
-		{"numbered folders under an author do not merge the author", []string{
-			"Some Author/1/01.mp3",
-			"Some Author/2/01.mp3",
-		}, 2},
-		{"a folder with a non disc subfolder is not a disc set", []string{
-			"Andy Weir/Artemis/CD1/01.mp3",
-			"Andy Weir/Artemis/Extras/01.mp3",
-		}, 2},
-		{"disc folders straight under a root stay apart", []string{
-			"CD1/01.mp3",
-			"CD2/01.mp3",
-		}, 2},
-		{"a real disc set is one book", []string{
-			"Andy Weir/Artemis/CD1/01.mp3",
-			"Andy Weir/Artemis/CD2/01.mp3",
-			"Andy Weir/Artemis/Disc 3/01.mp3",
-		}, 1},
+		{"Author/Book/CD1,CD2", []string{"Andy Weir/Artemis/CD1/01.mp3", "Andy Weir/Artemis/CD2/01.mp3"}, 1},
+		{"Author/Book/Disc 01,02", []string{"Andy Weir/Artemis/Disc 01/01.mp3", "Andy Weir/Artemis/Disc 02/01.mp3"}, 1},
+		{"Author/Book/Disk1,Disk2", []string{"Andy Weir/Artemis/Disk1/01.mp3", "Andy Weir/Artemis/Disk2/01.mp3"}, 1},
+		{"Author/Series/Book/CD1,CD2", []string{"Brandon Sanderson/Mistborn/Artemis/CD1/01.mp3", "Brandon Sanderson/Mistborn/Artemis/CD2/01.mp3"}, 1},
+		{"Author/Series/1,2", []string{"Brandon Sanderson/Mistborn/1/01.mp3", "Brandon Sanderson/Mistborn/2/01.mp3"}, 2},
+		{"Root/1,2", []string{"1/01.mp3", "2/01.mp3"}, 2},
+		{"Root/Book/CD1,CD2", []string{"Artemis/CD1/01.mp3", "Artemis/CD2/01.mp3"}, 1},
+		{"Author/Book/CD1,CD2 + Artwork with only a jpg", []string{"Andy Weir/Artemis/CD1/01.mp3", "Andy Weir/Artemis/CD2/01.mp3", "Andy Weir/Artemis/Artwork/cover.jpg"}, 1},
+		{"Author/Book/CD1,CD2 + empty hidden folder", []string{"Andy Weir/Artemis/CD1/01.mp3", "Andy Weir/Artemis/CD2/01.mp3", "Andy Weir/Artemis/.hidden/"}, 1},
+		{"Author/Book/CD1,CD2 + Synology @eaDir", []string{"Andy Weir/Artemis/CD1/01.mp3", "Andy Weir/Artemis/CD2/01.mp3", "Andy Weir/Artemis/@eaDir/SYNOINDEX_MEDIA_INFO"}, 1},
+		{"Author/Book/Part 1,2", []string{"Andy Weir/Artemis/Part 1/01.mp3", "Andy Weir/Artemis/Part 2/01.mp3"}, 2},
+		{"series of numbered books", []string{"Brandon Sanderson/Mistborn/Book 1/01.mp3", "Brandon Sanderson/Mistborn/Book 2/01.mp3"}, 2},
+		{"a subfolder with audio that is not a disc", []string{"Andy Weir/Artemis/CD1/01.mp3", "Andy Weir/Artemis/Extras/01.mp3"}, 2},
+		{"Root/CD1,CD2 never merges the root", []string{"CD1/01.mp3", "CD2/01.mp3"}, 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
-			groups, _ := groupUnmatched(touchAudio(t, root, tt.rels...), []string{root})
-			if tt.units == 1 && len(groups) == 1 && (groups[0].unit.ParsedTitle != "Artemis" || groups[0].unit.UnitKind != "folder") {
-				t.Errorf("disc set unit = %+v, want a folder unit named after its book folder", groups[0].unit)
-			}
+			groups, _ := groupUnmatched(buildLayout(t, root, tt.entries), []string{root})
 			if len(groups) != tt.units {
 				var paths []string
 				for _, g := range groups {
 					paths = append(paths, g.unit.RelPath)
 				}
 				t.Fatalf("units = %d %v, want %d", len(groups), paths, tt.units)
+			}
+			if tt.units == 1 && (groups[0].unit.ParsedTitle != "Artemis" || groups[0].unit.UnitKind != "folder") {
+				t.Errorf("disc set unit = %+v, want a folder unit named after its book folder", groups[0].unit)
 			}
 		})
 	}

@@ -2,7 +2,9 @@ package db
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -110,6 +112,10 @@ type UnmatchedUnit struct {
 	LastSeenAt             time.Time
 	ResolvedAt             *time.Time
 	ClaimedAt              *time.Time
+	// ClaimToken identifies the request holding an adopting or undoing row.
+	// Every write that belongs to that request is scoped to it, so a request
+	// whose claim was recovered and taken by another cannot write into it.
+	ClaimToken string
 }
 
 // ReconcileScanOptions tunes one ReconcileScan call.
@@ -128,6 +134,10 @@ type ReconcileScanOptions struct {
 	// file. Ignored rows are purged only under these, so an unmounted
 	// audiobook root does not forget its ignores while the library root scans.
 	RootsWithFiles []string
+	// ConfiguredRoots lists every root the scan was configured with, files or
+	// not. An old ignored row under a root that is no longer configured at
+	// all is purged too; no future scan would ever see its files again.
+	ConfiguredRoots []string
 	// Now is the clock; zero means time.Now.
 	Now time.Time
 }
@@ -251,15 +261,11 @@ func (r *UnmatchedUnitRepo) ReconcileScan(ctx context.Context, units []Unmatched
 		}
 		purged, _ := out.RowsAffected()
 		res.Purged += purged
-		if len(opts.RootsWithFiles) > 0 {
-			ph := strings.TrimSuffix(strings.Repeat("?,", len(opts.RootsWithFiles)), ",")
-			args := []any{unitTime(now.Add(-unmatchedPurgeAge))}
-			for _, root := range opts.RootsWithFiles {
-				args = append(args, root)
-			}
-			//nolint:gosec // G202: the IN list is generated ? placeholders; every root is bound
+		if cond, args := ignoredPurgeScope(opts); cond != "" {
+			//nolint:gosec // G202: cond is generated ? placeholders; every root is bound
 			out, err = tx.ExecContext(ctx,
-				`DELETE FROM unmatched_units WHERE state = 'ignored' AND last_seen_at < ? AND root_path IN (`+ph+`)`, args...)
+				`DELETE FROM unmatched_units WHERE state = 'ignored' AND last_seen_at < ? AND (`+cond+`)`,
+				append([]any{unitTime(now.Add(-unmatchedPurgeAge))}, args...)...)
 			if err != nil {
 				return res, fmt.Errorf("unmatched units: purge old ignores: %w", err)
 			}
@@ -325,6 +331,28 @@ func (r *UnmatchedUnitRepo) upsertChunk(ctx context.Context, chunk []UnmatchedUn
 		return fmt.Errorf("unmatched units: commit chunk: %w", err)
 	}
 	return nil
+}
+
+// ignoredPurgeScope builds the root condition for purging old ignored rows:
+// under a root that produced files in this scan, or under a root that is no
+// longer configured at all. A configured root that produced no files (an
+// unmounted volume) is in neither and keeps its rows.
+func ignoredPurgeScope(opts ReconcileScanOptions) (string, []any) {
+	var parts []string
+	var args []any
+	placeholders := func(roots []string) string {
+		for _, r := range roots {
+			args = append(args, r)
+		}
+		return strings.TrimSuffix(strings.Repeat("?,", len(roots)), ",")
+	}
+	if len(opts.RootsWithFiles) > 0 {
+		parts = append(parts, "root_path IN ("+placeholders(opts.RootsWithFiles)+")")
+	}
+	if len(opts.ConfiguredRoots) > 0 {
+		parts = append(parts, "root_path NOT IN ("+placeholders(opts.ConfiguredRoots)+")")
+	}
+	return strings.Join(parts, " OR "), args
 }
 
 func nonNilStrings(s []string) []string {
@@ -402,8 +430,12 @@ func scanUnmatchedUnit(scan func(...any) error) (*UnmatchedUnit, error) {
 	if t, err := parseFlexibleTime(resolved); err == nil {
 		u.ResolvedAt = t
 	}
-	if t, err := parseFlexibleTime(claimed); err == nil {
-		u.ClaimedAt = t
+	if claimed.Valid {
+		u.ClaimToken = claimed.String
+		stamp, _, _ := strings.Cut(claimed.String, "#")
+		if t, err := parseFlexibleTime(sql.NullString{String: stamp, Valid: true}); err == nil {
+			u.ClaimedAt = t
+		}
 	}
 	return &u, nil
 }
@@ -421,19 +453,55 @@ func (r *UnmatchedUnitRepo) Get(ctx context.Context, id int64) (*UnmatchedUnit, 
 	return u, nil
 }
 
+// Claim moves a row into adopting or undoing only if it is still in from, and
+// returns the claim token that scopes every later write of this request ("" if
+// another request got there first). The token starts with the fixed width
+// claim time, so it still orders as a time for StaleClaims.
+func (r *UnmatchedUnitRepo) Claim(ctx context.Context, id int64, from, to string) (string, error) {
+	nonce := make([]byte, 8)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", fmt.Errorf("unmatched units: claim token: %w", err)
+	}
+	now := unitTime(time.Now())
+	token := now + "#" + hex.EncodeToString(nonce)
+	out, err := r.db.ExecContext(ctx,
+		`UPDATE unmatched_units SET state = ?, claimed_at = ?, updated_at = ? WHERE id = ? AND state = ?`,
+		to, token, now, id, from)
+	if err != nil {
+		return "", fmt.Errorf("unmatched units: claim %d %s to %s: %w", id, from, to, err)
+	}
+	if n, err := out.RowsAffected(); err != nil || n != 1 {
+		return "", err
+	}
+	return token, nil
+}
+
+// ReleaseClaim moves a row this request holds (token) back to a settled state
+// without touching its record.
+func (r *UnmatchedUnitRepo) ReleaseClaim(ctx context.Context, id int64, from, to, token string) (bool, error) {
+	out, err := r.db.ExecContext(ctx,
+		`UPDATE unmatched_units SET state = ?, claimed_at = NULL, updated_at = ? WHERE id = ? AND state = ? AND claimed_at IS ?`,
+		to, unitTime(time.Now()), id, from, token)
+	if err != nil {
+		return false, fmt.Errorf("unmatched units: release %d: %w", id, err)
+	}
+	n, err := out.RowsAffected()
+	return n == 1, err
+}
+
 // ClaimState moves a row from one state to another only if it is still in
 // the first. It is the compare and swap every adopt, undo and ignore goes
 // through (S9): a single UPDATE is atomic in SQLite, so of two requests racing
 // for one row exactly one sees a row affected.
 func (r *UnmatchedUnitRepo) ClaimState(ctx context.Context, id int64, from, to string) (bool, error) {
-	now := unitTime(time.Now())
-	var claimed any
 	if to == UnmatchedStateAdopting || to == UnmatchedStateUndoing {
-		claimed = now
+		token, err := r.Claim(ctx, id, from, to)
+		return token != "", err
 	}
+	now := unitTime(time.Now())
 	out, err := r.db.ExecContext(ctx,
-		`UPDATE unmatched_units SET state = ?, claimed_at = ?, updated_at = ? WHERE id = ? AND state = ?`,
-		to, claimed, now, id, from)
+		`UPDATE unmatched_units SET state = ?, claimed_at = NULL, updated_at = ? WHERE id = ? AND state = ?`,
+		to, now, id, from)
 	if err != nil {
 		return false, fmt.Errorf("unmatched units: claim %d %s to %s: %w", id, from, to, err)
 	}
@@ -464,17 +532,17 @@ func (rec AdoptionRecord) registeredJSON() (string, error) {
 // holds, before its next side effect, so a request that dies part way leaves
 // the row saying exactly what to reverse. It reports false when the row is no
 // longer held by an adopt.
-func (r *UnmatchedUnitRepo) RecordAdoptionProgress(ctx context.Context, id int64, rec AdoptionRecord) (bool, error) {
-	return r.writeAdoption(ctx, id, rec, false)
+func (r *UnmatchedUnitRepo) RecordAdoptionProgress(ctx context.Context, id int64, token string, rec AdoptionRecord) (bool, error) {
+	return r.writeAdoption(ctx, id, token, rec, false)
 }
 
 // CompleteAdoption moves a claimed row to adopted with the full record. It
 // reports false when the row is no longer held by the adopt.
-func (r *UnmatchedUnitRepo) CompleteAdoption(ctx context.Context, id int64, rec AdoptionRecord) (bool, error) {
-	return r.writeAdoption(ctx, id, rec, true)
+func (r *UnmatchedUnitRepo) CompleteAdoption(ctx context.Context, id int64, token string, rec AdoptionRecord) (bool, error) {
+	return r.writeAdoption(ctx, id, token, rec, true)
 }
 
-func (r *UnmatchedUnitRepo) writeAdoption(ctx context.Context, id int64, rec AdoptionRecord, complete bool) (bool, error) {
+func (r *UnmatchedUnitRepo) writeAdoption(ctx context.Context, id int64, token string, rec AdoptionRecord, complete bool) (bool, error) {
 	paths, err := rec.registeredJSON()
 	if err != nil {
 		return false, err
@@ -483,14 +551,14 @@ func (r *UnmatchedUnitRepo) writeAdoption(ctx context.Context, id int64, rec Ado
 	query := `UPDATE unmatched_units
 		SET book_id = ?, created_book_id = ?, created_author_id = ?, registered_paths_json = ?,
 		    created_book_fingerprint = ?, updated_at = ?
-		WHERE id = ? AND state = 'adopting'`
-	args := []any{nullID(rec.BookID), nullID(rec.CreatedBookID), nullID(rec.CreatedAuthorID), paths, rec.CreatedBookFingerprint, now, id}
+		WHERE id = ? AND state = 'adopting' AND claimed_at IS ?`
+	args := []any{nullID(rec.BookID), nullID(rec.CreatedBookID), nullID(rec.CreatedAuthorID), paths, rec.CreatedBookFingerprint, now, id, token}
 	if complete {
 		query = `UPDATE unmatched_units
 			SET state = 'adopted', book_id = ?, created_book_id = ?, created_author_id = ?, registered_paths_json = ?,
 			    created_book_fingerprint = ?, updated_at = ?, resolved_at = ?, claimed_at = NULL
-			WHERE id = ? AND state = 'adopting'`
-		args = []any{nullID(rec.BookID), nullID(rec.CreatedBookID), nullID(rec.CreatedAuthorID), paths, rec.CreatedBookFingerprint, now, now, id}
+			WHERE id = ? AND state = 'adopting' AND claimed_at IS ?`
+		args = []any{nullID(rec.BookID), nullID(rec.CreatedBookID), nullID(rec.CreatedAuthorID), paths, rec.CreatedBookFingerprint, now, now, id, token}
 	}
 	out, err := r.db.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -500,16 +568,16 @@ func (r *UnmatchedUnitRepo) writeAdoption(ctx context.Context, id int64, rec Ado
 	return n == 1, err
 }
 
-// ResetToPending returns a row held in state from (undoing, or an abandoned
-// adopting) to pending and clears the adoption, once its side effects have
-// been reversed.
-func (r *UnmatchedUnitRepo) ResetToPending(ctx context.Context, id int64, from string) (bool, error) {
+// ResetToPending returns a row the request holding token has in state from
+// (undoing, or adopting) to pending and clears the adoption. Call it only once
+// every side effect has been reversed; the record is what a retry needs.
+func (r *UnmatchedUnitRepo) ResetToPending(ctx context.Context, id int64, from, token string) (bool, error) {
 	out, err := r.db.ExecContext(ctx, `
 		UPDATE unmatched_units
 		SET state = 'pending', book_id = NULL, created_book_id = NULL, created_author_id = NULL,
 		    registered_paths_json = '[]', created_book_fingerprint = '', resolved_at = NULL, claimed_at = NULL,
 		    updated_at = ?
-		WHERE id = ? AND state = ?`, unitTime(time.Now()), id, from)
+		WHERE id = ? AND state = ? AND claimed_at IS ?`, unitTime(time.Now()), id, from, token)
 	if err != nil {
 		return false, fmt.Errorf("unmatched units: reset %d: %w", id, err)
 	}
@@ -518,8 +586,8 @@ func (r *UnmatchedUnitRepo) ResetToPending(ctx context.Context, id int64, from s
 }
 
 // CompleteUndo returns an undoing row to pending.
-func (r *UnmatchedUnitRepo) CompleteUndo(ctx context.Context, id int64) (bool, error) {
-	return r.ResetToPending(ctx, id, UnmatchedStateUndoing)
+func (r *UnmatchedUnitRepo) CompleteUndo(ctx context.Context, id int64, token string) (bool, error) {
+	return r.ResetToPending(ctx, id, UnmatchedStateUndoing, token)
 }
 
 // StaleClaims lists rows an adopt or undo claimed before the cutoff: requests
@@ -544,27 +612,40 @@ func (r *UnmatchedUnitRepo) StaleClaims(ctx context.Context, before time.Time) (
 }
 
 // BookFingerprint summarises the parts of a book a person changes by using it:
-// its row (updated_at moves on any edit, monitor toggle or refresh) and the
-// history, downloads, pending releases and series links hanging off it. An
-// empty string means the book does not exist.
+// its row (updated_at moves on any edit, monitor toggle or refresh), its
+// Calibre link, and the history, downloads, pending releases, blocklist
+// entries, series links, editions and provider identifiers hanging off it.
+// An empty string means the book does not exist.
+//
+// It errs towards "used". A status refresh, a cover write or a manual author
+// refresh also move updated_at without anyone touching the book, and Undo then
+// keeps a book it could have removed. That is the safe direction: an extra
+// unmonitored book is visible and deletable, a removed one that was in use is
+// not recoverable. Do not narrow it to chase those.
 func (r *UnmatchedUnitRepo) BookFingerprint(ctx context.Context, bookID int64) (string, error) {
 	var monitored bool
 	var updated sql.NullString
-	var history, downloads, pending, series int
+	var calibreID sql.NullInt64
+	var history, downloads, pending, blocklist, series, editions, identifiers int
 	err := r.db.QueryRowContext(ctx, `
-		SELECT b.monitored, b.updated_at,
+		SELECT b.monitored, b.updated_at, b.calibre_id,
 		       (SELECT COUNT(*) FROM history WHERE book_id = b.id),
 		       (SELECT COUNT(*) FROM downloads WHERE book_id = b.id),
 		       (SELECT COUNT(*) FROM pending_releases WHERE book_id = b.id),
-		       (SELECT COUNT(*) FROM series_books WHERE book_id = b.id)
-		FROM books b WHERE b.id = ?`, bookID).Scan(&monitored, &updated, &history, &downloads, &pending, &series)
+		       (SELECT COUNT(*) FROM blocklist WHERE book_id = b.id),
+		       (SELECT COUNT(*) FROM series_books WHERE book_id = b.id),
+		       (SELECT COUNT(*) FROM editions WHERE book_id = b.id),
+		       (SELECT COUNT(*) FROM book_identifiers WHERE book_id = b.id)
+		FROM books b WHERE b.id = ?`, bookID).Scan(&monitored, &updated, &calibreID,
+		&history, &downloads, &pending, &blocklist, &series, &editions, &identifiers)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("unmatched units: book fingerprint %d: %w", bookID, err)
 	}
-	return fmt.Sprintf("m=%t u=%s h=%d d=%d p=%d s=%d", monitored, updated.String, history, downloads, pending, series), nil
+	return fmt.Sprintf("m=%t u=%s c=%d h=%d d=%d p=%d b=%d s=%d e=%d i=%d",
+		monitored, updated.String, calibreID.Int64, history, downloads, pending, blocklist, series, editions, identifiers), nil
 }
 
 func nullID(id int64) any {

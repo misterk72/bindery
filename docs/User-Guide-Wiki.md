@@ -413,10 +413,12 @@ to the records. Things worth knowing before you judge the results:
 A library scan attaches every file it can match with confidence and leaves
 the rest for you. Those books wait on **Import → In your library**, the page
 `/import` opens on. Each row is one **book**, not one file: a 193 track
-audiobook folder is one row, a folder whose subfolders are all discs (`CD1`,
-`Disc 2`, or `1`, `2`) is one row named after it, and `Dune.epub` beside
-`Dune.mobi` is one row. Folders named `Book 1`, `Book 2` under a series folder
-stay separate books, as do numbered folders straight under an author folder.
+audiobook folder is one row, a folder whose audio subfolders are all discs
+(`CD1`, `Disc 2`, `Disk 3`) is one row named after it, and `Dune.epub` beside
+`Dune.mobi` is one row. An `Artwork` folder without audio, or a hidden or
+system folder such as `@eaDir`, does not stop a disc set from grouping.
+Folders named `1`, `2`, `Book 1` or `Part 1` stay separate rows; when they are
+really one book, adopt each of them into it.
 
 **Adopting registers the files where they are.** Nothing is moved, renamed or
 queued, and no indexer search starts. It is the scan's own match with you
@@ -477,7 +479,8 @@ Things worth knowing:
   nothing on this list, so your ignores and adoptions survive it.
 - An adopted row stays, with Undo, for as long as its book exists. An ignored
   row is forgotten 30 days after a scan last saw its files, counted only by
-  scans that found files in that row's library folder.
+  scans that found files in that row's library folder, or once that folder is
+  no longer one of your library folders at all.
 - One scan lists up to 20,000 books from up to 50,000 unmatched files. A
   larger library says so; adopt or ignore some and scan again.
 - **From a folder** (`/import?view=folder`) is the other way in: point it at a
