@@ -1,0 +1,8 @@
+### Added
+- **Requester role with admin approval.** A new `requester` role can browse the library read only, search for a book or an author and request it, and follow each request on My requests, but cannot grab, download, delete, use OPDS or see any settings. Admins get a Requests page with a pending count, where approving opens the usual add choices (profile, root folder, monitoring, format, search on add) and the added books are owned by the requester; declining takes an optional reason the requester sees. Set the role on the Users page, or make it the default for new OIDC logins with `BINDERY_OIDC_DEFAULT_ROLE=requester`. The role only restricts anything when the auth mode is `enabled` or `proxy`. A new **Request** webhook toggle announces new requests; it is off until you turn it on. A requester may have 25 requests waiting at once by default (`requests.max_pending_per_user`).
+
+### Fixed
+- **OIDC group sync no longer resets a non admin's role.** With `BINDERY_OIDC_ADMIN_GROUP` set, a login outside the admin group used to set the role to `user` every time. Now only admin is decided by the group: an admin who leaves the group gets the default role, and everyone else keeps the role an admin gave them.
+
+### Security
+- Every API route a requester may call is on a single allow list, and every other route, including ones added later, answers 403 for that role. Paths that are encoded, doubled or dotted in a way that could route differently are refused, metadata searches are rate limited per requester, and request text sent to webhooks has control characters removed, is length capped, and cannot mention a chat channel.

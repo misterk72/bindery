@@ -139,6 +139,12 @@ metadata:
     traefik.ingress.kubernetes.io/router.middlewares: default-authelia@kubernetescrd
 ```
 
+## Roles
+
+Proxy mode carries identity only. There is no header that sets a role: Bindery does not read a groups or roles header from the proxy, and an auto-provisioned user is always created as `user`. To make someone an `admin` or a [`requester`](multi-user.md#requester), let them sign in once so the account exists, then change the role on the **Users** page or with `PUT /api/v1/auth/users/{id}/role`. The role is read from the database on every request, so the change applies on their next page load.
+
+Mapping a proxy header to a role is deliberately not built: a header is only as trustworthy as the network path to Bindery, and a forged role header would be a forged admin.
+
 ## Header choice: stability matters
 
 Auto-provisioning ties a Bindery user row to the username in the header. If your IdP can change a user's username (e.g. email rename in Authentik), a new Bindery user gets created and the old user's data becomes inaccessible.

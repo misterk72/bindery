@@ -22,8 +22,8 @@ Sessions are issued using the same HMAC-signed cookie as password login. OIDC si
 | `BINDERY_LOCAL_AUTH_ENABLED` | `true` | Set to `false` to disable password-based login entirely. `POST /auth/login` returns 403 and the admin user-create API is also blocked. Use when all users must authenticate via OIDC. |
 | `BINDERY_OIDC_AUTO_PROVISION` | `true` | Set to `false` to require that OIDC users already exist in Bindery's database. First-time OIDC logins from unknown `(issuer, sub)` pairs return 403 instead of creating an account. |
 | `BINDERY_OIDC_EMAIL_LINK` | `false` | Set to `true` to link an unknown OIDC identity to an existing Bindery account if the email address matches. Runs before the auto-provision check. Useful for migrating from local accounts to OIDC without losing history. |
-| `BINDERY_OIDC_DEFAULT_ROLE` | `user` | Role assigned to a freshly auto-provisioned OIDC user. Valid values: `user`, `admin`. Any other value falls back to `user`. Set to `admin` for single-admin homelab deployments to skip the manual promotion step. |
-| `BINDERY_OIDC_ADMIN_GROUP` | _(unset)_ | When set, makes the IdP authoritative for the admin role. On **every** login, the user is promoted to `admin` if this group is listed in the group claim and demoted to `user` if it is not. If the claim is missing altogether the role is left unchanged. See [Group-based role mapping](#group-based-role-mapping). |
+| `BINDERY_OIDC_DEFAULT_ROLE` | `user` | Role assigned to a freshly auto-provisioned OIDC user. Valid values: `user`, `admin`, `requester`. Any other value falls back to `user`. Set to `admin` for single-admin homelab deployments to skip the manual promotion step, or to `requester` so new logins can only browse and ask until an admin says otherwise. |
+| `BINDERY_OIDC_ADMIN_GROUP` | _(unset)_ | When set, makes the IdP authoritative for the admin role. On **every** login, the user is promoted to `admin` if this group is listed in the group claim; an admin whose claim does not list it is demoted to the default role (or to `user` when the default is `admin`); anyone else keeps their role. If the claim is missing altogether the role is left unchanged. See [Group-based role mapping](#group-based-role-mapping). |
 | `BINDERY_OIDC_GROUP_CLAIM` | `groups` | Claim path Bindery reads the user's groups from, looked up in the ID token first and then the userinfo document — used for both `BINDERY_OIDC_ADMIN_GROUP` role mapping and the per-provider `allowed_groups` login filter. Override for IdPs that put groups under a non-standard claim (e.g. `roles`). |
 | `BINDERY_ALLOW_LAN_OIDC` | _(off)_ | Set to `true`/`1` to disable the SSRF guard on the OIDC discovery probe, allowing LAN / loopback / private-range issuer URLs. Restores the historical behaviour where any issuer URL an admin types is fetched verbatim. Only enable when your OIDC provider runs on the Bindery host or a trusted private network. |
 
@@ -136,7 +136,7 @@ By default every auto-provisioned OIDC user gets the `user` role and must be pro
 BINDERY_OIDC_DEFAULT_ROLE=admin
 ```
 
-Sets the role assigned at auto-provision time. Valid values are `user` (default) and `admin`; any other value silently falls back to `user` (a startup warning is logged). Use `admin` for single-admin homelab deployments so the first — and only — operator is an admin immediately.
+Sets the role assigned at auto-provision time. Valid values are `user` (default), `admin` and `requester`; any other value falls back to `user` (a startup warning is logged). Use `admin` for single-admin homelab deployments so the one operator is an admin immediately. Use `requester` for an instance shared with people who should only ask for books: see [Requester](multi-user.md#requester).
 
 This only affects **new** accounts at creation time. It does not change the role of users who already exist.
 
@@ -150,8 +150,11 @@ BINDERY_OIDC_GROUP_CLAIM=groups
 When `BINDERY_OIDC_ADMIN_GROUP` is set, the **IdP becomes authoritative for the admin role**. On every login Bindery reads the configured group claim and:
 
 - promotes the user to `admin` if the group is listed in the claim,
-- demotes the user to `user` if the claim is present and does not list it, or
+- demotes an `admin` to the configured `BINDERY_OIDC_DEFAULT_ROLE` if the claim is present and does not list it (to `user` when that default is itself `admin`, so leaving the group always takes admin away),
+- leaves a `user` or `requester` who is not in the group with the role they already have, or
 - **leaves the role exactly as it is** if the claim is missing altogether.
+
+The group decides admin and nothing below it. Whether a non admin is a `user` or a `requester` is set by the default role at their first login and by an admin afterwards, and group sync does not undo it: a requester outside the admin group stays a requester at every login.
 
 That last case is the important one. A claim the IdP never sends says nothing about whether this user is an admin, so acting on it as a denial would take your own admin rights away the next time you logged in. Bindery logs `oidc: group claim absent, leaving role unchanged` instead — if you see that line, the IdP is not sending the claim and role mapping is doing nothing at all.
 
@@ -166,7 +169,7 @@ The group claim's value shape varies between IdPs — Bindery handles both forms
 
 Group name matching is exact and case-sensitive.
 
-> **Important:** while `BINDERY_OIDC_ADMIN_GROUP` is set it **overrides** any role set manually via `PUT /api/v1/auth/users/{id}/role` for OIDC users. A manual promotion or demotion is reverted on the user's next login to whatever the IdP group membership dictates. This is intentional — manage roles in the IdP, not in Bindery, when group mapping is enabled. The last-admin demotion guard is also bypassed for this IdP-driven sync, so removing a user from the admin group always takes effect.
+> **Important:** while `BINDERY_OIDC_ADMIN_GROUP` is set it **overrides** any manual change to or from `admin` made via `PUT /api/v1/auth/users/{id}/role` for OIDC users. A manual promotion to admin, or demotion from it, is reverted on the user's next login to whatever the IdP group membership dictates. This is intentional: manage the admin role in the IdP, not in Bindery, when group mapping is enabled. A change between `user` and `requester` is kept. The last admin demotion guard is also bypassed for this IdP driven sync, so removing a user from the admin group always takes effect.
 
 #### Avoiding the SSO-only lockout trap
 

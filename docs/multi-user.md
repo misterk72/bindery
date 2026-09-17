@@ -22,32 +22,65 @@ For upgrade instructions and migration steps, see [docs/upgrade-v1.md](upgrade-v
 
 ## Role model
 
-Two roles exist: `admin` and `user`.
+Three roles exist: `admin`, `user` and `requester`.
 
 - The **first account** created through the `/setup` wizard is always `admin`.
 - Users created by an admin via the **Users** page (the people icon in the header) default to the `user` role.
-- OIDC auto-provisioned users get the `user` role by default. To make the IdP authoritative for the admin role, set `BINDERY_OIDC_ADMIN_GROUP` so users in that IdP group are promoted automatically; see [OIDC role mapping](auth-oidc.md#oidc-role-mapping) in [docs/auth-oidc.md](auth-oidc.md).
-- An admin can change any user's role at any time: **Make admin / Make user** on the Users page, or `PUT /api/v1/auth/users/{id}/role` with `{"role": "admin"}`.
+- OIDC auto-provisioned users get the `user` role by default, or whatever `BINDERY_OIDC_DEFAULT_ROLE` says (`requester` is supported). To make the IdP authoritative for the admin role, set `BINDERY_OIDC_ADMIN_GROUP` so users in that IdP group are promoted automatically; see [OIDC role mapping](auth-oidc.md#oidc-role-mapping) in [docs/auth-oidc.md](auth-oidc.md).
+- Proxy auth provisions `user`. There is no header to role mapping; an admin sets the role after the account exists (see [docs/auth-proxy.md](auth-proxy.md#roles)).
+- An admin can change any user's role at any time: the role select on the Users page, or `PUT /api/v1/auth/users/{id}/role` with `{"role": "admin"}`, `{"role": "user"}` or `{"role": "requester"}`. The last admin cannot be demoted to either other role.
 
 ### Capability matrix
 
-| Action | `admin` | `user` |
-|--------|:-------:|:------:|
-| View and manage own authors/books/downloads | Yes | Yes |
-| View and manage own quality/metadata profiles | Yes | Yes |
-| Manage root folders (single shared/global pool) | Yes | No |
-| Change own password and API key | Yes | Yes |
-| Configure own notification preferences | Yes | Yes |
-| View other users' library data | Yes | No |
-| Manage other users' library data | Yes | No |
-| Create, edit, delete users | Yes | No |
-| Change user roles | Yes | No |
-| Configure indexers | Yes | No |
-| Configure download clients | Yes | No |
-| Configure system-wide settings | Yes | No |
-| View admin settings tabs in UI | Yes | No |
-| Trigger system-level operations (backup, scan, migrate) | Yes | No |
-| See server filesystem paths (storage health, path settings, last library scan) | Yes | No |
+| Action | `admin` | `user` | `requester` |
+|--------|:-------:|:------:|:-----------:|
+| View and manage own authors/books/downloads | Yes | Yes | No |
+| View and manage own quality/metadata profiles | Yes | Yes | No |
+| Manage root folders (single shared/global pool) | Yes | No | No |
+| Change own password | Yes | Yes | Yes |
+| Change own API key | Yes | Yes | No |
+| Configure own notification preferences | Yes | Yes | No |
+| View other users' library data | Yes | No | Titles only, read only (see [Requester](#requester)) |
+| Manage other users' library data | Yes | No | No |
+| Search metadata providers | Yes | Yes | Yes, rate limited |
+| Ask for a book or an author | Yes | Yes | Yes |
+| Approve or decline requests | Yes | No | No |
+| Download book files, use OPDS | Yes | Yes | No |
+| Create, edit, delete users | Yes | No | No |
+| Change user roles | Yes | No | No |
+| Configure indexers | Yes | No | No |
+| Configure download clients | Yes | No | No |
+| Configure system-wide settings | Yes | No | No |
+| View admin settings tabs in UI | Yes | No | No |
+| Trigger system-level operations (backup, scan, migrate) | Yes | No | No |
+| See server filesystem paths (storage health, path settings, last library scan) | Yes | No | No |
+
+## Requester
+
+A requester asks for books; an admin decides. It is the role for people who share an instance but should not grab, delete or configure anything: family, friends, a book club.
+
+**What a requester can do**
+
+- Browse the library read only. The Library page lists each book's title, author, series, cover, status and which formats are on disk. It comes from `GET /api/v1/requests/library`, a projection built field by field, so it carries no file paths, owner ids, provider ids or links into book pages.
+- Search the metadata providers from the Request page, the same search the Add dialog runs. Those searches spend provider quota, so each requester is limited to a burst of 20 and then one search every 3 seconds.
+- Request a book or an author, choosing only the format. Bindery looks the item up itself and stores the title and author the provider reports; nothing else the requester sends is kept. A request for something already in the library, or already requested by the same person, is refused with a sentence saying so.
+- Follow their own requests on My requests: waiting, approved, available once a file is imported (for an author, how many of the author's books are in), or declined with the admin's reason. A pending request can be withdrawn.
+- Change their own password, and sign in and out.
+
+**What a requester cannot do**
+
+- Add, grab, search indexers, delete, edit or refresh anything, or see the queue, history, blocklist, wanted list, calendar, series or recommendations.
+- Open book or author pages, download a file, or use OPDS (OPDS answers 403 for a requester whether they sign in with a cookie or with Basic credentials).
+- See settings, profiles, root folders, indexers, download clients, notifications, users or system pages, or read the API key.
+- Have more than 25 requests waiting at once. An admin can change that with the `requests.max_pending_per_user` setting.
+
+These limits are enforced on the server, not just hidden in the UI. Every API route a requester may call is on one allow list (`auth.RequesterAllowList`); any other route, including one added in a later release, answers 403. The list is checked against the path after `BINDERY_URL_BASE` is removed, and a path that is encoded, doubled or dotted in a way that could route differently is refused rather than interpreted.
+
+**Approving a request.** Admins see **Requests** in the nav with a count of pending requests. Approve opens the same choices as adding by hand (metadata profile, root folder, monitoring and format for an author; format and search on add for a book), prefilled from the instance defaults. Bindery then runs the ordinary add with the requester as the owner, so the new author and books belong to the requester. Two admins approving the same request at once produce one add; the second is told it was already decided. Decline takes an optional reason, which the requester sees. Turn on the **Request** toggle on a webhook in Settings, Notifications to hear about new requests; it is off for every existing webhook.
+
+**The requester role needs the auth mode set to `enabled` (or `proxy`).** In `disabled` mode every request is served as the admin, and in `local-only` mode every client on a private network is too, whatever account it is signed in as. The API key also acts as the admin. In those cases the requester's restrictions do not apply, because the request never acts as the requester in the first place.
+
+**Tenancy.** With `BINDERY_ENFORCE_TENANCY` off (the default), a requester's Library lists every book in the instance, whoever added it, and approved requests are simply part of the shared library. With it on, the Library lists the requester's own books plus unowned ones, which after an approval means what they asked for. Either way a requester only ever sees their own requests, and a request for a book another user already has is refused as already in the library, because a book can only be in the library once.
 
 ## User management
 
@@ -81,6 +114,14 @@ curl -X PUT http://bindery:8787/api/v1/auth/users/2/role \
   -H "X-Api-Key: <admin-api-key>" \
   -H "Content-Type: application/json" \
   -d '{"role": "admin"}'
+```
+
+```bash
+# Make a requester
+curl -X PUT http://bindery:8787/api/v1/auth/users/3/role \
+  -H "X-Api-Key: <admin-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"role": "requester"}'
 ```
 
 ### Deleting a user

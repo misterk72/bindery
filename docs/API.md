@@ -513,7 +513,7 @@ without a custom template:
 
 | Field | Meaning |
 |-------|---------|
-| `eventType` | `grabbed` \| `bookImported` \| `upgrade` \| `downloadFailed` \| `health` \| `bookAnnounced` \| `test` — present on **every** event |
+| `eventType` | `grabbed` \| `bookImported` \| `upgrade` \| `downloadFailed` \| `health` \| `bookAnnounced` \| `requestCreated` \| `test` — present on **every** event |
 | `title` | what happened, e.g. `Release Grabbed`, `Book Imported`, `Download Failed` |
 | `message` | the subject, e.g. `The Way of Kings · Brandon Sanderson` |
 | `body` | alias of `message` (Apprise requires a `body` field) |
@@ -521,12 +521,13 @@ without a custom template:
 | `format` | `ebook` \| `audiobook` on `bookImported` and `upgrade`. **Omitted for Apprise targets only** (a URL with a `/notify` path segment) — Apprise reserves `format` for the body markup and rejects anything but `text`/`html`/`markdown` with HTTP 400. Every other consumer still receives it |
 | `mediaFormat` | the same value as `format`, always present. Use this one if your relay is Apprise, or if you want a key that is never stripped |
 | event extras | `author`, `size`, `path`, `status`, `clientId` when relevant |
+| `requestCreated` extras | `kind` (`book` \| `author`), `username`, `mediaType`, `requestId`. `title`, `author` and `username` have control and invisible characters removed, are length capped, and have every `@` replaced with the fullwidth `＠`, so a title or username cannot mention a chat channel. The event is off on every webhook until its **Request** toggle is turned on |
 
 Which events a webhook receives is set per notification by `onGrab`,
-`onImport`, `onUpgrade`, `onFailure`, `onHealth` and `onBookAnnounced`.
-`onBookAnnounced` defaults to `false`, and migration 087 set it to `false` on
-every notification that existed before it, so an upgrade sends nothing new
-until an admin turns it on.
+`onImport`, `onUpgrade`, `onFailure`, `onHealth`, `onBookAnnounced` and
+`onRequestCreated`. The last two default to `false`, and migrations 087 and
+089 set them to `false` on every notification that existed before them, so an
+upgrade sends nothing new until an admin turns them on.
 
 **`bookAnnounced`** is sent once per author run when a refresh (manual, bulk,
 Refresh all, relink) or scheduled discovery adds books to an author that had
@@ -621,9 +622,78 @@ GET    /api/v1/auth/oidc/{provider}/callback      OIDC redirect target
 GET    /api/v1/auth/users                         list users (admin)
 POST   /api/v1/auth/users                         create (admin)
 DELETE /api/v1/auth/users/{id}                    delete (admin)
-PUT    /api/v1/auth/users/{id}/role               change role (admin)
+PUT    /api/v1/auth/users/{id}/role               change role (admin), body {"role": "admin"|"user"|"requester"}
 PUT    /api/v1/auth/users/{id}/reset-password     reset (admin)
 ```
+
+### Requests
+
+The requester role's API, and the admin queue that decides requests. See
+[Requester](multi-user.md#requester) for what the role can and cannot do.
+
+```
+POST   /api/v1/requests                           ask for a book or an author
+GET    /api/v1/requests                           the caller's own requests, newest first (limit, offset)
+DELETE /api/v1/requests/{id}                      withdraw the caller's own pending request
+GET    /api/v1/requests/library                   read only library projection (search, limit, offset)
+
+GET    /api/v1/requests/queue                     every user's requests (admin), status=pending|approved|declined|all
+GET    /api/v1/requests/pending-count             {"count": n} for the nav badge (admin)
+POST   /api/v1/requests/{id}/approve              add what was asked for, owned by the requester (admin)
+POST   /api/v1/requests/{id}/decline              decline, body {"reason": "..."} optional (admin)
+```
+
+`POST /api/v1/requests` takes exactly three fields and refuses any other with
+`400`, from a body of at most 4 KiB:
+
+```json
+{"kind": "book", "foreignId": "OL27482W", "mediaType": "ebook"}
+```
+
+`kind` is `book` or `author`, `foreignId` is the provider id a metadata search
+returned, and `mediaType` is `ebook`, `audiobook`, `both` or empty. Bindery
+looks the id up at the metadata provider and stores the title and author the
+provider reports. Answers:
+
+| Status | Meaning |
+|--------|---------|
+| `201` | the request, as below |
+| `409` | already in the library, already requested by this user (pending or declined); the `error` field says which |
+| `429` | this user already has `requests.max_pending_per_user` requests waiting (default 25) |
+| `502`, `404` | the provider did not answer, or has no such id |
+
+A request as the API returns it:
+
+| Field | Meaning |
+|-------|---------|
+| `id`, `kind`, `foreignId`, `mediaType` | as requested |
+| `title`, `authorName` | from the provider at request time (for an author request, `title` is the author's name) |
+| `status` | `pending` \| `approved` \| `declined` |
+| `declineReason` | the admin's reason, when declined with one |
+| `createdAt`, `decidedAt` | timestamps |
+| `fulfilled` | approved and on disk: the book imported, or at least one of the author's books |
+| `booksTotal`, `booksImported` | an approved author request's progress |
+| `username`, `resultBookId`, `resultAuthorId` | admin queue only |
+
+`GET /api/v1/requests/library` returns `{items, total, limit, offset}` where
+each item has only `id`, `title`, `authorName`, `series`, `seriesPosition`,
+`coverUrl`, `status` and `formats` (the formats with a file on disk). With
+`BINDERY_ENFORCE_TENANCY` on it is scoped like the Books list.
+
+`POST /api/v1/requests/{id}/approve` takes the admin's choices, all optional:
+`metadataProfileId`, `qualityProfileId`, `rootFolderId`,
+`audiobookRootFolderId`, `monitorMode`, `monitorLatestCount` and
+`monitorNewItems` apply to an author request; `mediaType` and `searchOnAdd`
+apply to both kinds. The approval is claimed atomically, so of two concurrent
+approvals one adds and the other gets `409`. A request whose item reached the
+library in the meantime answers `409`, and a failed add leaves the request
+pending. Unknown fields are refused with `400`.
+
+A requester may call only `/requests`, `/requests/{id}` (DELETE),
+`/requests/library`, the three metadata searches (`/search/author`,
+`/search/book`, `/book/lookup`, rate limited per user), `/images`, `/health`
+and the session routes under `/auth`. Every other route answers `403` for
+that role, and `/opds` does too.
 
 ### Arr-compatible queue
 
