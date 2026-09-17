@@ -48,7 +48,12 @@ describe('ClientDiagnosePanel', () => {
   })
 
   it('shows the primary fix, every status and both folders', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
     render(<ClientDiagnosePanel result={fixture()} onClose={() => {}} />)
+    // Two hardlink rows share a download folder and root; React must not
+    // see duplicate keys.
+    expect(consoleError.mock.calls.some(args => String(args[0]).includes('same key'))).toBe(false)
+    consoleError.mockRestore()
 
     expect(screen.getByRole('alert')).toHaveTextContent('Add a path remap.')
     const checks = screen.getByRole('list', { name: 'settings.clients.diagnose.checksLabel' })
