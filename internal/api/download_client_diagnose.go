@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -23,6 +24,13 @@ import (
 // diagnoseBudget bounds every outbound call a single Diagnose makes. Each
 // client call also keeps its own shorter transport timeout.
 const diagnoseBudget = 20 * time.Second
+
+// diagnoseFSTimeout bounds each filesystem phase (the local folder checks,
+// then the hardlink probes). A dead network mount can block a stat for
+// minutes; past this the check answers unknown and the request moves on,
+// while the blocked call finishes in the background whenever the kernel lets
+// it.
+const diagnoseFSTimeout = 10 * time.Second
 
 // Check statuses. "skipped" is reserved for checks the runner did not run
 // because an earlier check failed, or that had nothing to work on.
@@ -47,32 +55,47 @@ const (
 	diagCodeIndexerReach = "indexer_reach"
 )
 
-// diagCheckResult is one row of the Diagnose checklist.
+// diagCheckResult is one row of the Diagnose checklist. MediaType is set on
+// the per folder rows (client_path, remap, local_path) when ebook and
+// audiobook grabs land in different folders, and empty when they share one.
 type diagCheckResult struct {
-	Code    string `json:"code"`
-	Status  string `json:"status"`
-	Message string `json:"message"`
-	Fix     string `json:"fix,omitempty"`
+	Code      string `json:"code"`
+	MediaType string `json:"mediaType,omitempty"`
+	Status    string `json:"status"`
+	Message   string `json:"message"`
+	Fix       string `json:"fix,omitempty"`
 }
 
-type diagPaths struct {
+type diagPathRow struct {
+	MediaType  string `json:"mediaType,omitempty"`
 	ClientPath string `json:"clientPath"`
+	Source     string `json:"source,omitempty"`
 	RemapRule  string `json:"remapRule"`
 	LocalPath  string `json:"localPath"`
 }
 
 type diagHardlinkRow struct {
-	Root     string `json:"root"`
-	Linkable bool   `json:"linkable"`
-	Reason   string `json:"reason,omitempty"`
+	MediaType    string `json:"mediaType,omitempty"`
+	DownloadPath string `json:"downloadPath"`
+	Root         string `json:"root"`
+	Linkable     bool   `json:"linkable"`
+	Reason       string `json:"reason,omitempty"`
 }
 
 type diagnoseResponse struct {
 	ClientType string            `json:"clientType"`
 	Checks     []diagCheckResult `json:"checks"`
-	Paths      diagPaths         `json:"paths"`
+	Paths      []diagPathRow     `json:"paths"`
 	Hardlinks  []diagHardlinkRow `json:"hardlinks"`
 	PrimaryFix string            `json:"primaryFix"`
+}
+
+// diagTarget is one folder grabs land in: ebook, audiobook, or both when
+// they resolve to the same client folder.
+type diagTarget struct {
+	row       diagPathRow
+	probePath string // symlink-resolved local path, set once readable
+	stopped   bool   // an earlier per folder check had nothing to pass on
 }
 
 // diagState is what the checks share. Each check reads what earlier checks
@@ -85,22 +108,28 @@ type diagState struct {
 	audiobookDownloadDir string
 	globalRemap          string
 	libraryRoots         []string
+	goos                 string
 
+	// fsCtx is the request context, not the outbound budget, so slow client
+	// calls do not eat into the filesystem phase.
+	fsCtx         context.Context
+	fsTimeout     time.Duration
 	hardlinkProbe func(a, b string) (bool, string)
 
-	paths      diagPaths
-	probePath  string // symlink-resolved local path, set once it is known readable
-	hardlinks  []diagHardlinkRow
-	probeCount int
+	targets   []*diagTarget
+	hardlinks []diagHardlinkRow
 }
 
 // diagCheck is one step of the doctor. always marks a check that still runs
 // after an earlier failure because it does not depend on anything before it.
+// A check returns one result, or one per folder for the per folder checks.
 type diagCheck struct {
 	code   string
 	always bool
-	run    func(ctx context.Context, st *diagState) diagCheckResult
+	run    func(ctx context.Context, st *diagState) []diagCheckResult
 }
+
+func one(r diagCheckResult) []diagCheckResult { return []diagCheckResult{r} }
 
 // diagChecks is the doctor, in order.
 var diagChecks = []diagCheck{
@@ -119,21 +148,22 @@ var diagChecks = []diagCheck{
 // strength of a step that already went wrong. Every sentence is redacted
 // before it leaves the runner.
 func runDiagChecks(ctx context.Context, st *diagState, checks []diagCheck) []diagCheckResult {
-	out := make([]diagCheckResult, 0, len(checks))
+	out := make([]diagCheckResult, 0, len(checks)+3)
 	failed := false
 	for _, c := range checks {
 		if failed && !c.always {
 			out = append(out, diagCheckResult{Code: c.code, Status: diagSkipped, Message: "Skipped because an earlier check failed."})
 			continue
 		}
-		res := c.run(ctx, st)
-		res.Code = c.code
-		res.Message = st.redact(res.Message)
-		res.Fix = st.redact(res.Fix)
-		if res.Status == diagFail {
-			failed = true
+		for _, res := range c.run(ctx, st) {
+			res.Code = c.code
+			res.Message = st.redact(res.Message)
+			res.Fix = st.redact(res.Fix)
+			if res.Status == diagFail {
+				failed = true
+			}
+			out = append(out, res)
 		}
-		out = append(out, res)
 	}
 	return out
 }
@@ -181,7 +211,16 @@ func (h *DownloadClientHandler) Diagnose(w http.ResponseWriter, r *http.Request)
 		downloadDir:          h.downloadDir,
 		audiobookDownloadDir: h.audiobookDownloadDir,
 		globalRemap:          h.downloadPathRemap,
+		goos:                 h.goos,
+		fsCtx:                r.Context(),
+		fsTimeout:            h.fsTimeout,
 		hardlinkProbe:        h.hardlinkProbe,
+	}
+	if st.goos == "" {
+		st.goos = runtime.GOOS
+	}
+	if st.fsTimeout <= 0 {
+		st.fsTimeout = diagnoseFSTimeout
 	}
 	if st.hardlinkProbe == nil {
 		st.hardlinkProbe = hardlinkableReason
@@ -190,17 +229,21 @@ func (h *DownloadClientHandler) Diagnose(w http.ResponseWriter, r *http.Request)
 		st.libraryRoots = h.roots.resolveRoots(ctx)
 	}
 	checks := runDiagChecks(ctx, st, diagChecks)
+
+	// Paths and hardlink reasons came from the client too, so they get the
+	// same treatment as the sentences.
+	paths := make([]diagPathRow, 0, len(st.targets))
+	for _, t := range st.targets {
+		row := t.row
+		row.ClientPath = st.redact(row.ClientPath)
+		row.LocalPath = st.redact(row.LocalPath)
+		paths = append(paths, row)
+	}
 	hardlinks := make([]diagHardlinkRow, 0, len(st.hardlinks))
 	for _, row := range st.hardlinks {
+		row.DownloadPath = st.redact(row.DownloadPath)
 		row.Reason = st.redact(row.Reason)
 		hardlinks = append(hardlinks, row)
-	}
-	// Paths came from the client too, so they get the same treatment as the
-	// sentences.
-	paths := diagPaths{
-		ClientPath: st.redact(st.paths.ClientPath),
-		RemapRule:  st.paths.RemapRule,
-		LocalPath:  st.redact(st.paths.LocalPath),
 	}
 	writeJSON(w, http.StatusOK, diagnoseResponse{
 		ClientType: client.Type,
@@ -233,122 +276,229 @@ func errText(err error) string {
 	return httpsec.RedactSecrets(httpsec.RedactURLError(err).Error())
 }
 
-func checkDiagConfig(_ context.Context, st *diagState) diagCheckResult {
+// boundedFS runs fn with a deadline. fn must only return values and never
+// write shared state, because on a timeout it keeps running in its goroutine
+// after this returns ok false.
+func boundedFS[T any](ctx context.Context, timeout time.Duration, fn func() T) (T, bool) {
+	ch := make(chan T, 1)
+	go func() { ch <- fn() }()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case v := <-ch:
+		return v, true
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+	var zero T
+	return zero, false
+}
+
+func (st *diagState) fsTimeoutResult(what string) diagCheckResult {
+	return diagCheckResult{
+		Status:  diagUnknown,
+		Message: fmt.Sprintf("%s did not respond within %d seconds. A network mount that has stopped answering looks like this.", what, int(st.fsTimeout.Seconds())),
+		Fix:     "Check that the storage behind this folder is mounted and answering, then run Diagnose again.",
+	}
+}
+
+// mediaPhrase is the media type as it reads in front of "downloads".
+func mediaPhrase(mediaType string) string {
+	switch mediaType {
+	case models.MediaTypeEbook:
+		return "ebook "
+	case models.MediaTypeAudiobook:
+		return "audiobook "
+	default:
+		return ""
+	}
+}
+
+func checkDiagConfig(_ context.Context, st *diagState) []diagCheckResult {
 	if _, err := sanitizeHost(st.client.Host); err != nil {
-		return diagCheckResult{
+		return one(diagCheckResult{
 			Status:  diagFail,
 			Message: fmt.Sprintf("The saved host cannot be used: %s", err.Error()),
 			Fix:     "Edit the client and put only a hostname or IP address in Host, with the port and URL base in their own fields.",
-		}
+		})
 	}
 	if err := httpsec.ValidateOutboundURL(downloadClientURL(st.client), httpsec.PolicyLANLoopback); err != nil {
-		return diagCheckResult{
+		return one(diagCheckResult{
 			Status:  diagFail,
 			Message: fmt.Sprintf("Bindery will not connect to the saved address: %s", errText(err)),
 			Fix:     "Use a LAN or loopback address for the download client.",
-		}
+		})
 	}
 	if !st.client.Enabled {
-		return diagCheckResult{
+		return one(diagCheckResult{
 			Status:  diagWarn,
 			Message: "This client is turned off, so Bindery sends it nothing.",
 			Fix:     "Turn the client on in Settings when you want Bindery to use it.",
-		}
+		})
 	}
-	return diagCheckResult{Status: diagPass, Message: "The saved settings are usable."}
+	return one(diagCheckResult{Status: diagPass, Message: "The saved settings are usable."})
 }
 
-func checkDiagConnect(ctx context.Context, st *diagState) diagCheckResult {
+func checkDiagConnect(ctx context.Context, st *diagState) []diagCheckResult {
 	if err := downloader.TestConnection(ctx, st.client); err != nil {
-		return diagCheckResult{
+		return one(diagCheckResult{
 			Status:  diagFail,
 			Message: fmt.Sprintf("Bindery could not connect to %s: %s", st.clientName, errText(err)),
 			Fix:     "Check the host, port, URL base, TLS setting and credentials. If Bindery runs in Docker, localhost is the Bindery container itself, so use the client's LAN IP or service name.",
-		}
+		})
 	}
-	return diagCheckResult{Status: diagPass, Message: fmt.Sprintf("Connected to %s.", st.clientName)}
+	return one(diagCheckResult{Status: diagPass, Message: fmt.Sprintf("Connected to %s.", st.clientName)})
 }
 
-func checkDiagCategory(ctx context.Context, st *diagState) diagCheckResult {
+func checkDiagCategory(ctx context.Context, st *diagState) []diagCheckResult {
 	report, err := downloader.CheckCategories(ctx, st.client)
 	if err != nil {
-		return diagCheckResult{
+		return one(diagCheckResult{
 			Status:  diagUnknown,
 			Message: fmt.Sprintf("Bindery could not read the category list from %s: %s", st.clientName, errText(err)),
-		}
+		})
 	}
 	if !report.Checked {
 		switch st.client.Type {
 		case "deluge":
-			return diagCheckResult{
+			return one(diagCheckResult{
 				Status:  diagUnknown,
 				Message: "Bindery cannot list Deluge labels. A label only works when Deluge's Label plugin is on.",
 				Fix:     "Turn on the Label plugin in Deluge if you set a category here.",
-			}
+			})
 		case "transmission":
-			return diagCheckResult{Status: diagPass, Message: "Transmission has no categories to set up."}
+			return one(diagCheckResult{Status: diagPass, Message: "Transmission has no categories to set up."})
 		default:
-			return diagCheckResult{Status: diagPass, Message: fmt.Sprintf("%s labels need no setup in the client.", st.clientName)}
+			return one(diagCheckResult{Status: diagPass, Message: fmt.Sprintf("%s labels need no setup in the client.", st.clientName)})
 		}
 	}
 	if len(report.Wanted) == 0 {
-		return diagCheckResult{Status: diagPass, Message: fmt.Sprintf("No category is set, so downloads use the default folder in %s.", st.clientName)}
+		return one(diagCheckResult{Status: diagPass, Message: "No category is set on this client in Bindery."})
 	}
 	if len(report.Missing) > 0 {
 		have := "none"
 		if len(report.Existing) > 0 {
 			have = quoteJoin(report.Existing)
 		}
-		return diagCheckResult{
+		return one(diagCheckResult{
 			Status:  diagFail,
 			Message: fmt.Sprintf("%s has no category %s. It has: %s.", st.clientName, quoteJoin(report.Missing), have),
 			Fix:     fmt.Sprintf("Create the category %s in %s, or change this client's category in Bindery to one that exists.", quoteJoin(report.Missing), st.clientName),
-		}
+		})
 	}
-	return diagCheckResult{Status: diagPass, Message: fmt.Sprintf("%s has the category %s.", st.clientName, quoteJoin(report.Wanted))}
+	return one(diagCheckResult{Status: diagPass, Message: fmt.Sprintf("%s has the category %s.", st.clientName, quoteJoin(report.Wanted))})
 }
 
-func checkDiagClientPath(ctx context.Context, st *diagState) diagCheckResult {
-	info, err := downloader.CompletedPath(ctx, st.client)
+// checkDiagClientPath works out where ebook and audiobook grabs land, using
+// the same category and save path SendDownload uses for each, and keeps one
+// folder when both resolve to the same place.
+func checkDiagClientPath(ctx context.Context, st *diagState) []diagCheckResult {
+	grabKey := func(mediaType string) string {
+		return downloader.ResolveCategory(st.client, mediaType) + "\x00" +
+			downloader.TargetDownloadDir(mediaType, st.downloadDir, st.audiobookDownloadDir)
+	}
+	ebook, ebookErr := downloader.GrabSavePath(ctx, st.client, models.MediaTypeEbook, st.downloadDir, st.audiobookDownloadDir)
+	type resolved struct {
+		mediaType string
+		info      downloader.ClientPathInfo
+		err       error
+	}
+	var found []resolved
+	if grabKey(models.MediaTypeEbook) == grabKey(models.MediaTypeAudiobook) {
+		found = []resolved{{"", ebook, ebookErr}}
+	} else {
+		audio, audioErr := downloader.GrabSavePath(ctx, st.client, models.MediaTypeAudiobook, st.downloadDir, st.audiobookDownloadDir)
+		if ebookErr == nil && audioErr == nil && ebook.Path == audio.Path && ebook.Source == audio.Source && ebook.Note == audio.Note {
+			found = []resolved{{"", ebook, nil}}
+		} else {
+			found = []resolved{{models.MediaTypeEbook, ebook, ebookErr}, {models.MediaTypeAudiobook, audio, audioErr}}
+		}
+	}
+
+	out := make([]diagCheckResult, 0, len(found))
+	for _, f := range found {
+		t := &diagTarget{row: diagPathRow{MediaType: f.mediaType, ClientPath: f.info.Path, Source: f.info.Source}}
+		st.targets = append(st.targets, t)
+		res := describeClientPath(st, f.mediaType, f.info, f.err)
+		res.MediaType = f.mediaType
+		if res.Status != diagPass && res.Status != diagWarn {
+			t.stopped = true
+		}
+		out = append(out, res)
+	}
+	return out
+}
+
+func describeClientPath(st *diagState, mediaType string, info downloader.ClientPathInfo, err error) diagCheckResult {
+	media := mediaPhrase(mediaType)
 	if err != nil {
-		res := diagCheckResult{
+		if st.client.Type == "sabnzbd" || st.client.Type == "" {
+			return diagCheckResult{
+				Status:  diagUnknown,
+				Message: "SABnzbd did not share its folder settings. It only does that for the full API key, not the NZB key.",
+				Fix:     "Save SABnzbd's full API key on this client to run the folder checks, or compare SABnzbd's completed folder with Bindery's download folder by hand.",
+			}
+		}
+		return diagCheckResult{
 			Status:  diagUnknown,
-			Message: fmt.Sprintf("%s did not say where it saves completed downloads: %s", st.clientName, errText(err)),
+			Message: fmt.Sprintf("%s did not say where it saves completed %sdownloads: %s", st.clientName, media, errText(err)),
 			Fix:     fmt.Sprintf("Compare the completed downloads folder in %s with Bindery's download folder by hand.", st.clientName),
 		}
-		if st.client.Type == "sabnzbd" || st.client.Type == "" {
-			res.Message = "SABnzbd did not share its folder settings. It only does that for the full API key, not the NZB key."
-			res.Fix = "Save SABnzbd's full API key on this client to run the folder checks, or compare SABnzbd's completed folder with Bindery's download folder by hand."
-		}
-		return res
 	}
 	if info.Path == "" {
 		res := diagCheckResult{
 			Status:  diagUnknown,
-			Message: fmt.Sprintf("%s did not report a completed downloads folder Bindery can use.", st.clientName),
+			Message: fmt.Sprintf("%s did not report a completed %sdownloads folder Bindery can use.", st.clientName, media),
 			Fix:     fmt.Sprintf("Set an absolute completed downloads folder in %s.", st.clientName),
 		}
-		if st.client.Type == "qbittorrent" {
-			res.Message = fmt.Sprintf("qBittorrent reported no save path for the category %q.", strings.TrimSpace(st.client.Category))
-			res.Fix = "Set a category in Bindery and give that category a save path in qBittorrent."
+		if st.client.Type == "qbittorrent" && info.Category != "" {
+			res.Message = fmt.Sprintf("qBittorrent has no usable save path for the category %q.", info.Category)
+			res.Fix = "Give that category a save path in qBittorrent, or set a default save path."
 		}
 		return res
 	}
-	st.paths.ClientPath = info.Path
-	return diagCheckResult{
+	res := diagCheckResult{
 		Status:  diagPass,
-		Message: fmt.Sprintf("%s saves completed downloads to %q (its %s).", st.clientName, info.Path, info.Source),
+		Message: fmt.Sprintf("Completed %sdownloads land in %q, from %s.", media, info.Path, info.Source),
 	}
+	if info.Note != "" {
+		res.Status = diagWarn
+		res.Message += " " + info.Note
+		res.Fix = fmt.Sprintf("Check the settings of that label in %s by hand.", st.clientName)
+	}
+	return res
 }
 
-func checkDiagRemap(_ context.Context, st *diagState) diagCheckResult {
-	raw := st.paths.ClientPath
-	if raw == "" {
+// isAbsLocal reports whether p is absolute on the platform Bindery runs on.
+func isAbsLocal(p, goos string) bool {
+	return filepath.IsAbs(p) || (goos == "windows" && pathmap.IsWindowsPath(p))
+}
+
+func checkDiagRemap(_ context.Context, st *diagState) []diagCheckResult {
+	if len(st.targets) == 0 {
+		return one(diagCheckResult{Status: diagSkipped, Message: "Skipped because the client did not report a folder."})
+	}
+	global := pathmap.Parse(st.globalRemap)
+	out := make([]diagCheckResult, 0, len(st.targets))
+	for _, t := range st.targets {
+		res := remapTarget(st, t, global)
+		res.MediaType = t.row.MediaType
+		out = append(out, res)
+	}
+	return out
+}
+
+func remapTarget(st *diagState, t *diagTarget, global *pathmap.Remapper) diagCheckResult {
+	if t.stopped {
 		return diagCheckResult{Status: diagSkipped, Message: "Skipped because the client did not report a folder."}
 	}
-	local, rule := downloader.RemapClientPath(st.client, raw, pathmap.Parse(st.globalRemap))
-	st.paths.RemapRule = rule
-	if pathmap.IsWindowsPath(local) {
+	raw := t.row.ClientPath
+	local, rule := downloader.RemapClientPath(st.client, raw, global)
+	t.row.RemapRule = rule
+	// A drive path can only exist on a Windows Bindery. Anywhere else it
+	// means a remap is missing.
+	if st.goos != "windows" && pathmap.IsWindowsPath(local) {
+		t.stopped = true
 		example := raw + ":/downloads"
 		if st.downloadDir != "" {
 			example = raw + ":" + st.downloadDir
@@ -360,8 +510,9 @@ func checkDiagRemap(_ context.Context, st *diagState) diagCheckResult {
 		}
 	}
 	local = filepath.Clean(local)
-	st.paths.LocalPath = local
-	if !filepath.IsAbs(local) {
+	t.row.LocalPath = local
+	if !isAbsLocal(local, st.goos) {
+		t.stopped = true
 		return diagCheckResult{
 			Status:  diagFail,
 			Message: fmt.Sprintf("The folder resolves to %q, which is not an absolute path.", local),
@@ -388,7 +539,7 @@ func (st *diagState) bases() []diagBase {
 	var out []diagBase
 	add := func(label, p string) {
 		p = strings.TrimSpace(p)
-		if p == "" || !filepath.IsAbs(p) {
+		if p == "" || !isAbsLocal(p, st.goos) {
 			return
 		}
 		out = append(out, diagBase{label: label, path: filepath.Clean(p)})
@@ -414,18 +565,28 @@ func containingBase(p string, bases []diagBase) (diagBase, bool) {
 	return best, found
 }
 
+// errDanglingLink marks a path whose existing part includes a symlink that
+// does not resolve. Following it later could land anywhere once its target
+// appears, so the caller refuses it.
+var errDanglingLink = errors.New("a symbolic link in the path does not resolve")
+
 // resolveExistingPrefix resolves symlinks in the longest prefix of p that
-// exists and appends the rest unchanged.
-func resolveExistingPrefix(p string) string {
+// exists and appends the rest unchanged. When a component exists but will not
+// resolve (a dangling or looping symlink) it refuses with errDanglingLink
+// instead of stepping past it to the parent.
+func resolveExistingPrefix(p string) (string, error) {
 	cur := p
 	var rest []string
 	for {
 		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
-			return filepath.Join(append([]string{resolved}, rest...)...)
+			return filepath.Join(append([]string{resolved}, rest...)...), nil
+		}
+		if info, err := os.Lstat(cur); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return "", errDanglingLink
 		}
 		parent := filepath.Dir(cur)
 		if parent == cur {
-			return p
+			return p, nil
 		}
 		rest = append([]string{filepath.Base(cur)}, rest...)
 		cur = parent
@@ -438,63 +599,106 @@ func resolveExistingPrefix(p string) string {
 // at or under a configured download folder or library root, both as written
 // and after following symlinks. Anywhere else, the answer is that the path is
 // outside every configured folder, and nothing is touched.
-func checkDiagLocalPath(_ context.Context, st *diagState) diagCheckResult {
-	local := st.paths.LocalPath
-	if local == "" {
-		return diagCheckResult{Status: diagSkipped, Message: "Skipped because there is no local folder to check."}
+func checkDiagLocalPath(_ context.Context, st *diagState) []diagCheckResult {
+	if len(st.targets) == 0 {
+		return one(diagCheckResult{Status: diagSkipped, Message: "Skipped because there is no local folder to check."})
 	}
 	bases := st.bases()
-	base, ok := containingBase(local, bases)
-	if !ok {
-		return outsideConfiguredFolders(st, local, bases, "")
+	out := make([]diagCheckResult, 0, len(st.targets))
+	for _, t := range st.targets {
+		var res diagCheckResult
+		switch {
+		case t.stopped || t.row.LocalPath == "":
+			res = diagCheckResult{Status: diagSkipped, Message: "Skipped because there is no local folder to check."}
+		default:
+			local := t.row.LocalPath
+			if _, ok := containingBase(local, bases); !ok {
+				res = outsideConfiguredFolders(st.clientName, local, bases, "")
+				break
+			}
+			probed, ok := boundedFS(st.fsCtx, st.fsTimeout, func() localProbe {
+				return probeLocalPath(st.clientName, local, bases)
+			})
+			if !ok {
+				res = st.fsTimeoutResult(fmt.Sprintf("%q", local))
+				break
+			}
+			res = probed.res
+			t.probePath = probed.probePath
+		}
+		res.MediaType = t.row.MediaType
+		out = append(out, res)
 	}
-	resolved := resolveExistingPrefix(local)
+	return out
+}
+
+type localProbe struct {
+	res       diagCheckResult
+	probePath string
+}
+
+// probeLocalPath does the filesystem work for one folder that is already
+// known to be lexically inside a configured folder. It touches no shared
+// state, so it is safe to abandon on a timeout.
+func probeLocalPath(clientName, local string, bases []diagBase) localProbe {
+	resolved, err := resolveExistingPrefix(local)
+	if err != nil {
+		return localProbe{res: diagCheckResult{
+			Status:  diagFail,
+			Message: fmt.Sprintf("%q goes through a symbolic link that does not resolve. Bindery did not follow it.", local),
+			Fix:     "Point the path remap, or the folder the client saves into, at a real folder rather than a broken link.",
+		}}
+	}
 	resolvedBases := make([]diagBase, 0, len(bases))
 	for _, b := range bases {
-		resolvedBases = append(resolvedBases, diagBase{label: b.label, path: resolveExistingPrefix(b.path)})
+		rb, err := resolveExistingPrefix(b.path)
+		if err != nil {
+			rb = b.path
+		}
+		resolvedBases = append(resolvedBases, diagBase{label: b.label, path: rb})
 	}
-	if base, ok = containingBase(resolved, resolvedBases); !ok {
-		return outsideConfiguredFolders(st, local, bases, resolved)
+	base, ok := containingBase(resolved, resolvedBases)
+	if !ok {
+		return localProbe{res: outsideConfiguredFolders(clientName, local, bases, resolved)}
 	}
 
 	info, err := os.Stat(resolved)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		if found, diverged := downloader.FindCaseInsensitivePathUnder(base.path, resolved); found != "" {
-			return diagCheckResult{
+			return localProbe{res: diagCheckResult{
 				Status:  diagWarn,
 				Message: fmt.Sprintf("%q does not exist, but %q does. Folder names on Linux are case sensitive.", local, found),
-				Fix:     fmt.Sprintf("Change the path remap, or the folder set in %s, so the part %q matches the folder on disk.", st.clientName, filepath.Base(diverged)),
-			}
+				Fix:     fmt.Sprintf("Change the path remap, or the folder set in %s, so the part %q matches the folder on disk.", clientName, filepath.Base(diverged)),
+			}}
 		}
-		return diagCheckResult{
+		return localProbe{res: diagCheckResult{
 			Status:  diagFail,
 			Message: fmt.Sprintf("%q does not exist inside Bindery.", local),
-			Fix:     fmt.Sprintf("Check the path remap and that the storage %s writes to is mounted into Bindery. A client that has never finished a download in this category may create the folder later.", st.clientName),
-		}
+			Fix:     fmt.Sprintf("Check the path remap and that the storage %s writes to is mounted into Bindery. A client that has never finished a download in this folder may create it later.", clientName),
+		}}
 	case errors.Is(err, fs.ErrPermission):
-		return permissionDenied(local)
+		return localProbe{res: permissionDenied(local)}
 	case err != nil:
-		return diagCheckResult{Status: diagFail, Message: fmt.Sprintf("Bindery cannot inspect %q: %s", local, errText(err))}
+		return localProbe{res: diagCheckResult{Status: diagFail, Message: fmt.Sprintf("Bindery cannot inspect %q: %s", local, errText(err))}}
 	case !info.IsDir():
-		return diagCheckResult{
+		return localProbe{res: diagCheckResult{
 			Status:  diagFail,
 			Message: fmt.Sprintf("%q is a file, not a folder.", local),
 			Fix:     "Point the path remap at the folder the client saves into.",
-		}
+		}}
 	}
 	if err := readableDir(resolved); err != nil {
-		return permissionDenied(local)
+		return localProbe{res: permissionDenied(local)}
 	}
-	st.probePath = resolved
 	if dh := config.CheckDir(resolved); !dh.Writable {
-		return diagCheckResult{
+		return localProbe{probePath: resolved, res: diagCheckResult{
 			Status:  diagWarn,
 			Message: fmt.Sprintf("Bindery can read %q but cannot write to it (%s). Imports that move files, and removing finished downloads, will fail.", local, dh.Reason),
 			Fix:     "Give the user Bindery runs as write access to the download folder, or run Bindery as the user that owns it.",
-		}
+		}}
 	}
-	return diagCheckResult{Status: diagPass, Message: fmt.Sprintf("Bindery can read and write %q.", local)}
+	return localProbe{probePath: resolved, res: diagCheckResult{Status: diagPass, Message: fmt.Sprintf("Bindery can read and write %q.", local)}}
 }
 
 func readableDir(p string) error {
@@ -521,7 +725,7 @@ func permissionDenied(local string) diagCheckResult {
 	}
 }
 
-func outsideConfiguredFolders(st *diagState, local string, bases []diagBase, resolved string) diagCheckResult {
+func outsideConfiguredFolders(clientName, local string, bases []diagBase, resolved string) diagCheckResult {
 	names := make([]string, 0, len(bases))
 	for _, b := range bases {
 		names = append(names, fmt.Sprintf("%s %q", b.label, b.path))
@@ -534,7 +738,7 @@ func outsideConfiguredFolders(st *diagState, local string, bases []diagBase, res
 	if resolved != "" {
 		msg = fmt.Sprintf("%q follows a symbolic link to %q, which is outside every folder Bindery is configured to use (%s). Bindery did not look inside it.", local, resolved, configured)
 	}
-	fix := fmt.Sprintf("Add a path remap on this client that turns the folder %s reports into a folder under the download folder, or change where %s saves.", st.clientName, st.clientName)
+	fix := fmt.Sprintf("Add a path remap on this client that turns the folder %s reports into a folder under the download folder, or change where %s saves.", clientName, clientName)
 	for _, b := range bases {
 		n := len(b.path)
 		if len(local) >= n && strings.EqualFold(local[:n], b.path) && (len(local) == n || local[n] == filepath.Separator) {
@@ -545,63 +749,88 @@ func outsideConfiguredFolders(st *diagState, local string, bases []diagBase, res
 	return diagCheckResult{Status: diagFail, Message: msg, Fix: fix}
 }
 
-// checkDiagHardlinks reports, per library root, whether imports from the
-// download folder can hardlink. Roots on the same device share one probe, so
-// a library split across many folders on one disk costs one temporary file.
-func checkDiagHardlinks(_ context.Context, st *diagState) diagCheckResult {
-	if st.probePath == "" {
-		return diagCheckResult{Status: diagSkipped, Message: "Skipped because the download folder has not been confirmed readable."}
+// checkDiagHardlinks reports, for each download folder and library root pair,
+// whether imports can hardlink. Every pair gets its own real link probe: two
+// bind mounts of one filesystem share a device ID and still refuse links
+// across them, which is exactly what the probe exists to catch.
+func checkDiagHardlinks(_ context.Context, st *diagState) []diagCheckResult {
+	var sources []*diagTarget
+	for _, t := range st.targets {
+		if t.probePath != "" {
+			sources = append(sources, t)
+		}
+	}
+	if len(sources) == 0 {
+		return one(diagCheckResult{Status: diagSkipped, Message: "Skipped because no download folder has been confirmed readable."})
 	}
 	roots := make([]string, 0, len(st.libraryRoots))
 	for _, root := range st.libraryRoots {
-		if root = strings.TrimSpace(root); root != "" && filepath.IsAbs(root) {
+		if root = strings.TrimSpace(root); root != "" && isAbsLocal(root, st.goos) {
 			roots = append(roots, filepath.Clean(root))
 		}
 	}
 	if len(roots) == 0 {
-		return diagCheckResult{Status: diagUnknown, Message: "No library folder is configured, so there is nothing to compare."}
+		return one(diagCheckResult{Status: diagUnknown, Message: "No library folder is configured, so there is nothing to compare."})
 	}
 	sort.Strings(roots)
-	type result struct {
-		ok     bool
-		reason string
+
+	type pair struct {
+		mediaType, local, probe, root string
 	}
-	byDevice := map[string]result{}
+	var pairs []pair
+	for _, t := range sources {
+		for _, root := range roots {
+			pairs = append(pairs, pair{t.row.MediaType, t.row.LocalPath, t.probePath, root})
+		}
+	}
+	probe := st.hardlinkProbe
+	rows, ok := boundedFS(st.fsCtx, st.fsTimeout, func() []diagHardlinkRow {
+		out := make([]diagHardlinkRow, 0, len(pairs))
+		done := map[[2]string]diagHardlinkRow{}
+		for _, p := range pairs {
+			key := [2]string{p.probe, p.root}
+			row, seen := done[key]
+			if !seen {
+				linkable, reason := probe(p.probe, p.root)
+				row = diagHardlinkRow{Linkable: linkable, Reason: reason}
+				done[key] = row
+			}
+			row.MediaType, row.DownloadPath, row.Root = p.mediaType, p.local, p.root
+			out = append(out, row)
+		}
+		return out
+	})
+	if !ok {
+		return one(st.fsTimeoutResult("The hardlink test"))
+	}
+	st.hardlinks = rows
+
 	failing := 0
 	firstReason := ""
-	for _, root := range roots {
-		key := diagDeviceKey(root)
-		res, seen := byDevice[key]
-		if !seen {
-			st.probeCount++
-			ok, reason := st.hardlinkProbe(st.probePath, root)
-			res = result{ok: ok, reason: reason}
-			byDevice[key] = res
-		}
-		st.hardlinks = append(st.hardlinks, diagHardlinkRow{Root: root, Linkable: res.ok, Reason: res.reason})
-		if !res.ok {
+	for _, row := range rows {
+		if !row.Linkable {
 			failing++
 			if firstReason == "" {
-				firstReason = res.reason
+				firstReason = row.Reason
 			}
 		}
 	}
 	if failing == 0 {
-		return diagCheckResult{Status: diagPass, Message: "Imports from this folder can hardlink into every library folder."}
+		return one(diagCheckResult{Status: diagPass, Message: "Imports can hardlink into every library folder."})
 	}
-	return diagCheckResult{
+	return one(diagCheckResult{
 		Status:  diagWarn,
-		Message: fmt.Sprintf("Imports into %d of %d library folders will copy instead of hardlinking: %s.", failing, len(roots), firstReason),
+		Message: fmt.Sprintf("%d of %d download and library folder pairs will copy instead of hardlinking: %s.", failing, len(rows), firstReason),
 		Fix:     "To hardlink, mount the download folder and the library from the same filesystem into Bindery as a single volume. Copying still works, it just uses more space.",
-	}
+	})
 }
 
-func checkDiagIndexerReach(_ context.Context, st *diagState) diagCheckResult {
-	return diagCheckResult{
+func checkDiagIndexerReach(_ context.Context, st *diagState) []diagCheckResult {
+	return one(diagCheckResult{
 		Status:  diagUnknown,
 		Message: "Bindery cannot test whether the download client can reach your indexers, trackers or Usenet servers.",
 		Fix:     fmt.Sprintf("If downloads stall inside %s, check that client's own network, VPN and DNS. Bindery fetches NZB and torrent files itself, but the client downloads the content.", st.clientName),
-	}
+	})
 }
 
 func quoteJoin(items []string) string {

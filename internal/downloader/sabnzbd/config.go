@@ -36,21 +36,22 @@ type categoryDirConfig struct {
 
 // CompleteDir returns the folder SABnzbd moves finished jobs in category into:
 // the category's own folder when it sets an absolute one, that folder under
-// complete_dir when it is relative, otherwise complete_dir itself.
+// complete_dir when it is relative, otherwise complete_dir itself. The bool
+// reports whether the category's own folder took part.
 //
 // It needs the full API key. SABnzbd refuses get_config for an NZB only key,
 // and that refusal comes back as an error so the caller can say "unknown"
 // rather than report a false failure. An empty result with no error means
 // SABnzbd reported a relative complete_dir, which Bindery cannot resolve
 // without knowing SABnzbd's own home folder.
-func (c *Client) CompleteDir(ctx context.Context, category string) (string, error) {
+func (c *Client) CompleteDir(ctx context.Context, category string) (string, bool, error) {
 	var misc completeDirConfig
 	params := url.Values{"mode": {"get_config"}, "section": {"misc"}, "keyword": {"complete_dir"}}
 	if err := c.apiCall(ctx, params, &misc); err != nil {
-		return "", fmt.Errorf("read complete_dir: %w", redactURLError(err))
+		return "", false, fmt.Errorf("read complete_dir: %w", redactURLError(err))
 	}
 	if misc.Status != nil && !*misc.Status {
-		return "", fmt.Errorf("SABnzbd refused get_config: %s", strings.TrimSpace(misc.Error))
+		return "", false, fmt.Errorf("SABnzbd refused get_config: %s", strings.TrimSpace(misc.Error))
 	}
 
 	catDir := ""
@@ -69,7 +70,8 @@ func (c *Client) CompleteDir(ctx context.Context, category string) (string, erro
 			}
 		}
 	}
-	return resolveCompleteDir(strings.TrimSpace(misc.Config.Misc.CompleteDir), catDir), nil
+	dir := resolveCompleteDir(strings.TrimSpace(misc.Config.Misc.CompleteDir), catDir)
+	return dir, dir != "" && strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(catDir), "*")) != "", nil
 }
 
 // resolveCompleteDir applies SABnzbd's folder rules. A trailing asterisk on a
@@ -79,23 +81,11 @@ func (c *Client) CompleteDir(ctx context.Context, category string) (string, erro
 // SABnzbd keeps a Windows path.
 func resolveCompleteDir(completeDir, catDir string) string {
 	catDir = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(catDir), "*"))
-	if isAbsClientPath(catDir) {
+	if pathmap.IsAbsClientPath(catDir) {
 		return catDir
 	}
-	if !isAbsClientPath(completeDir) {
+	if !pathmap.IsAbsClientPath(completeDir) {
 		return ""
 	}
-	catDir = strings.Trim(catDir, `/\`)
-	if catDir == "" {
-		return completeDir
-	}
-	sep := "/"
-	if pathmap.IsWindowsPath(completeDir) && !strings.Contains(completeDir, "/") {
-		sep = `\`
-	}
-	return strings.TrimRight(completeDir, `/\`) + sep + catDir
-}
-
-func isAbsClientPath(p string) bool {
-	return strings.HasPrefix(p, "/") || pathmap.IsWindowsPath(p)
+	return pathmap.JoinClientPath(completeDir, catDir)
 }

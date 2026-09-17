@@ -206,7 +206,7 @@ function makeDiagnosis(overrides: Partial<DiagnoseResult> = {}): DiagnoseResult 
       { code: 'hardlinks', status: 'skipped', message: 'Skipped because an earlier check failed.' },
       { code: 'indexer_reach', status: 'unknown', message: 'Bindery cannot test indexer reach.', fix: 'Check the client network.' },
     ],
-    paths: { clientPath: '/torrents/books', remapRule: 'none', localPath: '/torrents/books' },
+    paths: [{ clientPath: '/torrents/books', source: 'the category save path', remapRule: 'none', localPath: '/torrents/books' }],
     hardlinks: [],
     primaryFix: 'Add a path remap.',
     ...overrides,
@@ -235,7 +235,10 @@ describe('download client diagnose', () => {
     vi.mocked(api.diagnoseDownloadClient).mockResolvedValue(makeDiagnosis({
       checks: [{ code: 'connect', status: 'pass', message: 'Connected.' }],
       primaryFix: '',
-      hardlinks: [{ root: '/books', linkable: true }, { root: '/audiobooks', linkable: false, reason: 'different filesystems' }],
+      hardlinks: [
+        { downloadPath: '/downloads', root: '/books', linkable: true },
+        { downloadPath: '/downloads', root: '/audiobooks', linkable: false, reason: 'different filesystems' },
+      ],
     }))
     renderTab([makeClient()])
     fireEvent.click(screen.getByRole('button', { name: 'settings.clients.diagnose.button' }))

@@ -701,6 +701,7 @@
       "apiKeyEditLabel": "API Key (leave blank to keep current)",
       "credentialKeepHint": "Bindery no longer sends a saved password or API key back to the browser. Leave this blank to keep the one already stored.",
       "credentialUnsetHint": "No credential is stored for this client yet.",
+      "unknownError": "Unknown error",
       "diagnose": {
         "button": "Diagnose",
         "running": "Diagnosing...",
@@ -715,8 +716,14 @@
         "clientPath": "Client reports",
         "remapRule": "Path remap",
         "localPath": "Bindery looks in",
+        "source": "Comes from",
+        "media": {
+          "ebook": "Ebooks",
+          "audiobook": "Audiobooks"
+        },
         "none": "none",
         "hardlinksCaption": "Whether imports can hardlink into each library folder",
+        "downloadFolder": "Download folder",
         "libraryFolder": "Library folder",
         "hardlinks": "Hardlinks",
         "reason": "Why not",

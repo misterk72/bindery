@@ -60,11 +60,16 @@ export function buildDiagnoseReport(result: DiagnoseResult): string {
   const lines = [
     'Bindery download client diagnosis',
     `client type: ${result.clientType}`,
-    ...result.checks.map(c => `${c.code}: ${c.status}`),
-    `client path: ${result.paths.clientPath || '(none)'}`,
-    `remap rule: ${result.paths.remapRule || '(none)'}`,
-    `local path: ${result.paths.localPath || '(none)'}`,
-    ...result.hardlinks.map(h => `hardlink ${h.root}: ${h.linkable ? 'yes' : 'no'}`),
+    ...result.checks.map(c => `${c.code}${c.mediaType ? ` (${c.mediaType})` : ''}: ${c.status}`),
+    ...result.paths.flatMap(p => {
+      const media = p.mediaType ? ` (${p.mediaType})` : ''
+      return [
+        `client path${media}: ${p.clientPath || '(none)'}${p.source ? ` from ${p.source}` : ''}`,
+        `remap rule${media}: ${p.remapRule || '(none)'}`,
+        `local path${media}: ${p.localPath || '(none)'}`,
+      ]
+    }),
+    ...result.hardlinks.map(h => `hardlink ${h.downloadPath} to ${h.root}: ${h.linkable ? 'yes' : 'no'}`),
   ]
   return lines.join('\n')
 }

@@ -374,13 +374,13 @@ only, never a path, and it runs only when called.
     {"code": "config", "status": "pass", "message": "The saved settings are usable."},
     {"code": "connect", "status": "pass", "message": "Connected to qBittorrent."},
     {"code": "category", "status": "pass", "message": "qBittorrent has the category \"books\"."},
-    {"code": "client_path", "status": "pass", "message": "qBittorrent saves completed downloads to \"/torrents/books\" (its category save path)."},
+    {"code": "client_path", "status": "pass", "message": "Completed downloads land in \"/torrents/books\", from the category save path."},
     {"code": "remap", "status": "pass", "message": "No path remap applies, so Bindery looks for \"/torrents/books\" at the same path."},
     {"code": "local_path", "status": "fail", "message": "Bindery would look for completed downloads in \"/torrents/books\", which is outside every folder it is configured to use (download folder \"/downloads\"). Bindery did not look inside it.", "fix": "Add a path remap on this client ..."},
     {"code": "hardlinks", "status": "skipped", "message": "Skipped because an earlier check failed."},
     {"code": "indexer_reach", "status": "unknown", "message": "Bindery cannot test whether the download client can reach your indexers, trackers or Usenet servers.", "fix": "..."}
   ],
-  "paths": {"clientPath": "/torrents/books", "remapRule": "none", "localPath": "/torrents/books"},
+  "paths": [{"clientPath": "/torrents/books", "source": "the category save path", "remapRule": "none", "localPath": "/torrents/books"}],
   "hardlinks": [],
   "primaryFix": "Add a path remap on this client ..."
 }
@@ -388,8 +388,10 @@ only, never a path, and it runs only when called.
 
 * `code` is stable: `config`, `connect`, `category`, `client_path`, `remap`, `local_path`, `hardlinks`, `indexer_reach`. `message` and `fix` are English sentences.
 * `status` is `pass`, `warn`, `fail`, `skipped` or `unknown`. Every check after a `fail` is `skipped` without running, except `indexer_reach`, which is always `unknown` because Bindery cannot test the client's own route to indexers.
-* `remapRule` is `client` (this client's path remap changed the path), `global` (`BINDERY_DOWNLOAD_PATH_REMAP` did) or `none`.
-* `hardlinks` has one row per library root, `{root, linkable, reason}`. Roots on the same filesystem share one probe.
+* The folder checked is where a grab actually lands, worked out the way the grab itself is sent: the save path Bindery sends (rTorrent always, qBittorrent without a category, Transmission with an absolute category), the category save path (qBittorrent, with an empty one meaning the default save path plus the category name), the category folder (SABnzbd), the category DestDir or DestDir plus the category name when `AppendCategoryDir` is on (NZBGet), a Deluge label's move completed path, or the client default. `source` names which.
+* Ebook and audiobook grabs are checked separately, because each resolves its own category and download folder. When both land in the same folder there is one `paths` row and the `client_path`, `remap` and `local_path` checks have no `mediaType`; otherwise each carries `mediaType` `ebook` or `audiobook`.
+* `remapRule` is `client` (this client's path remap changed the path), `global` (`BINDERY_DOWNLOAD_PATH_REMAP` did) or `none`. A Windows drive path fails for a missing remap only when Bindery itself is not running on Windows.
+* `hardlinks` has one row per download folder and library root pair, `{mediaType, downloadPath, root, linkable, reason}`. Every pair gets a real link probe, because two bind mounts of one filesystem share a device ID yet refuse links across them.
 * `primaryFix` is the fix of the first failure, or of the first warning when nothing failed.
 
 Bindery only looks at the filesystem (a stat, a directory listing for a letter
@@ -397,9 +399,14 @@ case mismatch, a temporary write probe and a hardlink probe) when the remapped
 path is at or under `BINDERY_DOWNLOAD_DIR`, `BINDERY_AUDIOBOOK_DOWNLOAD_DIR` or
 a library root, both as written and after following symbolic links. A client
 that reports any other folder gets `local_path: fail` saying so, and nothing
-there is touched. SABnzbd is asked for `complete_dir` and the one category
+there is touched. A symbolic link in the path that does not resolve is refused
+rather than followed. Each filesystem phase has a 10 second deadline; a folder
+on a mount that stops answering comes back `unknown` instead of holding the
+request. SABnzbd is asked for `complete_dir` and the one category
 only, Transmission for `download-dir` only, and Deluge for its three download
-location keys only. Error text from a client passes through the same secret
+location keys and the label's options only. NZBGet's `config` call cannot be
+filtered on the server, so its reply is decoded keeping only the folder and
+category keys. Error text from a client passes through the same secret
 redaction as other outbound errors, and the stored API key and password are
 removed from every sentence and path in the response. SABnzbd answers
 `client_path: unknown` rather than a failure when its key is an NZB key, which

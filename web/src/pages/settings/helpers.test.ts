@@ -49,14 +49,14 @@ describe('buildDiagnoseReport', () => {
       checks: [
         { code: 'connect', status: 'fail', message: 'could not reach SABnzbd at http://sab.lan:8080', fix: 'Check the host' },
       ],
-      paths: { clientPath: '/data/complete', remapRule: 'client', localPath: '/downloads/complete' },
-      hardlinks: [{ root: '/books', linkable: false, reason: 'different filesystems' }],
+      paths: [{ mediaType: 'audiobook', clientPath: '/data/complete', source: 'the category folder', remapRule: 'client', localPath: '/downloads/complete' }],
+      hardlinks: [{ mediaType: 'audiobook', downloadPath: '/downloads/complete', root: '/books', linkable: false, reason: 'different filesystems' }],
       primaryFix: 'Check the host',
     })
     expect(report).toContain('client type: sabnzbd')
     expect(report).toContain('connect: fail')
-    expect(report).toContain('local path: /downloads/complete')
-    expect(report).toContain('hardlink /books: no')
+    expect(report).toContain('local path (audiobook): /downloads/complete')
+    expect(report).toContain('hardlink /downloads/complete to /books: no')
     expect(report).not.toContain('sab.lan')
     expect(report).not.toContain('Check the host')
   })

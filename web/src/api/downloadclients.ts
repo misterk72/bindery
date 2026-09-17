@@ -60,14 +60,30 @@ export interface PathVisibility {
 // server. A check after a failure comes back as 'skipped'.
 export type DiagnoseStatus = 'pass' | 'warn' | 'fail' | 'skipped' | 'unknown'
 
+// mediaType is set on the per folder rows when ebook and audiobook grabs land
+// in different folders, and absent when they share one.
+export type DiagnoseMediaType = 'ebook' | 'audiobook'
+
 export interface DiagnoseCheck {
   code: string
+  mediaType?: DiagnoseMediaType
   status: DiagnoseStatus
   message: string
   fix?: string
 }
 
+export interface DiagnosePathRow {
+  mediaType?: DiagnoseMediaType
+  clientPath: string
+  // source says where clientPath came from, e.g. "the save path Bindery sends".
+  source?: string
+  remapRule: string
+  localPath: string
+}
+
 export interface DiagnoseHardlinkRow {
+  mediaType?: DiagnoseMediaType
+  downloadPath: string
   root: string
   linkable: boolean
   reason?: string
@@ -76,7 +92,7 @@ export interface DiagnoseHardlinkRow {
 export interface DiagnoseResult {
   clientType: string
   checks: DiagnoseCheck[]
-  paths: { clientPath: string; remapRule: string; localPath: string }
+  paths: DiagnosePathRow[]
   hardlinks: DiagnoseHardlinkRow[]
   primaryFix: string
 }

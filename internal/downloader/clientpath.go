@@ -9,16 +9,21 @@ import (
 	"strings"
 
 	"github.com/vavallee/bindery/internal/models"
+	"github.com/vavallee/bindery/internal/pathmap"
 )
 
-// ClientPathInfo is where a download client says it puts completed downloads.
+// ClientPathInfo is where a download client puts completed downloads.
 type ClientPathInfo struct {
-	// Path is the folder exactly as the client reports it, in the client's own
-	// filesystem namespace. Empty when the client exposes no usable folder.
+	// Path is the folder in the client's own filesystem namespace. Empty when
+	// the client exposes no usable folder.
 	Path string
-	// Source names the client setting Path came from, as an English phrase
-	// ("category save path", "complete_dir") for use in a sentence.
+	// Source names where Path came from, as an English phrase for a sentence
+	// ("the save path Bindery sends", "the category save path").
 	Source string
+	// Category is the category or label the path was resolved for.
+	Category string
+	// Note is set when part of the answer could not be checked.
+	Note string
 }
 
 // ClientTypeName is the display name for a download client type.
@@ -39,15 +44,15 @@ func ClientTypeName(clientType string) string {
 	}
 }
 
-// CompletedPath asks the client where it puts completed downloads for the
-// client's configured category. It is the one place each client type's answer
-// is worked out, shared by the Test button's visibility check and the diagnose
-// action.
+// CompletedPath is the client default completed folder the Test button and
+// the health job check: the qBittorrent category save path (or the default
+// save path when the category sets none), NZBGet's DestDir for the category,
+// and rTorrent's directory.default. Other types answer with no path. Its
+// behaviour is unchanged from before the diagnose action; GrabSavePath is the
+// folder a grab actually lands in.
 //
-// An error means the client would not answer (for SABnzbd, typically an NZB
-// only API key). A zero Path with no error means the client answered but has
-// no usable folder: no category, a category the client does not know, or a
-// relative folder Bindery cannot anchor.
+// An error means the client would not answer. A zero Path with no error means
+// the client answered but has no usable folder.
 func CompletedPath(ctx context.Context, client *models.DownloadClient) (ClientPathInfo, error) {
 	if client == nil {
 		return ClientPathInfo{}, nil
@@ -68,10 +73,10 @@ func CompletedPath(ctx context.Context, client *models.DownloadClient) (ClientPa
 			return ClientPathInfo{}, nil
 		}
 		if savePath := strings.TrimSpace(qbCategory.SavePath); savePath != "" {
-			return ClientPathInfo{Path: savePath, Source: "category save path"}, nil
+			return ClientPathInfo{Path: savePath, Source: "the category save path"}, nil
 		}
 		if defaultPath, err := qb.GetDefaultSavePath(ctx); err == nil && strings.TrimSpace(defaultPath) != "" {
-			return ClientPathInfo{Path: strings.TrimSpace(defaultPath), Source: "default save path"}, nil
+			return ClientPathInfo{Path: strings.TrimSpace(defaultPath), Source: "the client default"}, nil
 		}
 		return ClientPathInfo{}, nil
 	case "nzbget":
@@ -85,31 +90,130 @@ func CompletedPath(ctx context.Context, client *models.DownloadClient) (ClientPa
 		if err != nil {
 			return ClientPathInfo{}, err
 		}
-		return ClientPathInfo{Path: strings.TrimSpace(dir), Source: "directory.default"}, nil
+		return ClientPathInfo{Path: strings.TrimSpace(dir), Source: "the client default"}, nil
+	default:
+		return ClientPathInfo{}, nil
+	}
+}
+
+// GrabSavePath returns the folder a grab of mediaType sent through this client
+// actually finishes in, worked out from the same inputs SendDownload uses:
+// ResolveCategory for the category or label, and torrentSavePath for the save
+// path Bindery sends. downloadDir and audiobookDownloadDir are Bindery's own
+// BINDERY_DOWNLOAD_DIR and BINDERY_AUDIOBOOK_DOWNLOAD_DIR.
+//
+// An error means the client would not answer (for SABnzbd, typically an NZB
+// only API key). A zero Path with no error means the client answered but
+// exposes no usable folder, for example a category it does not have.
+func GrabSavePath(ctx context.Context, client *models.DownloadClient, mediaType, downloadDir, audiobookDownloadDir string) (ClientPathInfo, error) {
+	if client == nil {
+		return ClientPathInfo{}, nil
+	}
+	category := strings.TrimSpace(ResolveCategory(client, mediaType))
+	sent := torrentSavePath(client, SendOptions{MediaType: mediaType, DownloadDir: downloadDir, AudiobookDownloadDir: audiobookDownloadDir})
+	info := ClientPathInfo{Category: category}
+	switch client.Type {
+	case "qbittorrent":
+		return qbittorrentGrabPath(ctx, client, info, sent)
+	case "rtorrent":
+		// rTorrent receives d.directory.set whenever Bindery has a download
+		// folder, so directory.default only matters without one.
+		if sent != "" {
+			info.Path, info.Source = sent, "the save path Bindery sends"
+			return info, nil
+		}
+		dir, err := RtorrentFor(client).DefaultDirectory(ctx)
+		if err != nil {
+			return info, err
+		}
+		info.Path, info.Source = strings.TrimSpace(dir), "the client default"
+		return info, nil
 	case "transmission":
-		// SendDownload passes an absolute Category as the torrent's
-		// download-dir, so that is where the files go when it is set.
-		if category := strings.TrimSpace(client.Category); strings.HasPrefix(category, "/") {
-			return ClientPathInfo{Path: category, Source: "category folder"}, nil
+		// SendDownload passes client.Category (never the audiobook category)
+		// as download-dir when it is an absolute path.
+		info.Category = strings.TrimSpace(client.Category)
+		if strings.HasPrefix(info.Category, "/") {
+			info.Path, info.Source = info.Category, "the save path Bindery sends"
+			return info, nil
 		}
 		dir, err := TransmissionFor(client).DownloadDir(ctx)
 		if err != nil {
-			return ClientPathInfo{}, err
+			return info, err
 		}
-		return ClientPathInfo{Path: dir, Source: "download-dir"}, nil
+		info.Path, info.Source = dir, "the client default"
+		return info, nil
 	case "deluge":
-		dir, err := DelugeFor(client).DownloadLocation(ctx)
+		path, source, note, err := DelugeFor(client).DownloadLocation(ctx, category)
 		if err != nil {
-			return ClientPathInfo{}, err
+			return info, err
 		}
-		return ClientPathInfo{Path: dir, Source: "download location"}, nil
+		info.Path, info.Source, info.Note = path, source, note
+		return info, nil
+	case "nzbget":
+		dir, source, err := NzbgetFor(client).GrabDestDir(ctx, category)
+		if err != nil {
+			return info, err
+		}
+		info.Path, info.Source = strings.TrimSpace(dir), source
+		return info, nil
 	default:
-		dir, err := SabnzbdFor(client).CompleteDir(ctx, client.Category)
+		dir, fromCategory, err := SabnzbdFor(client).CompleteDir(ctx, category)
 		if err != nil {
-			return ClientPathInfo{}, err
+			return info, err
 		}
-		return ClientPathInfo{Path: dir, Source: "completed folder"}, nil
+		info.Path, info.Source = dir, "the client completed folder"
+		if fromCategory {
+			info.Source = "the category folder"
+		}
+		return info, nil
 	}
+}
+
+// qbittorrentGrabPath follows addTorrentFields: with a category Bindery turns
+// on automatic torrent management and sends no save path, so the category
+// decides. Without one it sends the save path, or leaves the client default.
+func qbittorrentGrabPath(ctx context.Context, client *models.DownloadClient, info ClientPathInfo, sent string) (ClientPathInfo, error) {
+	qb := QbittorrentFor(client)
+	if info.Category == "" {
+		if sent != "" {
+			info.Path, info.Source = sent, "the save path Bindery sends"
+			return info, nil
+		}
+		def, err := qb.GetDefaultSavePath(ctx)
+		if err != nil {
+			return info, err
+		}
+		info.Path, info.Source = strings.TrimSpace(def), "the client default"
+		return info, nil
+	}
+	categories, err := qb.GetCategories(ctx)
+	if err != nil {
+		return info, err
+	}
+	cat, ok := categories[info.Category]
+	if !ok {
+		return info, nil
+	}
+	savePath := strings.TrimSpace(cat.SavePath)
+	if pathmap.IsAbsClientPath(savePath) {
+		info.Path, info.Source = savePath, "the category save path"
+		return info, nil
+	}
+	def, err := qb.GetDefaultSavePath(ctx)
+	if err != nil {
+		return info, err
+	}
+	if def = strings.TrimSpace(def); def == "" {
+		return info, nil
+	}
+	// qBittorrent resolves a relative category save path under its default
+	// save path, and an empty one as the category name under it.
+	if savePath != "" {
+		info.Path, info.Source = pathmap.JoinClientPath(def, savePath), "the category save path, under the client default save path"
+		return info, nil
+	}
+	info.Path, info.Source = pathmap.JoinClientPath(def, info.Category), "the client default save path plus the category name"
+	return info, nil
 }
 
 // TestConnection checks the client answers with the stored credentials and
@@ -189,9 +293,9 @@ func CheckCategories(ctx context.Context, client *models.DownloadClient) (Catego
 
 // FindCaseInsensitivePathUnder is findCaseInsensitivePath confined to base: it
 // lists only base and folders beneath it, never an ancestor, and it does not
-// follow a symlink out of that tree. p must be at or
-// under base, and base must exist, or it reports nothing. The diagnose action
-// uses this form because the path came from a download client.
+// follow a symlink out of that tree. p must be at or under base, and base must
+// exist, or it reports nothing. The diagnose action uses this form because the
+// path came from a download client.
 func FindCaseInsensitivePathUnder(base, p string) (resolved, divergedAt string) {
 	base, p = filepath.Clean(base), filepath.Clean(p)
 	if !filepath.IsAbs(base) || !PathIsAtOrUnder(p, base) {

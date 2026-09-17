@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next'
-import type { DiagnoseCheck, DiagnoseResult, DiagnoseStatus } from '../../api/client'
+import type { DiagnoseCheck, DiagnoseMediaType, DiagnoseResult, DiagnoseStatus } from '../../api/client'
 import ClipboardManualFallback from '../../components/ClipboardManualFallback'
 import { useClipboardCopy } from '../../components/useClipboardCopy'
 import { buildDiagnoseReport } from './helpers'
@@ -26,7 +26,12 @@ export default function ClientDiagnosePanel({ result, onClose }: Props) {
   const clipboard = useClipboardCopy()
   const firstProblem = result.checks.find(c => c.status === 'fail') ?? result.checks.find(c => c.status === 'warn')
   const labelCls = 'text-slate-600 dark:text-zinc-400'
-  const checkTitle = (c: DiagnoseCheck) => t(`settings.clients.diagnose.check.${c.code}`, c.code)
+  const mediaLabel = (m?: DiagnoseMediaType) => m ? t(`settings.clients.diagnose.media.${m}`) : ''
+  const checkTitle = (c: DiagnoseCheck) => {
+    const title = t(`settings.clients.diagnose.check.${c.code}`, c.code)
+    return c.mediaType ? `${title} (${mediaLabel(c.mediaType)})` : title
+  }
+  const none = t('settings.clients.diagnose.none')
 
   return (
     <section
@@ -62,8 +67,8 @@ export default function ClientDiagnosePanel({ result, onClose }: Props) {
       )}
 
       <ul className="space-y-1.5" aria-label={t('settings.clients.diagnose.checksLabel')}>
-        {result.checks.map(c => (
-          <li key={c.code} className="flex items-start gap-2">
+        {result.checks.map((c, i) => (
+          <li key={`${c.code}-${c.mediaType ?? 'all'}-${i}`} className="flex items-start gap-2">
             <span className={`inline-block w-2 h-2 mt-1 rounded-full flex-shrink-0 ${dotCls[c.status] ?? dotCls.unknown}`} aria-hidden="true" />
             <div className="min-w-0">
               <div>
@@ -79,14 +84,25 @@ export default function ClientDiagnosePanel({ result, onClose }: Props) {
         ))}
       </ul>
 
-      <dl className="grid grid-cols-1 sm:grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
-        <dt className={labelCls}>{t('settings.clients.diagnose.clientPath')}</dt>
-        <dd className="font-mono break-all">{result.paths.clientPath || t('settings.clients.diagnose.none')}</dd>
-        <dt className={labelCls}>{t('settings.clients.diagnose.remapRule')}</dt>
-        <dd>{result.paths.remapRule ? t(`settings.clients.diagnose.remap.${result.paths.remapRule}`, result.paths.remapRule) : t('settings.clients.diagnose.none')}</dd>
-        <dt className={labelCls}>{t('settings.clients.diagnose.localPath')}</dt>
-        <dd className="font-mono break-all">{result.paths.localPath || t('settings.clients.diagnose.none')}</dd>
-      </dl>
+      {result.paths.map(p => (
+        <div key={p.mediaType ?? 'all'}>
+          {p.mediaType && <h6 className="font-medium mb-1">{mediaLabel(p.mediaType)}</h6>}
+          <dl className="grid grid-cols-1 sm:grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
+            <dt className={labelCls}>{t('settings.clients.diagnose.clientPath')}</dt>
+            <dd className="font-mono break-all">{p.clientPath || none}</dd>
+            {p.source && (
+              <>
+                <dt className={labelCls}>{t('settings.clients.diagnose.source')}</dt>
+                <dd>{p.source}</dd>
+              </>
+            )}
+            <dt className={labelCls}>{t('settings.clients.diagnose.remapRule')}</dt>
+            <dd>{p.remapRule ? t(`settings.clients.diagnose.remap.${p.remapRule}`, p.remapRule) : none}</dd>
+            <dt className={labelCls}>{t('settings.clients.diagnose.localPath')}</dt>
+            <dd className="font-mono break-all">{p.localPath || none}</dd>
+          </dl>
+        </div>
+      ))}
 
       {result.hardlinks.length > 0 && (
         <div className="overflow-x-auto">
@@ -94,6 +110,7 @@ export default function ClientDiagnosePanel({ result, onClose }: Props) {
             <caption className="sr-only">{t('settings.clients.diagnose.hardlinksCaption')}</caption>
             <thead>
               <tr className={labelCls}>
+                <th scope="col" className="py-1 pr-3 font-medium">{t('settings.clients.diagnose.downloadFolder')}</th>
                 <th scope="col" className="py-1 pr-3 font-medium">{t('settings.clients.diagnose.libraryFolder')}</th>
                 <th scope="col" className="py-1 pr-3 font-medium">{t('settings.clients.diagnose.hardlinks')}</th>
                 <th scope="col" className="py-1 font-medium">{t('settings.clients.diagnose.reason')}</th>
@@ -101,7 +118,8 @@ export default function ClientDiagnosePanel({ result, onClose }: Props) {
             </thead>
             <tbody>
               {result.hardlinks.map(h => (
-                <tr key={h.root} className="border-t border-slate-200 dark:border-zinc-800">
+                <tr key={`${h.downloadPath}|${h.root}`} className="border-t border-slate-200 dark:border-zinc-800">
+                  <td className="py-1 pr-3 font-mono break-all">{h.downloadPath}</td>
                   <td className="py-1 pr-3 font-mono break-all">{h.root}</td>
                   <td className="py-1 pr-3">{h.linkable ? t('settings.clients.diagnose.yes') : t('settings.clients.diagnose.no')}</td>
                   <td className={`py-1 ${labelCls}`}>{h.reason}</td>

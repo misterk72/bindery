@@ -42,7 +42,7 @@ export default function ClientsTab({ clients, setClients }: Props) {
       const result = await api.diagnoseDownloadClient(id)
       setDiagnosis(prev => ({ ...prev, [id]: { result } }))
     } catch (err: unknown) {
-      const error = err instanceof Error ? err.message : 'Unknown error'
+      const error = err instanceof Error ? err.message : t('settings.clients.unknownError')
       setDiagnosis(prev => ({ ...prev, [id]: { error } }))
     } finally {
       setDiagnosing(null)
@@ -98,7 +98,7 @@ export default function ClientsTab({ clients, setClients }: Props) {
                           : undefined
                         setClientTestResult(prev => ({ ...prev, [c.id]: { ok: true, msg: t('common.connOk'), warn } }))
                       } catch (err: unknown) {
-                        const error = err instanceof Error ? err.message : 'Unknown error'
+                        const error = err instanceof Error ? err.message : t('settings.clients.unknownError')
                         const warn = isLoopbackConnFailure(c.host, error) ? t('settings.clients.loopbackHint') : undefined
                         setClientTestResult(prev => ({ ...prev, [c.id]: { ok: false, msg: t('common.connFail', { error }), warn } }))
                       }
@@ -293,7 +293,7 @@ function EditClientForm({ client, onClose, onSaved }: { client: DownloadClient; 
         : undefined
       setTestResult({ ok: true, msg: t('common.connOk'), warn })
     } catch (err: unknown) {
-      const error = err instanceof Error ? err.message : 'Unknown error'
+      const error = err instanceof Error ? err.message : t('settings.clients.unknownError')
       const warn = isLoopbackConnFailure(host, error) ? t('settings.clients.loopbackHint') : undefined
       setTestResult({ ok: false, msg: t('common.connFail', { error }), warn })
     } finally {
@@ -505,7 +505,7 @@ function AddClientForm({ onClose, onAdded }: { onClose: () => void; onAdded: (c:
         : undefined
       setTestResult({ ok: true, msg: t('common.connOk'), warn })
     } catch (err: unknown) {
-      const error = err instanceof Error ? err.message : 'Unknown error'
+      const error = err instanceof Error ? err.message : t('settings.clients.unknownError')
       const warn = isLoopbackConnFailure(host, error) ? t('settings.clients.loopbackHint') : undefined
       setTestResult({ ok: false, msg: t('common.connFail', { error }), warn })
     } finally {

@@ -21,20 +21,29 @@ import (
 	"github.com/vavallee/bindery/internal/models"
 )
 
-// diagnoseClient saves client against a fresh handler configured with the
+// runDiagnose saves client against a fresh handler configured with the
 // given download folder and library roots, runs Diagnose and decodes the
 // response along with the raw body.
 type diagnoseSetup struct {
-	downloadDir string
-	roots       []string
-	remap       string
-	probe       func(a, b string) (bool, string)
+	downloadDir          string
+	audiobookDownloadDir string
+	roots                []string
+	remap                string
+	probe                func(a, b string) (bool, string)
+	// goos defaults to "linux" so the Windows path rules are deterministic.
+	goos      string
+	fsTimeout time.Duration
 }
 
 func runDiagnose(t *testing.T, setup diagnoseSetup, client *models.DownloadClient) (diagnoseResponse, string) {
 	t.Helper()
 	h, clients := downloadClientFixture(t)
-	h.WithStoragePaths(setup.downloadDir, "").WithDownloadPathRemap(setup.remap)
+	h.WithStoragePaths(setup.downloadDir, setup.audiobookDownloadDir).WithDownloadPathRemap(setup.remap)
+	h.goos = setup.goos
+	if h.goos == "" {
+		h.goos = "linux"
+	}
+	h.fsTimeout = setup.fsTimeout
 	if len(setup.roots) > 0 {
 		h.WithRoots(NewLibraryRoots(nil, setup.roots...))
 	}
@@ -139,10 +148,13 @@ func TestDiagnose_QbittorrentAllPass(t *testing.T) {
 	for _, code := range []string{diagCodeConfig, diagCodeConnect, diagCodeCategory, diagCodeClientPath, diagCodeRemap, diagCodeLocalPath, diagCodeHardlinks} {
 		wantDiagStatus(t, resp, code, diagPass)
 	}
-	if resp.Paths.ClientPath != "/remote/books" || resp.Paths.RemapRule != "client" || resp.Paths.LocalPath != downloads {
+	if len(resp.Paths) != 1 || resp.Paths[0].MediaType != "" {
+		t.Fatalf("paths = %+v, want one shared row when both media types land in one folder", resp.Paths)
+	}
+	if p := resp.Paths[0]; p.ClientPath != "/remote/books" || p.RemapRule != "client" || p.LocalPath != downloads || p.Source != "the category save path" {
 		t.Errorf("paths = %+v", resp.Paths)
 	}
-	if len(resp.Hardlinks) != 1 || resp.Hardlinks[0].Root != library || !resp.Hardlinks[0].Linkable {
+	if len(resp.Hardlinks) != 1 || resp.Hardlinks[0].Root != library || !resp.Hardlinks[0].Linkable || resp.Hardlinks[0].DownloadPath != downloads {
 		t.Errorf("hardlinks = %+v", resp.Hardlinks)
 	}
 	if resp.PrimaryFix != "" {
@@ -197,8 +209,8 @@ func TestDiagnose_NestedCategoryPasses(t *testing.T) {
 	resp, _ := runDiagnose(t, diagnoseSetup{downloadDir: downloads}, qbitClient(host, port, "books/ebooks", ""))
 	wantDiagStatus(t, resp, diagCodeCategory, diagPass)
 	wantDiagStatus(t, resp, diagCodeRemap, diagPass)
-	if resp.Paths.RemapRule != "none" {
-		t.Errorf("remapRule = %q, want none", resp.Paths.RemapRule)
+	if resp.Paths[0].RemapRule != "none" {
+		t.Errorf("remapRule = %q, want none", resp.Paths[0].RemapRule)
 	}
 	wantDiagStatus(t, resp, diagCodeLocalPath, diagPass)
 }
@@ -346,9 +358,11 @@ func TestDiagnose_SymlinkOutOfDownloadFolderTouchesNothing(t *testing.T) {
 	}
 }
 
-// TestDiagnose_OneHardlinkProbePerDevice is P7: library roots that share a
-// filesystem cost one probe between them, and each still gets its own row.
-func TestDiagnose_OneHardlinkProbePerDevice(t *testing.T) {
+// TestDiagnose_HardlinkProbePerRoot: every library root gets its own real
+// link probe, even when roots share a filesystem device. Two bind mounts of
+// one filesystem report the same device ID and still refuse links across
+// them, so sharing one probe result between them reported a false green.
+func TestDiagnose_HardlinkProbePerRoot(t *testing.T) {
 	defer httpsec.AllowLoopbackForTests()()
 	downloads := t.TempDir()
 	parent := t.TempDir()
@@ -360,31 +374,36 @@ func TestDiagnose_OneHardlinkProbePerDevice(t *testing.T) {
 		}
 	}
 	var mu sync.Mutex
-	probes := 0
+	probed := map[string]int{}
 	host, port := qbitDiagServer(t, qbitCategory("books", downloads))
 	resp, _ := runDiagnose(t, diagnoseSetup{
 		downloadDir: downloads, roots: []string{rootA, rootB},
-		probe: func(string, string) (bool, string) {
+		probe: func(_, root string) (bool, string) {
 			mu.Lock()
 			defer mu.Unlock()
-			probes++
-			return false, "the paths are on different filesystems"
+			probed[root]++
+			if root == rootB {
+				return false, "hardlinks between them fail (EXDEV)"
+			}
+			return true, ""
 		},
 	}, qbitClient(host, port, "books", ""))
 
-	if probes != 1 {
-		t.Errorf("probes = %d, want 1 for two roots on one device", probes)
+	mu.Lock()
+	defer mu.Unlock()
+	if probed[rootA] != 1 || probed[rootB] != 1 {
+		t.Errorf("probes per root = %v, want one each for two roots on one device", probed)
 	}
 	if len(resp.Hardlinks) != 2 {
 		t.Fatalf("hardlinks = %+v, want a row per root", resp.Hardlinks)
 	}
 	for _, row := range resp.Hardlinks {
-		if row.Linkable || row.Reason == "" {
-			t.Errorf("row %+v should carry the shared probe result", row)
+		if want := row.Root == rootA; row.Linkable != want {
+			t.Errorf("row %+v: linkable = %v, want %v", row, row.Linkable, want)
 		}
 	}
 	links := wantDiagStatus(t, resp, diagCodeHardlinks, diagWarn)
-	if !strings.Contains(links.Message, "2 of 2") {
+	if !strings.Contains(links.Message, "1 of 2") {
 		t.Errorf("message = %q", links.Message)
 	}
 }
@@ -447,8 +466,8 @@ func TestDiagnose_SabnzbdRelativeCategoryFolder(t *testing.T) {
 	wantDiagStatus(t, resp, diagCodeCategory, diagPass)
 	wantDiagStatus(t, resp, diagCodeClientPath, diagPass)
 	wantDiagStatus(t, resp, diagCodeLocalPath, diagPass)
-	if want := filepath.Join(downloads, "ebooks"); resp.Paths.LocalPath != want {
-		t.Errorf("localPath = %q, want %q", resp.Paths.LocalPath, want)
+	if want := filepath.Join(downloads, "ebooks"); resp.Paths[0].LocalPath != want {
+		t.Errorf("localPath = %q, want %q", resp.Paths[0].LocalPath, want)
 	}
 
 	// S8: only the needed section and keyword are requested.
@@ -621,8 +640,8 @@ func TestDiagnose_DelugeMoveCompletedPath(t *testing.T) {
 	})
 	wantDiagStatus(t, resp, diagCodeCategory, diagUnknown)
 	wantDiagStatus(t, resp, diagCodeClientPath, diagPass)
-	if resp.Paths.ClientPath != downloads {
-		t.Errorf("clientPath = %q, want move_completed_path %q", resp.Paths.ClientPath, downloads)
+	if resp.Paths[0].ClientPath != downloads {
+		t.Errorf("clientPath = %q, want move_completed_path %q", resp.Paths[0].ClientPath, downloads)
 	}
 	wantDiagStatus(t, resp, diagCodeLocalPath, diagPass)
 }
@@ -648,7 +667,11 @@ func TestDiagnose_NzbgetCategoryDestDir(t *testing.T) {
 	wantDiagStatus(t, resp, diagCodeLocalPath, diagPass)
 }
 
-func TestDiagnose_RtorrentDefaultDirectory(t *testing.T) {
+// TestDiagnose_RtorrentUsesTheSavePathBinderySends: Bindery sends
+// d.directory.set on every rTorrent add, so directory.default is not where a
+// grab lands. A seedbox whose default points elsewhere and whose remap maps
+// Bindery's download folder must come out green.
+func TestDiagnose_RtorrentUsesTheSavePathBinderySends(t *testing.T) {
 	defer httpsec.AllowLoopbackForTests()()
 	downloads := t.TempDir()
 	xmlString := func(s string) string {
@@ -663,7 +686,7 @@ func TestDiagnose_RtorrentDefaultDirectory(t *testing.T) {
 		case strings.Contains(string(body), "d.multicall2"):
 			_, _ = io.WriteString(w, `<?xml version="1.0"?><methodResponse><params><param><value><array><data></data></array></value></param></params></methodResponse>`)
 		case strings.Contains(string(body), "directory.default"):
-			_, _ = io.WriteString(w, xmlString(downloads))
+			_, _ = io.WriteString(w, xmlString("/home/seedbox/rtorrent/default"))
 		default:
 			_, _ = io.WriteString(w, xmlString(""))
 		}
@@ -672,9 +695,13 @@ func TestDiagnose_RtorrentDefaultDirectory(t *testing.T) {
 	host, port := serverAddr(t, srv.URL)
 	resp, _ := runDiagnose(t, diagnoseSetup{downloadDir: downloads}, &models.DownloadClient{
 		Name: "rT", Type: "rtorrent", Host: host, Port: port, Category: "books", Enabled: true,
+		PathRemap: "/home/seedbox/bindery:" + downloads,
 	})
 	wantDiagStatus(t, resp, diagCodeConnect, diagPass)
 	wantDiagStatus(t, resp, diagCodeClientPath, diagPass)
+	if p := resp.Paths[0]; p.ClientPath != "/home/seedbox/bindery" || p.Source != "the save path Bindery sends" {
+		t.Errorf("paths = %+v, want the inverse remapped download folder Bindery sends", resp.Paths)
+	}
 	wantDiagStatus(t, resp, diagCodeLocalPath, diagPass)
 }
 
@@ -699,9 +726,9 @@ func TestDiagnose_NotFound(t *testing.T) {
 func TestRunDiagChecks_SkippedCascade(t *testing.T) {
 	ran := []string{}
 	mk := func(code, status string, always bool) diagCheck {
-		return diagCheck{code: code, always: always, run: func(context.Context, *diagState) diagCheckResult {
+		return diagCheck{code: code, always: always, run: func(context.Context, *diagState) []diagCheckResult {
 			ran = append(ran, code)
-			return diagCheckResult{Status: status, Message: code, Fix: "fix " + code}
+			return one(diagCheckResult{Status: status, Message: code, Fix: "fix " + code})
 		}}
 	}
 	st := &diagState{client: &models.DownloadClient{}}
