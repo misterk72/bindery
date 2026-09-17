@@ -374,6 +374,13 @@ POST   /api/v1/backup/{filename}/restore          stage a backup for the next re
 GET    /api/v1/system/status                      version, uptime, build info
 POST   /api/v1/library/scan                       start a library scan in the background (202)
 GET    /api/v1/library/scan/status                summary of the last library scan, paths included (admin)
+GET    /api/v1/library/unmatched                  books the scan could not match, one row per book (admin)
+GET    /api/v1/library/unmatched/summary          pending, ignored and adopted counts plus scan status (admin)
+POST   /api/v1/library/unmatched/{id}/adopt       register the row's files in place against a book (admin)
+POST   /api/v1/library/unmatched/{id}/undo        reverse an adoption exactly (admin)
+POST   /api/v1/library/unmatched/{id}/ignore      set a pending row aside (admin)
+POST   /api/v1/library/unmatched/{id}/unignore    return an ignored row to pending (admin)
+POST   /api/v1/library/unmatched/ignore           ignore pending rows by {"ids":[..]} or {"authorFolder":"..."} (admin)
 PUT    /api/v1/system/loglevel                    runtime log-level switch (debug/info/warn/error)
 GET    /api/v1/images?url=<encoded>               proxied + cached cover image (30-day TTL)
 ```
@@ -382,7 +389,57 @@ GET    /api/v1/images?url=<encoded>               proxied + cached cover image (
 scan: the counts, the library roots it walked and the path of every unmatched
 file. That is server filesystem layout, so the route is admin only in the same
 way as `/system/storage`, and a non admin gets `403` (#2361). A `404` means no
-scan has run yet.
+scan has run yet. The unmatched files themselves moved to
+`/library/unmatched`: the summary now carries `unmatched_units`,
+`ignored_units` and `units_truncated`, and `unmatched_files` is always an
+empty list, kept for one release so an older cached web bundle still parses.
+
+#### Library adoption
+
+`GET /api/v1/library/unmatched` lists the books a library scan could not
+match. A row is a book: an audiobook folder, a disc set, or same named ebook
+files are one row. Query parameters, all optional:
+
+| Parameter | Values |
+|---|---|
+| `state` | `pending` (default), `ignored`, `adopted` |
+| `reason` | `author_not_in_library`, `no_candidate_books`, `no_title_match`, `no_title_parsed` |
+| `authorFolder` | first folder under the library root |
+| `format` | `ebook`, `audiobook` |
+| `search` | words matched against title, author and path |
+| `sort`, `dir` | `score` (default), `title`, `folder`, `files`, `size`, `seen`; `asc` or `desc` |
+| `limit`, `offset` | page, at most 250 rows |
+| `facets` | `1` adds grouped counts by reason, format and top author folders |
+
+The response is `{items, total, facets?, summary, scan}`. Each item carries
+`id`, `kind`, `format`, `fileCount`, `sizeBytes`, `relPath`, `rootPath`,
+`authorFolder`, `parsedTitle`, `parsedAuthor`, `reason`, up to three
+`candidates` (`{book, score}`, a title similarity from 0 to 1), `state`, the
+adopted `book` if any, `bookCreated`, `authorCreated` and the first 20
+`members` file names. No provider is called to build it.
+
+`POST /api/v1/library/unmatched/{id}/adopt` takes either `{"bookId": 12}` for
+a book already in the library or `{"foreignBookId": "...", "foreignAuthorId":
+"...", "authorName": "..."}` for a metadata result, plus an optional
+`"format": "ebook" | "audiobook"`. No field is a path. The files are
+registered in place (an audiobook folder as its folder), nothing is moved and
+no search starts. A book added from metadata is created unmonitored with its
+media type set to the adopted format. Answers:
+
+| Status | Meaning |
+|---|---|
+| `200` | the updated row |
+| `400` | neither or both of `bookId` and `foreignBookId`, or a bad format |
+| `404` | no such row, or the book is gone |
+| `409` | the row is not pending (the body names its `state`), or a file already belongs to a book |
+| `422` | a file is gone, is not a regular file, or resolves outside the library folders |
+| `502`, `503` | the metadata provider failed or the primary provider is down |
+
+`POST .../undo` removes exactly the book file entries the adoption made, and a
+book or author it created when nothing else holds them, and returns the row to
+pending. Adopt, undo, ignore and unignore each claim the row with a compare and
+swap, so a double click or two admins acting at once get one `200` and one
+`409`.
 
 #### Webhook payload
 

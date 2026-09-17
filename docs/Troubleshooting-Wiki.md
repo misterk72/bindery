@@ -313,8 +313,8 @@ co-author or a joint pen name. The log shows lines like:
 DEBUG calibre import: alias record skipped error="alias \"Isaac Asimov\" already points at author 1125 (refusing to reassign to 105)" name="Isaac Asimov"
 ```
 
-The scan then reports those same names under **Unmatched files** with "Parsed
-author isn't in your library", because the name only exists as an alias.
+The scan then lists those books on **Import → In your library** as by an
+author who is not in your library, because the name only exists as an alias.
 
 What happened: for a book credited to several people, the import used to record
 every co-author as an *alias* of the first credited author ([#1684](https://github.com/vavallee/bindery/issues/1684)).
@@ -373,6 +373,29 @@ Two things this does not do:
 - It does not react to a storage outage. If a mount is temporarily unavailable then every path under it looks missing at once, so Bindery deliberately keeps showing what it showed before rather than acting on the absence. Nothing is deleted or reset, and the books come back as they were when the mount does.
 
 If you reshape your library regularly, **Rename files** on the book or author page is the supported way to do it: it moves the file *and* repoints the same tracking row at the new location, so there is never a second row to clean up.
+
+## A scan leaves files unmatched
+
+Go to **Import → In your library**. Every book the last scan could not match
+is listed there, one row per book, with a sentence saying what the scan found
+and what to do: add the missing author and scan again, confirm a suggested
+book, or choose one. Adopting registers the files where they are and can be
+undone. The full walkthrough is in the user guide under [Adopting files
+already in your library](User-Guide-Wiki.md#adopting-files-already-in-your-library).
+
+A few things that look wrong but are not:
+
+- **A file you expected is not listed.** Symlinks are never listed, and a file
+  whose folder resolves outside your library folders is skipped. Replace the
+  link with the file, or add the real folder as a root.
+- **The list did not change after the volume came back.** A scan that finds no
+  files at all changes nothing on the list, so an unmounted library does not
+  erase your decisions. Scan again once it is mounted.
+- **A row you ignored is gone for good.** It is on the **Ignored** list, and
+  **Unignore** brings it back.
+
+If you file a bug about a row, include the reason code that shows when you
+hover its sentence.
 
 ## Collecting logs for a bug report
 

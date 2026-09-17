@@ -41,10 +41,13 @@ an arbitrary release is unreliable. The escape hatches:
 
 - **Search Indexers** (the magnifier icon in the header) — free-text search
   across all your indexers; any result can be grabbed.
-- **Manual Import** (`/import`) — point it at a folder of files you already
-  have and match them to books. A file with no catalogue match gets a metadata
-  search on its row, which creates the book (and its author, if new) and links
-  the file to it, so an unmatched file is no longer a dead end.
+- **Import** (`/import`): **In your library** lists the books a library scan
+  could not match, for you to adopt in place ([Adopting files already in your
+  library](#adopting-files-already-in-your-library)). **From a folder** points
+  at a folder of files you already have and matches them to books. Either way a
+  file with no catalogue match gets a metadata search, which creates the book
+  (and its author, if new) and links the file to it, so an unmatched file is no
+  longer a dead end.
 
 Both still end by attaching a file to a catalogue record.
 
@@ -67,9 +70,10 @@ Almost every "why is Bindery doing that?" question comes down to one of these.
 
 **Scan Library** (Settings → General → Library, and automatically every 6
 hours) matches files already on disk to books **already in your catalogue**.
-It never creates authors or books from files. If you point a fresh install at
-a folder of 3,000 epubs and hit Scan, you get 3,000 "unmatched" files and an
-empty library — nothing populated the catalogue first.
+It never creates authors or books from files on its own. If you point a fresh
+install at a folder of 3,000 epubs and hit Scan, you get a long list of
+unmatched books on **Import → In your library** and an empty library, because
+nothing populated the catalogue first. That list is where you can adopt them.
 
 The sequence that works is always: **populate the catalogue, then scan**. See
 [Bringing in an existing library](#bringing-in-an-existing-library) below.
@@ -113,8 +117,9 @@ Consequences:
   save path Bindery hands qBittorrent.
 - There is no per-protocol (torrent vs usenet) folder setting because each
   client already owns its completed path.
-- Files you acquired outside Bindery are picked up only via **Manual Import**,
-  **Bulk folder import**, or a **Library Scan** (rule 1 applies).
+- Files you acquired outside Bindery are picked up only via **Import → From a
+  folder**, or a **Library Scan** and **Import → In your library** for files
+  already in the library folder (rule 1 applies).
 
 ### 4. Naming templates are for output, not input
 
@@ -323,7 +328,7 @@ matches where your metadata lives, then scan:
 | An Audiobookshelf server | Settings → Audiobookshelf → configure + **Import** ([guide](ABS-Import-Wiki.md)) |
 | A Goodreads account | Settings → Import → **Goodreads CSV** (export, filter by shelf, preview, commit) |
 | Just a list of authors | Settings → Import → paste or upload the author list |
-| Only folders of files | Use **Manual Import** (`/import`) or Settings → Import → **Bulk folder import**, which match files and create what's missing |
+| Only folders of files | Scan the library, then adopt on **Import → In your library**; or use **Import → From a folder** for files outside the library |
 
 Then run **Settings → General → Library → Scan Library** to attach your files
 to the records. Things worth knowing before you judge the results:
@@ -373,11 +378,10 @@ to the records. Things worth knowing before you judge the results:
 - ABS imports that "lose" titles usually didn't: ambiguous matches are parked
   in the **review queue** (Settings → Audiobookshelf) for you to resolve, and
   the import summary counts them.
-- Unmatched files are listed after the scan, each with the reason it missed:
-  the parsed author isn't in your library (fix the file's tags or folder name),
-  the author matched but has no book waiting for a file (populate that author's
-  catalogue), no title matched, or no title could be read from the file at all
-  (rename it). Use **Manual Import** to resolve the rest by hand.
+- Books the scan could not match wait on **Import → In your library**, one row
+  per book with a sentence saying why and what to do: add the author, confirm
+  a suggested book, or choose one. See [Adopting files already in your
+  library](#adopting-files-already-in-your-library).
 - **Fix match moves and renames the file.** When a book page shows the wrong
   file, the **Fix match** button reassigns it to the book you pick. That runs
   the full import, so the file is moved into the target book's folder and
@@ -403,6 +407,67 @@ to the records. Things worth knowing before you judge the results:
   already own it: a cue sheet or notes file next to an audiobook is never taken
   as evidence you own the book, and a real ebook wins over a supplement-class
   file when both match (#2240).
+
+## Adopting files already in your library
+
+A library scan attaches every file it can match with confidence and leaves
+the rest for you. Those books wait on **Import → In your library**, the page
+`/import` opens on. Each row is one **book**, not one file: a 193 track
+audiobook folder is one row, a folder of disc folders (`CD1`, `Disc 2`) is one
+row named after the folder above them, and `Dune.epub` beside `Dune.mobi` is
+one row.
+
+**Adopting registers the files where they are.** Nothing is moved, renamed or
+queued, and no indexer search starts. It is the scan's own match with you
+supplying the answer, so **Undo** can take it back exactly.
+
+How to work through the list:
+
+- **A row with a suggestion** shows the closest book in your library and how
+  close the title is. **Confirm** adopts it in one click.
+- **Other book** or **Choose book** opens the row in place: the suggestions
+  with their scores, a search of your library (prefilled from the file), and
+  a collapsed **Search metadata**. Metadata providers are only asked when you
+  press Search there, so opening rows never spends provider quota. **Add and
+  adopt** adds the book from metadata and adopts the files in one step.
+- **The folder rail** lists the author folders with the most books to decide.
+  When no book in a folder matched because its author is not in your library,
+  that is one decision for the whole folder: **Add author**, then **Scan now**,
+  and the scan attaches what it can by itself. **Show** filters the list to a
+  folder, and **Ignore folder** sets all of its books aside.
+- **Ignore** hides a row that is not a book you want tracked. Later scans keep
+  it hidden. The **Ignored** list brings any of them back.
+- The sentence on each row says what the scan found and what to do next.
+  Hovering it shows the scanner's reason code, for bug reports.
+- Keyboard: arrow keys move between rows, **Enter** opens one, **Esc** closes
+  it, **i** ignores, **u** undoes, **/** jumps to the search.
+
+What adopting does to your library:
+
+- Choosing a book **already in your library** attaches the files to it and
+  changes nothing else: its owner and its monitored flag stay as they were.
+- A book added from metadata is added **unmonitored**, in the format you
+  adopted (ebook or audiobook), so Bindery never goes looking for the other
+  format behind your back. It and a new author are owned by the admin who
+  adopted them. The author's other books are not added.
+- **Undo** removes exactly the file entries the adoption made. A book or author
+  the adoption created is removed too, unless something else now depends on
+  it (another file, another adopted row).
+- Only an admin can see or act on this list, because it shows server paths.
+
+Things worth knowing:
+
+- Only regular files inside your library folders are listed. A symlink is not
+  adopted, including one inside the library that points elsewhere.
+- A scan that finds no files at all (an unmounted volume, say) changes
+  nothing on this list, so your ignores and adoptions survive it.
+- Adopted and ignored rows are forgotten 30 days after a scan last saw their
+  files unmatched.
+- One scan lists up to 20,000 books from up to 50,000 unmatched files. A
+  larger library says so; adopt or ignore some and scan again.
+- **From a folder** (`/import?view=folder`) is the other way in: point it at a
+  folder anywhere Bindery can read, such as your downloads, and it imports
+  what it matches into the library, moving or copying the files.
 
 ## Metadata: where book data comes from
 
@@ -544,9 +609,10 @@ the list when you refresh the author, not on their own
 ([#2236](https://github.com/vavallee/bindery/issues/2236)).
 
 **Scan Library sees my files but imports nothing.**
-Rule 1 — the catalogue is empty or the authors don't exist yet. Populate
+Rule 1: the catalogue is empty or the authors don't exist yet. Populate
 first ([Bringing in an existing library](#bringing-in-an-existing-library)),
-then scan.
+then scan, or adopt the books from **Import → In your library**
+([Adopting files](#adopting-files-already-in-your-library)).
 
 **I moved my files and a book still shows the old path.**
 Fixed (#2186). A book now shows whichever of its tracked files still exists,
@@ -610,7 +676,9 @@ Rule 5 — separate mounts. One shared parent mount, then `auto` or `hardlink`
 mode.
 
 **Where do I drop files for Bindery to pick up?**
-Nowhere (rule 3). Use Manual Import (`/import`) for files it didn't download.
+Nowhere (rule 3). Use **Import** (`/import`) for files it didn't download:
+**From a folder** for files elsewhere, **In your library** for files a library
+scan found but could not match.
 
 ---
 
