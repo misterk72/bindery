@@ -233,6 +233,11 @@ func (a *Aggregator) GetAuthorWorksForAuthor(ctx context.Context, author models.
 		}
 	}
 
+	if coverEnrichmentDeferred(ctx) {
+		// The caller enriches the works it keeps; an unenriched list must
+		// not reach the cache other callers read (#2236).
+		return books, nil
+	}
 	a.enrichMissingAuthorWorkCovers(ctx, books)
 	if cacheable && intact {
 		a.cache.set(key, cloneBooks(books))

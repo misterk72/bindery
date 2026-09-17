@@ -8,6 +8,7 @@ import (
 
 	"github.com/vavallee/bindery/internal/api"
 	"github.com/vavallee/bindery/internal/metadata/hardcover"
+	"github.com/vavallee/bindery/internal/metadata/openlibrary"
 	"github.com/vavallee/bindery/internal/models"
 )
 
@@ -25,6 +26,7 @@ func TestNewAuthorDiscoverer_MapsErrors(t *testing.T) {
 		{name: "success", created: 3},
 		{name: "ordinary error", err: errors.New("provider 500")},
 		{name: "hardcover rate limit, wrapped", err: fmt.Errorf("author works: %w", hardcover.ErrRateLimited), wantBackoff: true},
+		{name: "openlibrary rate limit, wrapped", err: fmt.Errorf("author works: %w", openlibrary.ErrRateLimited), wantBackoff: true},
 		{name: "sync already running", err: api.ErrAuthorSyncRunning, wantBusy: true},
 	}
 	for _, tc := range cases {

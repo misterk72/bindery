@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/vavallee/bindery/internal/api"
+	"github.com/vavallee/bindery/internal/metadata"
 	"github.com/vavallee/bindery/internal/metadata/hardcover"
 	"github.com/vavallee/bindery/internal/models"
 	"github.com/vavallee/bindery/internal/scheduler"
@@ -15,11 +16,12 @@ import (
 type authorDiscoverFunc func(ctx context.Context, author *models.Author) (int, error)
 
 // newAuthorDiscoverer adapts the author handler to the scheduler's discovery
-// job (#2236). The scheduler imports neither internal/api nor the Hardcover
-// client, so this is where their errors become flags: a Hardcover rate limit
-// is Backoff (stop the pass, leave the cursor), an author whose sync is
-// already running is Busy (skip it, leave the cursor), and anything else is
-// an ordinary error the job logs and stamps past.
+// job (#2236). The scheduler imports neither internal/api nor the metadata
+// providers, so this is where their errors become flags: a rate limit from
+// any provider (metadata.ErrRateLimited, which the OpenLibrary and Hardcover
+// clients both mark) is Backoff (stop the pass, leave the cursor), an author
+// whose sync is already running is Busy (skip it, leave the cursor), and
+// anything else is an ordinary error for the job's failure breaker.
 func newAuthorDiscoverer(discover authorDiscoverFunc, bulkRunning func() bool) scheduler.AuthorDiscoverer {
 	return scheduler.AuthorDiscovererFuncs{
 		Discover: func(ctx context.Context, author *models.Author) scheduler.DiscoveryOutcome {
@@ -27,7 +29,9 @@ func newAuthorDiscoverer(discover authorDiscoverFunc, bulkRunning func() bool) s
 			return scheduler.DiscoveryOutcome{
 				Created: created,
 				Err:     err,
-				Backoff: errors.Is(err, hardcover.ErrRateLimited),
+				// hardcover.ErrRateLimited is checked too: the bare sentinel does
+				// not carry the shared mark, only its throttle errors do.
+				Backoff: errors.Is(err, metadata.ErrRateLimited) || errors.Is(err, hardcover.ErrRateLimited),
 				Busy:    errors.Is(err, api.ErrAuthorSyncRunning),
 			}
 		},

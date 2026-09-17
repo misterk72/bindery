@@ -44,16 +44,28 @@ type fakeDiscoverer struct {
 	outcomes map[string]DiscoveryOutcome
 	calls    []string
 	bulk     bool
+	// run, when set, is called for an author before its outcome is
+	// returned, and may replace the outcome.
+	run func(ctx context.Context, a *models.Author, out *DiscoveryOutcome)
 }
 
-func (f *fakeDiscoverer) DiscoverAuthor(_ context.Context, a *models.Author) DiscoveryOutcome {
+func (f *fakeDiscoverer) DiscoverAuthor(ctx context.Context, a *models.Author) DiscoveryOutcome {
+	f.mu.Lock()
+	f.calls = append(f.calls, a.ForeignID)
+	out := f.outcomes[a.ForeignID]
+	run := f.run
+	f.mu.Unlock()
+	if run != nil {
+		run(ctx, a, &out)
+	}
+	return out
+}
+
+func (f *fakeDiscoverer) BulkRefreshRunning() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, a.ForeignID)
-	return f.outcomes[a.ForeignID]
+	return f.bulk
 }
-
-func (f *fakeDiscoverer) BulkRefreshRunning() bool { return f.bulk }
 
 type discoveryJobFixture struct {
 	repo    *db.AuthorRepo

@@ -99,6 +99,12 @@ type AuthorHandler struct {
 	// notif publishes bookAnnounced (#2236). Optional; see WithNotifier in
 	// author_discovery.go.
 	notif eventSender
+
+	// catalogueWrites serialises the write half of catalogue syncs per
+	// author, and discovering marks authors a scheduled discovery run holds
+	// (#2236). Both live in author_discovery.go.
+	catalogueWrites authorCatalogueLocks
+	discovering     sync.Map
 }
 
 func NewAuthorHandler(authors *db.AuthorRepo, aliases *db.AuthorAliasRepo, books *db.BookRepo, series *db.SeriesRepo, meta *metadata.Aggregator, settings *db.SettingsRepo, profiles *db.MetadataProfileRepo, searcher BookSearcher) *AuthorHandler {
@@ -717,6 +723,12 @@ type catalogueSyncOptions struct {
 	// The manual Refresh claims the author before it answers, so a second
 	// click sees the first; fetchAuthorBooks counts every other run itself.
 	syncClaimed bool
+
+	// deferCoverEnrichment marks a scheduled discovery run (#2236). The works
+	// lookup skips its per work cover enrichment, and the sync enriches only
+	// the works the author does not already have, since covers found for the
+	// others are never stored.
+	deferCoverEnrichment bool
 }
 
 func (h *AuthorHandler) fetchAuthorBooksAsync(author *models.Author, opts catalogueSyncOptions) {
@@ -1527,7 +1539,7 @@ func (h *AuthorHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	// running sync instead, and a second click gets 409 like the other
 	// "already running" endpoints (Refresh all, imports).
 	if !h.runningSyncs.tryStart(author.ID) {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "a refresh for this author is already running"})
+		writeJSON(w, http.StatusConflict, map[string]string{"error": h.refreshConflictMessage(author.ID)})
 		return
 	}
 	h.fetchAuthorBooksAsync(author, catalogueSyncOptions{mediaType: h.resolveDefaultMediaType(r.Context()), discovery: true, refreshFromProvider: true, syncClaimed: true})
@@ -1873,6 +1885,9 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 	if opts.refreshFromProvider {
 		metaCtx = metadata.WithCacheBypass(ctx)
 	}
+	if opts.deferCoverEnrichment {
+		metaCtx = metadata.WithDeferredCoverEnrichment(metaCtx)
+	}
 	slog.Info("fetching books for author", "author", author.Name, "foreignId", author.ForeignID)
 
 	// Calibre-imported authors carry a synthetic "calibre:author:N" foreign ID
@@ -2051,7 +2066,20 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 	// only the non-excluded rows made "Exclude them all" look identical to
 	// "this author has no catalogue yet", so the documented cleanup disarmed
 	// the very guard it was recommended for (#1815).
-	allBooks, _ := h.books.ListByAuthorIncludingExcluded(ctx, author.ID)
+	//
+	// From here to the end of the run, one sync per author at a time: two
+	// overlapping runs (a scheduled discovery and a manual or bulk refresh)
+	// would both read the catalogue before either wrote, and each announce
+	// the books it won (#2236). The later run waits, then reads what the
+	// earlier one created.
+	defer h.catalogueWrites.lock(author.ID)()
+	allBooks, err := h.books.ListByAuthorIncludingExcluded(ctx, author.ID)
+	if err != nil {
+		// Reading nothing would look like an empty author: the run would
+		// recreate the whole catalogue as new books (#2236).
+		slog.Error("catalogue sync aborted: could not read the author's books", "author", author.Name, "authorId", author.ID, "error", err)
+		return 0, err
+	}
 	existingBooks := make([]models.Book, 0, len(allBooks))
 	// Excluded titles, keyed the same way as seenTitles below. Kept separate
 	// from it rather than merged in: the seenTitles branches UPDATE the row
@@ -2113,7 +2141,7 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 
 	// Whether the author had a catalogue before this run, for the bookAnnounced
 	// rule (#2236). Read before anything is created.
-	populatedBefore := h.catalogueWasPopulated(ctx, author, opts, len(allBooks))
+	populatedBefore := catalogueWasPopulated(opts, len(allBooks))
 
 	normalizedAuthor := strings.ToLower(strings.TrimSpace(author.Name))
 	latestKeys := latestBookMonitorKeys(books, author.MonitorLatestCount, func(book models.Book) bool {
@@ -2283,10 +2311,18 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 	// below treats that the same as "not enforcing for this work" a live
 	// per-item call would have, so a transient failure never drops a book.
 	var editionsByForeignID map[string][]models.Edition
+	// Works the author already has are exempt from both filters below, so
+	// their editions are not fetched (P1, #2236), and a discovery run
+	// enriches covers only for the rest.
+	var newWorks []int
+	if (needsEditionPreview || opts.deferCoverEnrichment) && len(candidates) > 0 {
+		newWorks = h.newWorkIndexes(ctx, author.ID, allBooks, candidates)
+	}
+	if opts.deferCoverEnrichment {
+		h.enrichNewWorkCovers(ctx, candidates, newWorks)
+	}
 	if needsEditionPreview && len(candidates) > 0 {
-		// Works the author already has are exempt from both filters below, so
-		// their editions are not fetched (P1, #2236).
-		prefetch := h.editionPrefetchCandidates(ctx, author.ID, allBooks, candidates)
+		prefetch := booksAt(candidates, newWorks)
 		editionsByForeignID = make(map[string][]models.Edition, len(prefetch))
 		var mu sync.Mutex
 		concurrency.RunBounded(ctx, prefetch, authorAutoSearchConcurrency, func(ctx context.Context, b models.Book) {
@@ -2303,6 +2339,11 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 	}
 
 	for _, b := range candidates {
+		// A cancelled or timed out run stops creating books rather than
+		// logging one failed insert per remaining work.
+		if ctx.Err() != nil {
+			break
+		}
 		// Hoisted here, before the edition-gated filters below, so a filter
 		// that fires after this point can exempt a book the user already
 		// owns. Without this, a filtered-but-owned book never reaches the
@@ -2675,7 +2716,7 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 		return added, nil
 	}
 
-	h.announceDiscoveredBooks(ctx, author, opts, populatedBefore, createdBooks)
+	h.announceDiscoveredBooks(context.WithoutCancel(ctx), author, opts, populatedBefore, createdBooks)
 
 	// Publish the run's accounting so the author page can say what happened to
 	// the works that never became books (#1889). Recorded for every sync, not

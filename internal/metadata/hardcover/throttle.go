@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/vavallee/bindery/internal/metadata/ratelimit"
 )
 
 // Hardcover throttles per account, and its free tier throttles readily: a
@@ -282,7 +284,11 @@ func (e *throttledError) Unwrap() error { return e.err }
 // errors.Is(err, ErrRateLimited) is the supported check.
 var ErrRateLimited = errors.New("hardcover rate limited")
 
-func (e *throttledError) Is(target error) bool { return target == ErrRateLimited }
+// Is also matches ratelimit.ErrRateLimited, the provider independent form
+// scheduled discovery checks (#2236).
+func (e *throttledError) Is(target error) bool {
+	return target == ErrRateLimited || target == ratelimit.ErrRateLimited
+}
 
 // rateLimited wraps err so errors.Is(err, ErrRateLimited) reports true while
 // the original message (and Hardcover's own wording) still reaches the log.

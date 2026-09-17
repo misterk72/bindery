@@ -3,8 +3,11 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
@@ -52,10 +55,14 @@ func (h *AuthorHandler) WithNotifier(n eventSender) *AuthorHandler {
 // author's works could not be fetched (the scheduler inspects it for a rate
 // limit and backs off).
 //
-// It is the refresh path in every respect but two: it never searches or grabs
-// (a created book reaches an indexer only through the existing search-wanted
-// sweep and its auto grab switch), and it refuses to start while another sync
-// for the same author is running, returning ErrAuthorSyncRunning. It runs
+// It is the refresh path in every respect but these: it never searches or
+// grabs (a created book reaches an indexer only through the existing
+// search-wanted sweep and its auto grab switch); it refuses to start while
+// another sync for the same author is running, returning
+// ErrAuthorSyncRunning; it enriches covers only for works the author does not
+// already have; and it re-reads the author first, so an author deleted,
+// unmonitored or set to add no new items since the job picked it is skipped.
+// A skipped author returns (0, nil) and so counts as checked. It runs
 // synchronously on the caller's goroutine.
 func (h *AuthorHandler) DiscoverAuthorBooks(ctx context.Context, author *models.Author) (int, error) {
 	if author == nil || author.ID == 0 {
@@ -64,27 +71,46 @@ func (h *AuthorHandler) DiscoverAuthorBooks(ctx context.Context, author *models.
 	if !h.runningSyncs.tryStart(author.ID) {
 		return 0, ErrAuthorSyncRunning
 	}
-	snapshot := *author
-	return h.runCatalogueSync(ctx, &snapshot, catalogueSyncOptions{
-		mediaType:   h.resolveDefaultMediaType(ctx),
-		discovery:   true,
-		syncClaimed: true,
+	h.discovering.Store(author.ID, struct{}{})
+	defer h.discovering.Delete(author.ID)
+
+	current, err := h.authors.GetByID(ctx, author.ID)
+	if err != nil {
+		h.runningSyncs.done(author.ID)
+		return 0, fmt.Errorf("discover author books: re-read author %d: %w", author.ID, err)
+	}
+	if current == nil || !authorAcceptsDiscoveredBooks(current) {
+		h.runningSyncs.done(author.ID)
+		slog.Info("discovery skipped an author that no longer takes new books",
+			"author", author.Name, "authorId", author.ID, "deleted", current == nil)
+		return 0, nil
+	}
+	return h.runCatalogueSync(ctx, current, catalogueSyncOptions{
+		mediaType:            h.resolveDefaultMediaType(ctx),
+		discovery:            true,
+		syncClaimed:          true,
+		deferCoverEnrichment: true,
 	})
 }
 
-// catalogueWasPopulated captures, before a sync creates anything, whether the
-// author already had a catalogue. It is the baseline the announce rule needs:
-// the first population of an author lists their whole bibliography, which is
-// not news. Only discovery runs need the answer, so every other run skips the
-// read and reports false.
-//
-// A read error counts as populated (authorAwaitsFirstCatalogue answers false),
-// so the worst case is one announcement too many, never a silent new book.
-func (h *AuthorHandler) catalogueWasPopulated(ctx context.Context, author *models.Author, opts catalogueSyncOptions, bookCount int) bool {
-	if !opts.discovery || opts.onlyForeignID != "" {
-		return false
+// refreshConflictMessage is the 409 text for a manual Refresh that found a
+// sync already running for the author. When that sync is scheduled discovery
+// the user did not start it, so the message says what it is.
+func (h *AuthorHandler) refreshConflictMessage(authorID int64) string {
+	if _, ok := h.discovering.Load(authorID); ok {
+		return "Bindery is already checking this author for new books. Try again in a minute."
 	}
-	return !h.authorAwaitsFirstCatalogue(ctx, author, bookCount)
+	return "a refresh for this author is already running"
+}
+
+// catalogueWasPopulated reports, before a sync creates anything, whether the
+// author already had a catalogue: at least one book row, excluded ones
+// included. It is the baseline the announce rule needs, because the first
+// population of an author lists their whole bibliography, which is not news.
+// An author the user emptied counts as not populated for the same reason: its
+// refill is a first population again. Only discovery runs need the answer.
+func catalogueWasPopulated(opts catalogueSyncOptions, bookCount int) bool {
+	return opts.discovery && opts.onlyForeignID == "" && bookCount > 0
 }
 
 // shouldAnnounceDiscovered is the whole bookAnnounced rule, in one place.
@@ -172,19 +198,20 @@ func announceText(s string, maxRunes int) string {
 	return cleaned
 }
 
-// editionPrefetchCandidates narrows the MinPages and SkipMissingISBN edition
-// prefetch to works the author does not already have (P1). The create loop
-// exempts a work that resolves to an existing book from both filters, so the
-// editions fetched for it were never read: on a 65 book author that was 65
-// provider calls on every refresh, and on every scheduled discovery pass.
+// newWorkIndexes returns the positions in candidates of works the author does
+// not already have. The create loop exempts a work that resolves to an
+// existing book from the MinPages and SkipMissingISBN filters, so fetching
+// its editions was wasted (P1): on a 65 book author that was 65 provider calls
+// on every refresh. A discovery run also skips cover enrichment for those
+// works, since the covers found for them are never stored (#2236).
 //
 // A work is known when its foreign id or its Hardcover id is the foreign id of
 // one of the author's loaded books (excluded ones included) or one of the
 // identifiers recorded against them. Each of those ids makes
-// resolveExistingBook return a row, so skipping the fetch changes no outcome.
-// An identifier read failure falls back to the loaded foreign ids alone, which
-// only means fetching a few editions that were not needed.
-func (h *AuthorHandler) editionPrefetchCandidates(ctx context.Context, authorID int64, known, candidates []models.Book) []models.Book {
+// resolveExistingBook return a row, so treating the work as known changes no
+// outcome. An identifier read failure falls back to the loaded foreign ids
+// alone, which only means a few calls that were not needed.
+func (h *AuthorHandler) newWorkIndexes(ctx context.Context, authorID int64, known, candidates []models.Book) []int {
 	ids := make(map[string]struct{}, len(known))
 	for i := range known {
 		if id := strings.TrimSpace(known[i].ForeignID); id != "" {
@@ -210,12 +237,86 @@ func (h *AuthorHandler) editionPrefetchCandidates(ctx context.Context, authorID 
 		_, ok := ids[id]
 		return ok
 	}
-	out := make([]models.Book, 0, len(candidates))
-	for _, b := range candidates {
-		if isKnown(b.ForeignID) || isKnown(b.HardcoverForeignID) {
+	out := make([]int, 0, len(candidates))
+	for i := range candidates {
+		if isKnown(candidates[i].ForeignID) || isKnown(candidates[i].HardcoverForeignID) {
 			continue
 		}
-		out = append(out, b)
+		out = append(out, i)
 	}
 	return out
+}
+
+// booksAt copies the books at the given positions.
+func booksAt(books []models.Book, positions []int) []models.Book {
+	out := make([]models.Book, 0, len(positions))
+	for _, i := range positions {
+		out = append(out, books[i])
+	}
+	return out
+}
+
+// enrichNewWorkCovers runs the aggregator's cover enrichment over the new
+// works that have no cover, writing the enriched works back in place.
+func (h *AuthorHandler) enrichNewWorkCovers(ctx context.Context, candidates []models.Book, newWorks []int) {
+	if h.meta == nil {
+		return
+	}
+	targets := make([]int, 0, len(newWorks))
+	for _, i := range newWorks {
+		if candidates[i].ImageURL == "" {
+			targets = append(targets, i)
+		}
+	}
+	if len(targets) == 0 {
+		return
+	}
+	books := booksAt(candidates, targets)
+	h.meta.EnrichMissingCovers(ctx, books)
+	for j, i := range targets {
+		candidates[i] = books[j]
+	}
+}
+
+// authorCatalogueLocks hands out one mutex per author for the write half of a
+// catalogue sync. Entries are reference counted and removed when unused, so
+// the map holds only authors with a sync in that section.
+type authorCatalogueLocks struct {
+	mu    sync.Mutex
+	locks map[int64]*authorCatalogueLock
+}
+
+type authorCatalogueLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// lock blocks until authorID's lock is held and returns its release. An
+// author id of 0 (a sync on an unsaved author) takes no lock.
+func (l *authorCatalogueLocks) lock(authorID int64) func() {
+	if authorID == 0 {
+		return func() {}
+	}
+	l.mu.Lock()
+	if l.locks == nil {
+		l.locks = make(map[int64]*authorCatalogueLock)
+	}
+	entry := l.locks[authorID]
+	if entry == nil {
+		entry = &authorCatalogueLock{}
+		l.locks[authorID] = entry
+	}
+	entry.refs++
+	l.mu.Unlock()
+
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+		l.mu.Lock()
+		entry.refs--
+		if entry.refs == 0 {
+			delete(l.locks, authorID)
+		}
+		l.mu.Unlock()
+	}
 }

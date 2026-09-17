@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -42,6 +43,7 @@ func (r *eventRecorder) snapshot() []recordedEvent {
 }
 
 type discoveryFixture struct {
+	db      *sql.DB
 	authors *db.AuthorRepo
 	books   *db.BookRepo
 	profile *db.MetadataProfileRepo
@@ -59,6 +61,7 @@ func newDiscoveryFixture(t *testing.T, populated bool) *discoveryFixture {
 	}
 	t.Cleanup(func() { database.Close() })
 	f := &discoveryFixture{
+		db:      database,
 		authors: db.NewAuthorRepo(database),
 		books:   db.NewBookRepo(database),
 		profile: db.NewMetadataProfileRepo(database),
@@ -415,7 +418,9 @@ func TestDiscoverAuthorBooks_ConcurrentWithManualRefresh(t *testing.T) {
 			req := withURLParam(httptest.NewRequest(http.MethodPost, "/api/v1/author/"+id+"/refresh", nil), "id", id)
 			rec := httptest.NewRecorder()
 			h.Refresh(rec, req)
-			return rec.Code == http.StatusConflict
+			// A user's click that meets a scheduled check is told what is
+			// running, not that "a refresh" is (item 7 of the review).
+			return rec.Code == http.StatusConflict && strings.Contains(rec.Body.String(), "already checking this author for new books")
 		}
 	}
 

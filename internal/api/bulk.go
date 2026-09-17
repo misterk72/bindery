@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/vavallee/bindery/internal/auth"
@@ -89,6 +90,9 @@ type BulkHandler struct {
 	// Server.Shutdown. Falls back to context.Background() when not set;
 	// see #846 and the mirroring pattern in recommendations.go.
 	lifetimeCtx context.Context
+
+	// refreshesRunning counts "refresh selected" fan-outs still in flight.
+	refreshesRunning atomic.Int32
 }
 
 func NewBulkHandler(authors *db.AuthorRepo, books *db.BookRepo, blocklist *db.BlocklistRepo, searcher BookSearcher) *BulkHandler {
@@ -355,9 +359,20 @@ func (h *BulkHandler) fanOutRefreshes(authors []*models.Author) {
 		return
 	}
 	bgCtx := h.bgCtx()
-	go concurrency.RunBounded(bgCtx, authors, bulkSearchConcurrency, func(_ context.Context, a *models.Author) {
-		h.refreshAuthor(a)
-	})
+	h.refreshesRunning.Add(1)
+	go func() {
+		defer h.refreshesRunning.Add(-1)
+		concurrency.RunBounded(bgCtx, authors, bulkSearchConcurrency, func(_ context.Context, a *models.Author) {
+			h.refreshAuthor(a)
+		})
+	}()
+}
+
+// RefreshRunning reports whether a "refresh selected" fan-out is still
+// running. Scheduled discovery stops its pass while one is, since it runs
+// the same sync (#2236).
+func (h *BulkHandler) RefreshRunning() bool {
+	return h.refreshesRunning.Load() > 0
 }
 
 // fanOutSearches dispatches per-book indexer searches under a bounded pool

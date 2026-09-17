@@ -735,8 +735,10 @@ func main() {
 		authorHandler.RefreshAuthorBooks(a, false, authorHandler.ResolveDefaultMediaType(appCtx))
 	}).WithSettings(settingsRepo)
 	// Scheduled release discovery (#2236): an hourly tick checks a share of the
-	// monitored authors, skipped while Refresh all is running.
-	sched.WithAuthorDiscoverer(newAuthorDiscoverer(authorHandler.DiscoverAuthorBooks, authorRefreshHandler.Running))
+	// monitored authors, stopped while Refresh all or refresh selected runs.
+	sched.WithAuthorDiscoverer(newAuthorDiscoverer(authorHandler.DiscoverAuthorBooks, func() bool {
+		return authorRefreshHandler.Running() || bulkHandler.RefreshRunning()
+	}))
 	backupHandler := api.NewBackupHandler(database, cfg.DBPath, cfg.DataDir)
 	rootFolderHandler := api.NewRootFolderHandler(rootFolderRepo)
 	logHandler := api.NewLogHandler(ring).WithLogRepo(logRepo).WithDBLogHandler(logDBHandler)

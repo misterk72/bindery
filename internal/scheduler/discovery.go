@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -23,8 +24,25 @@ const settingAuthorDiscoveryInterval = "authors.discovery.interval"
 
 // Bounds and default of the discovery interval, mirroring the API validator
 // for authors.discovery.interval. The default is weekly: a new book is rarely
-// urgent, and a week keeps provider traffic to one works call per author per
-// week.
+// urgent, and one author's check is not one call. A discovery run makes the
+// same provider calls as a manual Refresh, less what it can skip:
+//
+//   - the author profile lookup
+//   - the works lookup (OpenLibrary works and search endpoints, paged)
+//   - the Hardcover works supplement, when Hardcover is configured
+//   - the Audible author catalogue, when the default media type includes
+//     audiobooks
+//   - edition sampling for works with no language, when the profile
+//     restricts language
+//   - edition lookups for new works, when the profile uses MinPages or
+//     SkipMissingISBN
+//   - cover enrichment (an enricher search plus an edition sample) for new
+//     works with no cover, and edition hydration for the books created
+//
+// Manual refresh also enriches covers for every coverless work the author
+// has, which #2578 measured in the thousands for a prolific author; discovery
+// limits that to works the author does not have. The 24 hour metadata cache
+// absorbs repeats within a day, but at a weekly interval it is usually cold.
 const (
 	defaultDiscoveryInterval = 168 * time.Hour
 	minDiscoveryInterval     = 24 * time.Hour
@@ -40,6 +58,24 @@ const maxDiscoveryBatch = 25
 // discoveryPace is the gap between two authors in one tick, so a batch does
 // not burst the metadata provider. A var only so tests can set it to 0.
 var discoveryPace = 3 * time.Second
+
+// discoveryAuthorBudget bounds one author's run, so a prolific author or a
+// hanging provider cannot hold the hourly slot. An author that runs out of
+// time is stamped as checked: retrying it an hour later would stall the job
+// the same way. A var only so tests can shorten it.
+var discoveryAuthorBudget = 10 * time.Minute
+
+// discoverySpareAuthors is how many due authors past the batch a tick reads,
+// so an author skipped because its sync is already running does not leave
+// the tick with nothing to do.
+const discoverySpareAuthors = 3
+
+// discoveryFailureBreaker is how many authors in a row may fail before the
+// pass stops. Consecutive failures point at the provider, not the authors, so
+// the failed authors are left unstamped for the next tick. A failure that a
+// success follows is stamped like any check, so one author that always fails
+// cannot hold the front of the queue.
+const discoveryFailureBreaker = 3
 
 // DiscoveryOutcome is what one author's discovery run reports back to the
 // job. The scheduler cannot import the api or hardcover packages, so the
@@ -104,10 +140,13 @@ type discoveryJob struct {
 
 // discoveryTickResult summarises one tick for the log line and for tests.
 type discoveryTickResult struct {
-	Skipped string // why the tick did nothing, empty when it ran
-	Checked int
-	Created int
-	Backoff bool
+	Skipped  string // why the tick did nothing, empty when it ran
+	Stopped  string // why the pass ended early, empty when it ran to the end
+	Checked  int
+	Created  int
+	TimedOut int
+	Backoff  bool
+	Breaker  bool
 }
 
 // WithAuthorDiscoverer registers the hourly author-discovery job. A nil
@@ -171,7 +210,7 @@ func (j *discoveryJob) tick(ctx context.Context) discoveryTickResult {
 		slog.Debug("job: author discovery is off")
 		return res
 	}
-	// A bulk refresh already runs the same sync over every author. Running
+	// A bulk refresh already runs the same sync over its authors. Running
 	// beside it doubles the provider traffic for nothing.
 	if j.discoverer.BulkRefreshRunning() {
 		res.Skipped = "bulk refresh running"
@@ -188,46 +227,101 @@ func (j *discoveryJob) tick(ctx context.Context) discoveryTickResult {
 		res.Skipped = "no eligible authors"
 		return res
 	}
-	due, err := j.authors.ListDiscoveryDue(ctx, start.Add(-interval), discoveryBatchSize(eligible, interval))
+	batch := discoveryBatchSize(eligible, interval)
+	due, err := j.authors.ListDiscoveryDue(ctx, start.Add(-interval), batch+discoverySpareAuthors)
 	if err != nil {
 		slog.Warn("job: author discovery could not list due authors", "error", err)
 		res.Skipped = "list failed"
 		return res
 	}
 
+	// failed holds the authors of the current failure streak, not yet
+	// stamped. A success, or a pass that ends for any reason other than the
+	// provider, stamps them as isolated failures.
+	var failed []models.Author
+	streak, attempted := 0, 0
+	stamp := func(a models.Author) {
+		if err := j.authors.StampDiscovery(ctx, a.ID, j.now()); err != nil {
+			slog.Warn("job: author discovery could not record the check", "author", a.Name, "error", err)
+		}
+	}
+
 	for i := range due {
-		if i > 0 && !sleepCtx(ctx, discoveryPace) {
+		if attempted >= batch {
+			break
+		}
+		if attempted > 0 && !sleepCtx(ctx, discoveryPace) {
 			break
 		}
 		if ctx.Err() != nil {
 			break
 		}
+		// Checked before each author, not only at tick start: a Refresh all
+		// or refresh selected started mid pass takes over.
+		if j.discoverer.BulkRefreshRunning() {
+			res.Stopped = "bulk refresh running"
+			slog.Info("job: author discovery stopped, a bulk author refresh started")
+			break
+		}
 		author := due[i]
-		out := j.discoverer.DiscoverAuthor(ctx, &author)
+		actx, cancel := context.WithTimeout(ctx, discoveryAuthorBudget)
+		out := j.discoverer.DiscoverAuthor(actx, &author)
+		timedOut := errors.Is(actx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+		cancel()
+		if ctx.Err() != nil {
+			break // shutting down: leave the author for next time
+		}
+		if out.Busy && !timedOut {
+			// Its sync is running already. Not a slot used: move on to the
+			// next due author so a small library is not stuck behind it.
+			slog.Debug("job: author discovery skipped an author whose sync is already running", "author", author.Name)
+			continue
+		}
+		attempted++
 		if out.Backoff {
 			res.Backoff = true
 			slog.Warn("job: author discovery stopped, the metadata provider is rate limiting",
 				"author", author.Name, "checked", res.Checked, "error", out.Err)
 			break
 		}
-		if out.Busy {
-			slog.Debug("job: author discovery skipped an author whose sync is already running", "author", author.Name)
-			continue
-		}
-		if out.Err != nil {
-			slog.Warn("job: author discovery failed for an author; will retry next interval",
-				"author", author.Name, "error", out.Err)
-		}
 		res.Checked++
 		res.Created += out.Created
-		if err := j.authors.StampDiscovery(ctx, author.ID, j.now()); err != nil {
-			slog.Warn("job: author discovery could not record the check", "author", author.Name, "error", err)
+		switch {
+		case timedOut:
+			res.TimedOut++
+			streak++
+			slog.Warn("job: author discovery ran out of time for an author; marking it checked",
+				"author", author.Name, "budget", discoveryAuthorBudget, "created", out.Created)
+			stamp(author)
+		case out.Err != nil:
+			streak++
+			failed = append(failed, author)
+			slog.Warn("job: author discovery failed for an author",
+				"author", author.Name, "error", out.Err)
+		default:
+			for _, f := range failed {
+				stamp(f)
+			}
+			failed, streak = nil, 0
+			stamp(author)
+		}
+		if streak >= discoveryFailureBreaker {
+			res.Breaker = true
+			slog.Warn("job: author discovery stopped after consecutive failures; the provider looks unavailable",
+				"failures", streak)
+			break
+		}
+	}
+	if !res.Backoff && !res.Breaker && ctx.Err() == nil {
+		for _, f := range failed {
+			stamp(f)
 		}
 	}
 
 	slog.Info("job: author discovery pass finished",
-		"eligible", eligible, "due", len(due), "checked", res.Checked, "created", res.Created,
-		"backoff", res.Backoff, "elapsed", j.now().Sub(start).Round(time.Millisecond))
+		"eligible", eligible, "batch", batch, "due", len(due), "checked", res.Checked, "created", res.Created,
+		"timed_out", res.TimedOut, "backoff", res.Backoff, "breaker", res.Breaker, "stopped", res.Stopped,
+		"elapsed", j.now().Sub(start).Round(time.Millisecond))
 	return res
 }
 
