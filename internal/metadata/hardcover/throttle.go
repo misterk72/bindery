@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vavallee/bindery/internal/metadata/ratelimit"
+	"github.com/vavallee/bindery/internal/metadata/providererr"
 )
 
 // Hardcover throttles per account, and its free tier throttles readily: a
@@ -284,10 +284,26 @@ func (e *throttledError) Unwrap() error { return e.err }
 // errors.Is(err, ErrRateLimited) is the supported check.
 var ErrRateLimited = errors.New("hardcover rate limited")
 
-// Is also matches ratelimit.ErrRateLimited, the provider independent form
+// Is also matches providererr.ErrRateLimited, the provider independent form
 // scheduled discovery checks (#2236).
 func (e *throttledError) Is(target error) bool {
-	return target == ErrRateLimited || target == ratelimit.ErrRateLimited
+	return target == ErrRateLimited || target == providererr.ErrRateLimited
+}
+
+// unavailableError marks a Hardcover server error (HTTP 5xx) so callers can
+// tell the provider being down from a request with no answer (#2236).
+type unavailableError struct{ err error }
+
+func (e *unavailableError) Error() string        { return e.err.Error() }
+func (e *unavailableError) Unwrap() error        { return e.err }
+func (e *unavailableError) Is(target error) bool { return target == providererr.ErrUnavailable }
+
+// serverUnavailable wraps a server error status error; nil stays nil.
+func serverUnavailable(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &unavailableError{err: err}
 }
 
 // rateLimited wraps err so errors.Is(err, ErrRateLimited) reports true while

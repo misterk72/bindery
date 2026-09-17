@@ -686,6 +686,9 @@ func (c *Client) query(ctx context.Context, q string, vars map[string]any, out i
 
 		if status != http.StatusOK {
 			statusErr := classifyHTTPError(status, raw)
+			if status >= http.StatusInternalServerError {
+				statusErr = serverUnavailable(statusErr)
+			}
 			if !isRetryableStatus(status) {
 				return statusErr
 			}

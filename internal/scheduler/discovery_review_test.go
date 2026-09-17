@@ -9,13 +9,14 @@ import (
 	"github.com/vavallee/bindery/internal/models"
 )
 
-// Review item 1b: three authors failing in a row means the provider is down,
-// not the authors. The pass stops and those three keep their place.
+// Review item 1b: three authors failing in a row with the provider down means
+// the provider, not the authors. The pass stops; the three are due again soon
+// and the untouched authors keep their place.
 func TestDiscoveryTick_BreakerStopsAfterThreeConsecutiveFailures(t *testing.T) {
 	f := newDiscoveryJobFixture(t, "OL1A", "OL2A", "OL3A", "OL4A", "OL5A")
 	f.job.interval = func() (time.Duration, bool) { return time.Hour, true }
 	for _, id := range []string{"OL1A", "OL2A", "OL3A", "OL4A", "OL5A"} {
-		f.disc.outcomes[id] = DiscoveryOutcome{Err: errors.New("HTTP 502")}
+		f.disc.outcomes[id] = DiscoveryOutcome{Err: errors.New("HTTP 502"), Unavailable: true}
 	}
 
 	res := f.job.tick(context.Background())
@@ -25,9 +26,9 @@ func TestDiscoveryTick_BreakerStopsAfterThreeConsecutiveFailures(t *testing.T) {
 	if len(f.disc.calls) != 3 {
 		t.Fatalf("discoverer called for %v, want the pass to stop after 3", f.disc.calls)
 	}
-	for _, id := range []string{"OL1A", "OL2A", "OL3A", "OL4A", "OL5A"} {
+	for _, id := range []string{"OL4A", "OL5A"} {
 		if got := f.cursor(t, id); got != nil {
-			t.Errorf("%s stamped at %v; a provider outage must not cost authors their week", id, got)
+			t.Errorf("%s stamped at %v although the pass never reached it", id, got)
 		}
 	}
 }
@@ -38,8 +39,8 @@ func TestDiscoveryTick_IsolatedFailuresAreStamped(t *testing.T) {
 	f := newDiscoveryJobFixture(t, "OL1A", "OL2A", "OL3A", "OL4A", "OL5A")
 	f.job.interval = func() (time.Duration, bool) { return time.Hour, true }
 	f.disc.outcomes["OL1A"] = DiscoveryOutcome{Err: errors.New("poison author")}
-	f.disc.outcomes["OL3A"] = DiscoveryOutcome{Err: errors.New("HTTP 502")}
-	f.disc.outcomes["OL4A"] = DiscoveryOutcome{Err: errors.New("HTTP 502")}
+	f.disc.outcomes["OL3A"] = DiscoveryOutcome{Err: errors.New("HTTP 502"), Unavailable: true}
+	f.disc.outcomes["OL4A"] = DiscoveryOutcome{Err: errors.New("HTTP 502"), Unavailable: true}
 
 	res := f.job.tick(context.Background())
 	if res.Breaker || res.Checked != 5 {

@@ -20,13 +20,15 @@ type authorDiscoverFunc func(ctx context.Context, author *models.Author) (int, e
 // providers, so this is where their errors become flags: a rate limit from
 // any provider (metadata.ErrRateLimited, which the OpenLibrary and Hardcover
 // clients both mark) is Backoff (stop the pass, leave the cursor), an author
-// whose sync is already running is Busy (skip it, leave the cursor), and
-// anything else is an ordinary error for the job's failure breaker.
+// whose sync is already running is Busy (skip it, leave the cursor), a
+// server error, network failure or timeout is Unavailable (counts toward the
+// job's failure breaker), and anything else, such as a not found, is an error
+// about that one author, stamped as checked.
 func newAuthorDiscoverer(discover authorDiscoverFunc, bulkRunning func() bool) scheduler.AuthorDiscoverer {
 	return scheduler.AuthorDiscovererFuncs{
 		Discover: func(ctx context.Context, author *models.Author) scheduler.DiscoveryOutcome {
 			created, err := discover(ctx, author)
-			return scheduler.DiscoveryOutcome{
+			out := scheduler.DiscoveryOutcome{
 				Created: created,
 				Err:     err,
 				// hardcover.ErrRateLimited is checked too: the bare sentinel does
@@ -34,6 +36,8 @@ func newAuthorDiscoverer(discover authorDiscoverFunc, bulkRunning func() bool) s
 				Backoff: errors.Is(err, metadata.ErrRateLimited) || errors.Is(err, hardcover.ErrRateLimited),
 				Busy:    errors.Is(err, api.ErrAuthorSyncRunning),
 			}
+			out.Unavailable = !out.Backoff && !out.Busy && metadata.IsProviderUnavailable(err)
+			return out
 		},
 		BulkRunning: bulkRunning,
 	}

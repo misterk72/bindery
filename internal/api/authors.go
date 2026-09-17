@@ -726,8 +726,9 @@ type catalogueSyncOptions struct {
 
 	// deferCoverEnrichment marks a scheduled discovery run (#2236). The works
 	// lookup skips its per work cover enrichment, and the sync enriches only
-	// the works the author does not already have, since covers found for the
-	// others are never stored.
+	// the works the author does not already have. Existing coverless books
+	// lose the cover backfill on these runs (#1748) to save the provider
+	// calls; a manual refresh still fills them.
 	deferCoverEnrichment bool
 }
 
@@ -2067,12 +2068,19 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 	// "this author has no catalogue yet", so the documented cleanup disarmed
 	// the very guard it was recommended for (#1815).
 	//
-	// From here to the end of the run, one sync per author at a time: two
-	// overlapping runs (a scheduled discovery and a manual or bulk refresh)
-	// would both read the catalogue before either wrote, and each announce
-	// the books it won (#2236). The later run waits, then reads what the
-	// earlier one created.
-	defer h.catalogueWrites.lock(author.ID)()
+	// From here until the created books are hydrated, one sync per author at
+	// a time: two overlapping runs (a scheduled discovery and a manual or
+	// bulk refresh) would both read the catalogue before either wrote, and
+	// each announce the books it won (#2236). The later run waits, then reads
+	// what the earlier one created. See lockCatalogueWrites for what is left
+	// outside the lock.
+	release, err := h.lockCatalogueWrites(ctx, author, opts)
+	if err != nil {
+		slog.Info("catalogue sync stopped while waiting for another sync of the same author",
+			"author", author.Name, "authorId", author.ID, "error", err)
+		return 0, err
+	}
+	defer release()
 	allBooks, err := h.books.ListByAuthorIncludingExcluded(ctx, author.ID)
 	if err != nil {
 		// Reading nothing would look like an empty author: the run would
@@ -2703,6 +2711,10 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 			searchQueue = append(searchQueue, b)
 		}
 	}
+	// Every write is done and the announcement list is final, so the next
+	// sync of this author may start. Indexer searches and webhook delivery
+	// can take minutes and need no lock.
+	release()
 	runBookSearches(ctx, h.searcher, searchQueue, authorAutoSearchConcurrency)
 
 	// A single-work run records nothing (#1816). It fetched the author's works

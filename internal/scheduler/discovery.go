@@ -77,6 +77,13 @@ const discoverySpareAuthors = 3
 // cannot hold the front of the queue.
 const discoveryFailureBreaker = 3
 
+// discoveryRetryAfter is how soon authors caught in a tripped breaker are due
+// again. They are stamped rather than left at the head of the queue, which
+// would hand the next tick the same authors and never reach anyone else, but
+// with a short offset instead of a whole interval, since the failure was the
+// provider's and not theirs. Capped at the interval.
+const discoveryRetryAfter = 6 * time.Hour
+
 // DiscoveryOutcome is what one author's discovery run reports back to the
 // job. The scheduler cannot import the api or hardcover packages, so the
 // wiring in main.go translates their errors into these flags.
@@ -94,6 +101,12 @@ type DiscoveryOutcome struct {
 	// Busy means another catalogue sync for this author was already running,
 	// typically a manual Refresh. The author is skipped and not stamped.
 	Busy bool
+	// Unavailable means Err says the provider, not this author, is the
+	// problem: a server error, a network failure or a timeout. Only these
+	// count toward the failure breaker. Any other error (a not found, a
+	// record that does not parse) is about the author and is stamped like a
+	// success, so broken authors cannot trip the breaker every tick.
+	Unavailable bool
 }
 
 // AuthorDiscoverer runs discovery for one author and says whether a bulk
@@ -136,6 +149,8 @@ type discoveryJob struct {
 	// is off. Read on every tick, so a settings change needs no restart.
 	interval func() (d time.Duration, ok bool)
 	now      func() time.Time
+	// batchSize overrides discoveryBatchSize in tests; nil in production.
+	batchSize func(eligible int, interval time.Duration) int
 }
 
 // discoveryTickResult summarises one tick for the log line and for tests.
@@ -228,6 +243,9 @@ func (j *discoveryJob) tick(ctx context.Context) discoveryTickResult {
 		return res
 	}
 	batch := discoveryBatchSize(eligible, interval)
+	if j.batchSize != nil {
+		batch = j.batchSize(eligible, interval)
+	}
 	due, err := j.authors.ListDiscoveryDue(ctx, start.Add(-interval), batch+discoverySpareAuthors)
 	if err != nil {
 		slog.Warn("job: author discovery could not list due authors", "error", err)
@@ -235,15 +253,36 @@ func (j *discoveryJob) tick(ctx context.Context) discoveryTickResult {
 		return res
 	}
 
-	// failed holds the authors of the current failure streak, not yet
-	// stamped. A success, or a pass that ends for any reason other than the
-	// provider, stamps them as isolated failures.
+	// failed holds the authors of the current provider failure streak, not
+	// yet stamped. A success, an author specific error, or a pass that ends
+	// for any reason other than the provider stamps them as isolated
+	// failures. A tripped breaker or a rate limit stamps them to be due again
+	// after discoveryRetryAfter.
 	var failed []models.Author
 	streak, attempted := 0, 0
-	stamp := func(a models.Author) {
-		if err := j.authors.StampDiscovery(ctx, a.ID, j.now()); err != nil {
+	stampAt := func(a models.Author, when time.Time) {
+		if err := j.authors.StampDiscovery(ctx, a.ID, when); err != nil {
 			slog.Warn("job: author discovery could not record the check", "author", a.Name, "error", err)
 		}
+	}
+	stamp := func(a models.Author) { stampAt(a, j.now()) }
+	retry := discoveryRetryAfter
+	if retry > interval {
+		retry = interval
+	}
+	stampForRetry := func(authors []models.Author) {
+		// Due again when now passes this stamp plus the interval, which is
+		// retry from now.
+		when := j.now().Add(retry - interval)
+		for _, a := range authors {
+			stampAt(a, when)
+		}
+	}
+	flush := func() {
+		for _, f := range failed {
+			stamp(f)
+		}
+		failed, streak = nil, 0
 	}
 
 	for i := range due {
@@ -293,29 +332,35 @@ func (j *discoveryJob) tick(ctx context.Context) discoveryTickResult {
 			slog.Warn("job: author discovery ran out of time for an author; marking it checked",
 				"author", author.Name, "budget", discoveryAuthorBudget, "created", out.Created)
 			stamp(author)
-		case out.Err != nil:
+		case out.Err != nil && out.Unavailable:
 			streak++
 			failed = append(failed, author)
-			slog.Warn("job: author discovery failed for an author",
+			slog.Warn("job: author discovery failed for an author, the provider looks unavailable",
 				"author", author.Name, "error", out.Err)
+		case out.Err != nil:
+			// About this author, not the provider: checked like any other.
+			slog.Warn("job: author discovery failed for an author; will retry next interval",
+				"author", author.Name, "error", out.Err)
+			flush()
+			stamp(author)
 		default:
-			for _, f := range failed {
-				stamp(f)
-			}
-			failed, streak = nil, 0
+			flush()
 			stamp(author)
 		}
 		if streak >= discoveryFailureBreaker {
 			res.Breaker = true
-			slog.Warn("job: author discovery stopped after consecutive failures; the provider looks unavailable",
-				"failures", streak)
+			slog.Warn("job: author discovery stopped after consecutive provider failures; those authors retry later",
+				"failures", streak, "retry_after", retry)
 			break
 		}
 	}
-	if !res.Backoff && !res.Breaker && ctx.Err() == nil {
-		for _, f := range failed {
-			stamp(f)
-		}
+	switch {
+	case ctx.Err() != nil:
+		// Shutting down: nothing more is written.
+	case res.Backoff || res.Breaker:
+		stampForRetry(failed)
+	default:
+		flush()
 	}
 
 	slog.Info("job: author discovery pass finished",

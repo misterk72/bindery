@@ -203,7 +203,10 @@ func announceText(s string, maxRunes int) string {
 // existing book from the MinPages and SkipMissingISBN filters, so fetching
 // its editions was wasted (P1): on a 65 book author that was 65 provider calls
 // on every refresh. A discovery run also skips cover enrichment for those
-// works, since the covers found for them are never stored (#2236).
+// works (#2236). That is a trade: the sync backfills an empty cover on an
+// existing book (#1748), so a discovery run leaves existing coverless books
+// without one to save the provider calls, and a manual refresh still fills
+// them.
 //
 // A work is known when its foreign id or its Hardcover id is the foreign id of
 // one of the author's loaded books (excluded ones included) or one of the
@@ -278,24 +281,55 @@ func (h *AuthorHandler) enrichNewWorkCovers(ctx context.Context, candidates []mo
 	}
 }
 
-// authorCatalogueLocks hands out one mutex per author for the write half of a
+// lockCatalogueWrites takes the per author catalogue lock for a sync and
+// returns an idempotent release, so the caller can release early and still
+// defer it.
+//
+// AddBook's single work fallback (onlyForeignID) takes no lock. Its caller
+// polls for the book for 15 seconds and a discovery run can hold the lock for
+// minutes. What it writes is confined to the one work: at most one book row
+// (foreign_id is UNIQUE, so a concurrent sync that creates the same work
+// loses the insert and counts it as matched), that book's identifiers and
+// series links, and, when the work already exists, that row's ratings, cover
+// and author, plus the author's write once catalogue_populated_at stamp. It
+// skips the profile refresh, the Calibre relink and the sync summary, and
+// never announces. What the lock would still prevent is a sibling sync
+// creating the same title under a different foreign id in the same instant,
+// leaving two rows for one book; that needs the direct insert to have missed
+// and a sync of the same author to be writing that title at that moment.
+func (h *AuthorHandler) lockCatalogueWrites(ctx context.Context, author *models.Author, opts catalogueSyncOptions) (func(), error) {
+	if opts.onlyForeignID != "" {
+		return func() {}, nil
+	}
+	unlock, err := h.catalogueWrites.lock(ctx, author.ID)
+	if err != nil {
+		return nil, err
+	}
+	var once sync.Once
+	return func() { once.Do(unlock) }, nil
+}
+
+// authorCatalogueLocks hands out one lock per author for the write half of a
 // catalogue sync. Entries are reference counted and removed when unused, so
-// the map holds only authors with a sync in that section.
+// the map holds only authors with a sync holding or waiting for the lock.
 type authorCatalogueLocks struct {
 	mu    sync.Mutex
 	locks map[int64]*authorCatalogueLock
 }
 
+// authorCatalogueLock is a one slot channel rather than a mutex so a waiter
+// can give up when its context ends, and a shutdown never queues behind a
+// holder.
 type authorCatalogueLock struct {
-	mu   sync.Mutex
+	slot chan struct{}
 	refs int
 }
 
-// lock blocks until authorID's lock is held and returns its release. An
-// author id of 0 (a sync on an unsaved author) takes no lock.
-func (l *authorCatalogueLocks) lock(authorID int64) func() {
+// lock blocks until authorID's lock is held or ctx is done, and returns the
+// release. An author id of 0 (a sync on an unsaved author) takes no lock.
+func (l *authorCatalogueLocks) lock(ctx context.Context, authorID int64) (func(), error) {
 	if authorID == 0 {
-		return func() {}
+		return func() {}, nil
 	}
 	l.mu.Lock()
 	if l.locks == nil {
@@ -303,20 +337,28 @@ func (l *authorCatalogueLocks) lock(authorID int64) func() {
 	}
 	entry := l.locks[authorID]
 	if entry == nil {
-		entry = &authorCatalogueLock{}
+		entry = &authorCatalogueLock{slot: make(chan struct{}, 1)}
 		l.locks[authorID] = entry
 	}
 	entry.refs++
 	l.mu.Unlock()
 
-	entry.mu.Lock()
-	return func() {
-		entry.mu.Unlock()
+	unref := func() {
 		l.mu.Lock()
 		entry.refs--
 		if entry.refs == 0 {
 			delete(l.locks, authorID)
 		}
 		l.mu.Unlock()
+	}
+	select {
+	case entry.slot <- struct{}{}:
+		return func() {
+			<-entry.slot
+			unref()
+		}, nil
+	case <-ctx.Done():
+		unref()
+		return nil, ctx.Err()
 	}
 }

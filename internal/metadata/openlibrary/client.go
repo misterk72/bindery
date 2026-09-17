@@ -23,7 +23,7 @@ import (
 
 	"github.com/vavallee/bindery/internal/concurrency"
 	"github.com/vavallee/bindery/internal/httpsec"
-	"github.com/vavallee/bindery/internal/metadata/ratelimit"
+	"github.com/vavallee/bindery/internal/metadata/providererr"
 	"github.com/vavallee/bindery/internal/models"
 	"github.com/vavallee/bindery/internal/textutil"
 	"github.com/vavallee/bindery/internal/useragent"
@@ -34,10 +34,10 @@ import (
 // upstream failures so the UI can show a friendly message.
 var ErrNotFound = errors.New("not found")
 
-// ErrRateLimited is ratelimit.ErrRateLimited, re-exported so callers of this
+// ErrRateLimited is providererr.ErrRateLimited, re-exported so callers of this
 // package can name it here. getJSON marks an HTTP 429 that is still a 429
 // after its retries with it (#2236).
-var ErrRateLimited = ratelimit.ErrRateLimited
+var ErrRateLimited = providererr.ErrRateLimited
 
 // rateLimitedError keeps the original status message while matching
 // ErrRateLimited through errors.Is.
@@ -46,6 +46,18 @@ type rateLimitedError struct{ err error }
 func (e *rateLimitedError) Error() string        { return e.err.Error() }
 func (e *rateLimitedError) Unwrap() error        { return e.err }
 func (e *rateLimitedError) Is(target error) bool { return target == ErrRateLimited }
+
+// ErrUnavailable is providererr.ErrUnavailable: getJSON marks a server error
+// (HTTP 5xx) that is still one after its retries with it (#2236).
+var ErrUnavailable = providererr.ErrUnavailable
+
+// unavailableError keeps the original status message while matching
+// ErrUnavailable through errors.Is.
+type unavailableError struct{ err error }
+
+func (e *unavailableError) Error() string        { return e.err.Error() }
+func (e *unavailableError) Unwrap() error        { return e.err }
+func (e *unavailableError) Is(target error) bool { return target == ErrUnavailable }
 
 const (
 	baseURL  = "https://openlibrary.org"
@@ -1192,6 +1204,9 @@ func (c *Client) getJSON(ctx context.Context, rawURL string, target interface{})
 		if !isRetryableStatus(resp.StatusCode) || attempt == getJSONMaxRetries {
 			if resp.StatusCode == http.StatusTooManyRequests {
 				return &rateLimitedError{err: statusErr}
+			}
+			if resp.StatusCode >= http.StatusInternalServerError {
+				return &unavailableError{err: statusErr}
 			}
 			return statusErr
 		}
