@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/vavallee/bindery/internal/db"
@@ -201,5 +202,29 @@ func TestAdopt_RegistersEachDiscFolder(t *testing.T) {
 	got := filePaths(t, f.books, book.ID)
 	if len(got) != 2 || got[0] != filepath.Dir(cd1) || got[1] != filepath.Dir(cd2) {
 		t.Fatalf("registered %v, want the two disc folders", got)
+	}
+}
+
+// TestAdoptionBodies_RejectUnknownFields: no adoption route takes a path, and
+// one sent anyway is refused with 400 instead of being silently ignored.
+func TestAdoptionBodies_RejectUnknownFields(t *testing.T) {
+	f := newAdoptionFixture(t, &stubMetaProvider{name: "openlibrary"})
+	book := f.seedBook(t, "Provenance")
+	epub := f.write(t, "Ann Leckie/Provenance.epub")
+	id := f.seedUnit(t, db.UnmatchedUnitScan{UnitPath: epub, MemberPaths: []string{epub}, AuthorFolder: "Ann Leckie"})
+
+	rec := f.post(t, fmt.Sprintf("/library/unmatched/%d/adopt", id), map[string]any{"bookId": book.ID, "path": "/etc/passwd"})
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "path") {
+		t.Fatalf("adopt with a path field = %d %s, want 400 naming the field", rec.Code, rec.Body.String())
+	}
+	if got := filePaths(t, f.books, book.ID); len(got) != 0 {
+		t.Fatalf("registered %v", got)
+	}
+	rec = f.post(t, "/library/unmatched/ignore", map[string]any{"authorFolder": "Ann Leckie", "path": "/etc"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bulk ignore with a path field = %d %s, want 400", rec.Code, rec.Body.String())
+	}
+	if u, _ := f.units.Get(context.Background(), id); u.State != db.UnmatchedStatePending {
+		t.Fatalf("unit state = %s, want still pending", u.State)
 	}
 }

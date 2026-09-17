@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"path/filepath"
@@ -401,8 +402,8 @@ func (h *AdoptionHandler) IgnoreMany(w http.ResponseWriter, r *http.Request) {
 		IDs          []int64 `json:"ids"`
 		AuthorFolder string  `json:"authorFolder"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	if err := decodeAdoptionBody(w, r, 64<<10, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	req.AuthorFolder = strings.TrimSpace(req.AuthorFolder)
@@ -420,6 +421,22 @@ func (h *AdoptionHandler) IgnoreMany(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int64{"ignored": n})
+}
+
+// decodeAdoptionBody reads a bounded JSON body and refuses any field the
+// request type does not declare. An adoption route never takes a path, and a
+// client sending one ("path": "/etc/passwd") should learn that it was not
+// used rather than have it silently dropped.
+func decodeAdoptionBody(w http.ResponseWriter, r *http.Request, limit int64, dst any) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		if strings.HasPrefix(err.Error(), "json: unknown field ") {
+			return fmt.Errorf("unknown field %s", strings.TrimPrefix(err.Error(), "json: unknown field "))
+		}
+		return errors.New("invalid request body")
+	}
+	return nil
 }
 
 // errAdoptionRefused carries a status and sentence back to the handler.

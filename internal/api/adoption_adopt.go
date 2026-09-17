@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -56,8 +55,8 @@ func (h *AdoptionHandler) Adopt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req adoptRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	if err := decodeAdoptionBody(w, r, 16<<10, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	req.ForeignBookID = strings.TrimSpace(req.ForeignBookID)
