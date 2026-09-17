@@ -201,6 +201,35 @@ func registerStorageRoutes(r chi.Router, h storageRouteHandler) {
 	})
 }
 
+// adoptionRouteHandler is the surface registerAdoptionRoutes needs.
+type adoptionRouteHandler interface {
+	List(http.ResponseWriter, *http.Request)
+	Summary(http.ResponseWriter, *http.Request)
+	Adopt(http.ResponseWriter, *http.Request)
+	Undo(http.ResponseWriter, *http.Request)
+	Ignore(http.ResponseWriter, *http.Request)
+	Unignore(http.ResponseWriter, *http.Request)
+	IgnoreMany(http.ResponseWriter, *http.Request)
+}
+
+// registerAdoptionRoutes mounts /library/unmatched, library adoption, admin
+// only. The rows carry absolute library paths (the same disclosure
+// registerLibraryScanStatusRoute gates), adopt creates authors and books and
+// writes book_files, and the summary behind the nav badge counts them. No
+// route takes a path: every row is addressed by id.
+func registerAdoptionRoutes(r chi.Router, h adoptionRouteHandler) {
+	r.Group(func(r chi.Router) {
+		r.Use(auth.RequireAdmin)
+		r.Get("/library/unmatched", h.List)
+		r.Get("/library/unmatched/summary", h.Summary)
+		r.Post("/library/unmatched/ignore", h.IgnoreMany)
+		r.Post("/library/unmatched/{id}/adopt", h.Adopt)
+		r.Post("/library/unmatched/{id}/undo", h.Undo)
+		r.Post("/library/unmatched/{id}/ignore", h.Ignore)
+		r.Post("/library/unmatched/{id}/unignore", h.Unignore)
+	})
+}
+
 // libraryScanStatusRouteHandler is the surface registerLibraryScanStatusRoute
 // needs.
 type libraryScanStatusRouteHandler interface {

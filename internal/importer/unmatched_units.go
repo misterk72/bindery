@@ -46,6 +46,12 @@ func (s *Scanner) WithUnmatchedUnits(store UnmatchedUnitStore) *Scanner {
 	return s
 }
 
+// ScanRunning reports whether a library scan is in flight, for the adoption
+// page's scan status.
+func (s *Scanner) ScanRunning() bool {
+	return s.scanRunning.Load()
+}
+
 // walkedFile is what the library walk already knew about a file (P2): its
 // size and mode come from the os.FileInfo filepath.Walk hands over, so
 // grouping costs no extra stat.

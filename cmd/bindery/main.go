@@ -701,6 +701,12 @@ func main() {
 	}
 
 	libraryHandler := api.NewLibraryHandler(importScanner).WithSettings(settingsRepo)
+	// Library adoption: the scan stores the books it could not match, and the
+	// Import page's "In your library" view acts on them. Library roots, not
+	// importRoots: adoption only registers files already in the library.
+	unmatchedUnitRepo := db.NewUnmatchedUnitRepo(database)
+	importScanner.WithUnmatchedUnits(unmatchedUnitRepo)
+	adoptionHandler := api.NewAdoptionHandler(unmatchedUnitRepo, bookRepo, authorRepo, authorHandler, libraryRoots, importScanner, settingsRepo)
 	fileHandler := api.NewFileHandler(bookRepo, cfg.LibraryDir, cfg.AudiobookDir).
 		WithRootFolders(rootFolderRepo)
 	historyHandler := api.NewHistoryHandler(historyRepo, blocklistRepo, bookRepo)
@@ -1138,6 +1144,8 @@ func main() {
 		// admin only (#2361); see registerLibraryScanStatusRoute.
 		r.Post("/library/scan", libraryHandler.Scan)
 		registerLibraryScanStatusRoute(r, libraryHandler)
+		// Library adoption, admin only (see registerAdoptionRoutes).
+		registerAdoptionRoutes(r, adoptionHandler)
 
 		// Refresh metadata for ALL authors (background job, #863). Per-selection
 		// bulk refresh lives at /author/bulk; this is the "populate everything"
