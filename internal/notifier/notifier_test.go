@@ -42,6 +42,8 @@ func TestMatchesEvent(t *testing.T) {
 		{models.Notification{OnHealth: false}, EventHealth, false},
 		{models.Notification{OnUpgrade: true}, EventUpgrade, true},
 		{models.Notification{OnUpgrade: false}, EventUpgrade, false},
+		{models.Notification{OnRequestCreated: true}, EventRequestCreated, true},
+		{models.Notification{OnRequestCreated: false, OnGrab: true, OnHealth: true}, EventRequestCreated, false},
 		// Unknown event type always returns false.
 		{models.Notification{OnGrab: true, OnImport: true}, "unknown", false},
 	}
@@ -396,6 +398,8 @@ func TestNormalizeEventPayload(t *testing.T) {
 		{"imported", EventBookImported, map[string]interface{}{"title": "Dune", "format": "ebook"}, "Book Imported", "Dune (ebook)"},
 		{"failed", EventDownloadFailed, map[string]interface{}{"title": "Dune", "message": "no files"}, "Download Failed", "Dune: no files"},
 		{"health", EventHealth, map[string]interface{}{"status": "error", "message": "client offline"}, "Download Client Unhealthy", "client offline"},
+		{"request-book", EventRequestCreated, map[string]interface{}{"title": "Dune", "author": "Frank Herbert", "kind": "book", "username": "reader"}, "Book Requested", "Dune · Frank Herbert (requested by reader)"},
+		{"request-author", EventRequestCreated, map[string]interface{}{"title": "Frank Herbert", "author": "Frank Herbert", "kind": "author", "username": "reader"}, "Author Requested", "Frank Herbert (requested by reader)"},
 		{"test", "test", map[string]interface{}{}, "Bindery Test", "Bindery notification test"},
 	}
 	for _, c := range cases {

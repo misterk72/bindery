@@ -52,6 +52,7 @@ export default function NotificationsTab() {
                         {n.onFailure && <span className="text-[10px] px-1.5 py-0.5 bg-slate-200 dark:bg-zinc-800 text-slate-600 dark:text-zinc-400 rounded">{t('settings.notifications.onFailure')}</span>}
                         {n.onHealth && <span className="text-[10px] px-1.5 py-0.5 bg-slate-200 dark:bg-zinc-800 text-slate-600 dark:text-zinc-400 rounded">{t('settings.notifications.onHealth')}</span>}
                         {n.onBookAnnounced && <span className="text-[10px] px-1.5 py-0.5 bg-slate-200 dark:bg-zinc-800 text-slate-600 dark:text-zinc-400 rounded">{t('settings.notifications.onBookAnnounced')}</span>}
+                        {n.onRequestCreated && <span className="text-[10px] px-1.5 py-0.5 bg-slate-200 dark:bg-zinc-800 text-slate-600 dark:text-zinc-400 rounded">{t('settings.notifications.onRequestCreated')}</span>}
                       </div>
                     </div>
                   </div>
@@ -137,6 +138,7 @@ function EditNotificationForm({ notification, onClose, onSaved }: { notification
   const [onUpgrade, setOnUpgrade] = useState(notification.onUpgrade)
   const [onHealth, setOnHealth] = useState(notification.onHealth)
   const [onBookAnnounced, setOnBookAnnounced] = useState(notification.onBookAnnounced ?? false)
+  const [onRequestCreated, setOnRequestCreated] = useState(notification.onRequestCreated ?? false)
   const [saveError, setSaveError] = useState('')
   const [saving, setSaving] = useState(false)
 
@@ -149,7 +151,7 @@ function EditNotificationForm({ notification, onClose, onSaved }: { notification
     }
     setSaving(true)
     try {
-      const updated = await api.updateNotification(notification.id, { ...notification, name, url, topic, method, headers: headersJSON, onGrab, onImport, onFailure, onUpgrade, onHealth, onBookAnnounced })
+      const updated = await api.updateNotification(notification.id, { ...notification, name, url, topic, method, headers: headersJSON, onGrab, onImport, onFailure, onUpgrade, onHealth, onBookAnnounced, onRequestCreated })
       onSaved(updated)
     } catch (err: unknown) {
       setSaveError(t('settings.notifications.saveFailed', { error: err instanceof Error ? err.message : 'Unknown error' }))
@@ -201,6 +203,7 @@ function EditNotificationForm({ notification, onClose, onSaved }: { notification
           <button type="button" onClick={() => setOnUpgrade(!onUpgrade)} className={toggleCls(onUpgrade)}>Upgrade</button>
           <button type="button" onClick={() => setOnHealth(!onHealth)} className={toggleCls(onHealth)}>Health</button>
           <button type="button" aria-pressed={onBookAnnounced} onClick={() => setOnBookAnnounced(!onBookAnnounced)} className={toggleCls(onBookAnnounced)}>{t('settings.notifications.onBookAnnouncedToggle')}</button>
+          <button type="button" aria-pressed={onRequestCreated} onClick={() => setOnRequestCreated(!onRequestCreated)} className={toggleCls(onRequestCreated)}>{t('settings.notifications.requestToggle')}</button>
         </div>
       </div>
       {saveError && (
@@ -229,6 +232,7 @@ function AddNotificationForm({ onClose, onAdded }: { onClose: () => void; onAdde
   const [onUpgrade, setOnUpgrade] = useState(false)
   const [onHealth, setOnHealth] = useState(false)
   const [onBookAnnounced, setOnBookAnnounced] = useState(false)
+  const [onRequestCreated, setOnRequestCreated] = useState(false)
   const [saveError, setSaveError] = useState('')
   const [saving, setSaving] = useState(false)
 
@@ -244,7 +248,7 @@ function AddNotificationForm({ onClose, onAdded }: { onClose: () => void; onAdde
       const n = await api.addNotification({
         name, url, topic, method, type: 'webhook',
         headers: headersJSON,
-        onGrab, onImport, onFailure, onUpgrade, onHealth, onBookAnnounced,
+        onGrab, onImport, onFailure, onUpgrade, onHealth, onBookAnnounced, onRequestCreated,
         enabled: true,
       })
       onAdded(n)
@@ -298,6 +302,7 @@ function AddNotificationForm({ onClose, onAdded }: { onClose: () => void; onAdde
           <button type="button" onClick={() => setOnUpgrade(!onUpgrade)} className={toggleCls(onUpgrade)}>Upgrade</button>
           <button type="button" onClick={() => setOnHealth(!onHealth)} className={toggleCls(onHealth)}>Health</button>
           <button type="button" aria-pressed={onBookAnnounced} onClick={() => setOnBookAnnounced(!onBookAnnounced)} className={toggleCls(onBookAnnounced)}>{t('settings.notifications.onBookAnnouncedToggle')}</button>
+          <button type="button" aria-pressed={onRequestCreated} onClick={() => setOnRequestCreated(!onRequestCreated)} className={toggleCls(onRequestCreated)}>{t('settings.notifications.requestToggle')}</button>
         </div>
       </div>
       {saveError && (

@@ -17,6 +17,7 @@ import (
 	"github.com/vavallee/bindery/internal/auth"
 	"github.com/vavallee/bindery/internal/db"
 	"github.com/vavallee/bindery/internal/models"
+	"github.com/vavallee/bindery/internal/notifier"
 )
 
 // SettingRequestsMaxPendingPerUser caps how many requests one requester may
@@ -75,6 +76,58 @@ type RequestHandler struct {
 	settings *db.SettingsRepo
 	meta     requestMetadata
 	adder    requestAdder
+	notif    requestNotifier
+	users    *db.UserRepo
+}
+
+// requestNotifier sends the requestCreated event. *notifier.Notifier
+// satisfies it.
+type requestNotifier interface {
+	Send(ctx context.Context, eventType string, payload map[string]interface{})
+}
+
+// WithNotifier sends notifier.EventRequestCreated for every new request, with
+// the requester's username read from users.
+func (h *RequestHandler) WithNotifier(n requestNotifier, users *db.UserRepo) *RequestHandler {
+	h.notif = n
+	h.users = users
+	return h
+}
+
+// requestCreatedPayload is the requestCreated event payload (security review
+// item S3). Titles come from a metadata provider that anyone can edit, and a
+// username from whoever made the account, and the payload lands in a chat
+// channel: every text field has control and invisible characters stripped,
+// is capped, and has its at signs neutralised so it cannot mention a channel.
+func requestCreatedPayload(req models.LibraryRequest, username string) map[string]interface{} {
+	return map[string]interface{}{
+		"title":     neutraliseMentions(cleanRequestText(req.Title, requestTitleMaxRunes)),
+		"author":    neutraliseMentions(cleanRequestText(req.AuthorName, requestAuthorMaxRunes)),
+		"username":  neutraliseMentions(cleanRequestText(username, requestUsernameMaxRunes)),
+		"kind":      req.Kind,
+		"mediaType": req.MediaType,
+		"requestId": req.ID,
+	}
+}
+
+// notifyCreated sends the event without holding up the requester's response:
+// webhook targets can be slow, and the request is already stored.
+func (h *RequestHandler) notifyCreated(ctx context.Context, req models.LibraryRequest) {
+	if h.notif == nil {
+		return
+	}
+	username := ""
+	if h.users != nil {
+		if u, err := h.users.GetByID(ctx, req.OwnerUserID); err == nil && u != nil {
+			username = u.Username
+		}
+	}
+	payload := requestCreatedPayload(req, username)
+	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	go func() {
+		defer cancel()
+		h.notif.Send(sendCtx, notifier.EventRequestCreated, payload)
+	}()
 }
 
 // NewRequestHandler wires the requests API. adder is normally the
@@ -289,6 +342,7 @@ func (h *RequestHandler) Create(w http.ResponseWriter, r *http.Request) {
 			writeServerError(w, r, fmt.Errorf("reload reopened request: %w", err))
 			return
 		}
+		h.notifyCreated(ctx, *existing)
 		writeJSON(w, http.StatusCreated, toRequestResponse(*existing, false))
 		return
 	}
@@ -300,6 +354,7 @@ func (h *RequestHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, r, err)
 		return
 	}
+	h.notifyCreated(ctx, req.LibraryRequest)
 	writeJSON(w, http.StatusCreated, toRequestResponse(req.LibraryRequest, false))
 }
 

@@ -781,7 +781,8 @@ func main() {
 		func() calibre.Mode { return api.LoadCalibreMode(appCtx, settingsRepo) },
 	)
 	// Requester requests: approval adds through authorHandler's add cores.
-	requestHandler := api.NewRequestHandler(db.NewRequestRepo(database), bookRepo, authorRepo, settingsRepo, metaAgg, authorHandler)
+	requestHandler := api.NewRequestHandler(db.NewRequestRepo(database), bookRepo, authorRepo, settingsRepo, metaAgg, authorHandler).
+		WithNotifier(notif, userRepo)
 	recHandler := api.NewRecommendationHandler(recRepo, recEngine, authorRepo, bookRepo, sched).
 		WithFinder(seriesRepo, importScanner).
 		WithEditionHydration(editionRepo, metaAgg).

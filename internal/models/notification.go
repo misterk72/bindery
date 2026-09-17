@@ -25,4 +25,8 @@ type Notification struct {
 	Enabled         bool      `json:"enabled"`
 	CreatedAt       time.Time `json:"createdAt"`
 	UpdatedAt       time.Time `json:"updatedAt"`
+
+	// OnRequestCreated fires when a requester asks for a book or an author
+	// (migration 089). Off by default, like OnHealth.
+	OnRequestCreated bool `json:"onRequestCreated"`
 }

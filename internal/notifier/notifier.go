@@ -30,7 +30,8 @@ const (
 	// scheduled discovery job adds books to an author whose catalogue was
 	// already populated (#2236). The payload lists the books; the rule and
 	// the payload shape live in internal/api/author_discovery.go.
-	EventBookAnnounced = "bookAnnounced"
+	EventBookAnnounced  = "bookAnnounced"
+	EventRequestCreated = "requestCreated"
 )
 
 // normalizeEventPayload gives every event a consistent, human-readable shape so
@@ -119,6 +120,21 @@ func normalizeEventPayload(eventType string, payload map[string]interface{}) map
 			body = author
 		default:
 			body = msg
+		}
+	case EventRequestCreated:
+		// A requester asked for a book or an author. The API sanitises the
+		// text before it gets here (see requestCreatedPayload in
+		// internal/api), since titles come from an editable provider.
+		title = "Book Requested"
+		if kind, _ := payload["kind"].(string); kind == "author" {
+			title = "Author Requested"
+		}
+		body = item
+		if author != "" && author != item {
+			body = item + " · " + author
+		}
+		if user, _ := payload["username"].(string); user != "" {
+			body += " (requested by " + user + ")"
 		}
 	case "test":
 		title = "Bindery Test"
@@ -299,6 +315,8 @@ func (n *Notifier) matchesEvent(notif *models.Notification, eventType string) bo
 		return notif.OnUpgrade
 	case EventBookAnnounced:
 		return notif.OnBookAnnounced
+	case EventRequestCreated:
+		return notif.OnRequestCreated
 	}
 	return false
 }
