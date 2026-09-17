@@ -116,12 +116,15 @@ func (h *UserManagementHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, r, err)
 		return
 	}
-	if body.Role == "admin" {
-		if err := h.users.SetRole(r.Context(), u.ID, "admin"); err != nil {
+	// Create always inserts a user; any other valid role is applied after.
+	// An unrecognised role keeps the historical behaviour of creating a
+	// plain user rather than refusing.
+	if body.Role != auth.RoleUser && auth.ValidRole(body.Role) {
+		if err := h.users.SetRole(r.Context(), u.ID, body.Role); err != nil {
 			writeServerError(w, r, err)
 			return
 		}
-		u.Role = "admin"
+		u.Role = body.Role
 	}
 	w.WriteHeader(http.StatusCreated)
 	writeOK(w, toUserResponse(*u))

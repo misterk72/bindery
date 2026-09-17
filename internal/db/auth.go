@@ -7,13 +7,15 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/vavallee/bindery/internal/auth"
 )
 
 type User struct {
 	ID           int64
 	Username     string
 	PasswordHash string
-	Role         string // "admin" or "user"
+	Role         string // auth.RoleAdmin, auth.RoleUser or auth.RoleRequester
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 	// SessionEpoch is bumped every time the user's credentials change
@@ -30,7 +32,7 @@ type User struct {
 	DisplayName *string
 }
 
-func (u *User) IsAdmin() bool { return u.Role == "admin" }
+func (u *User) IsAdmin() bool { return u.Role == auth.RoleAdmin }
 
 type UserRepo struct {
 	db *sql.DB
@@ -119,7 +121,7 @@ func (r *UserRepo) LinkOIDCSubject(ctx context.Context, userID int64, issuer, su
 // GetOrCreateByOIDC resolves or creates a user identified by (issuer, sub).
 // On creation, username is derived from preferredUsername (falling back to sub),
 // email and displayName are stored as provided, and the user is assigned the
-// given role. role must be "admin" or "user"; any other value is coerced to
+// given role. role must satisfy auth.ValidRole; any other value is coerced to
 // "user" so a bad caller can never silently grant admin.
 func (r *UserRepo) GetOrCreateByOIDC(ctx context.Context, issuer, sub, preferredUsername, email, displayName, role string) (*User, error) {
 	u, err := r.GetByOIDC(ctx, issuer, sub)
@@ -129,8 +131,8 @@ func (r *UserRepo) GetOrCreateByOIDC(ctx context.Context, issuer, sub, preferred
 	if u != nil {
 		return u, nil
 	}
-	if role != "admin" && role != "user" {
-		role = "user"
+	if !auth.ValidRole(role) {
+		role = auth.RoleUser
 	}
 	username := preferredUsername
 	if username == "" {
@@ -194,10 +196,10 @@ func (r *UserRepo) CountAdmins(ctx context.Context) (int, error) {
 // demoting an OIDC user because they lost the admin group must not be blocked
 // by the "cannot demote the last admin" rule (that rule protects against
 // accidental lockout via the manual API, not against deliberate IdP-driven
-// role changes). role must be "admin" or "user".
+// role changes). role must satisfy auth.ValidRole.
 func (r *UserRepo) SetRoleUnguarded(ctx context.Context, id int64, role string) error {
-	if role != "admin" && role != "user" {
-		return fmt.Errorf("invalid role %q: must be admin or user", role)
+	if !auth.ValidRole(role) {
+		return fmt.Errorf("invalid role %q: must be admin, user or requester", role)
 	}
 	_, err := r.db.ExecContext(ctx,
 		"UPDATE users SET role=?, updated_at=? WHERE id=?", role, time.Now().UTC(), id)
@@ -520,13 +522,15 @@ func (r *UserRepo) Delete(ctx context.Context, id int64, plan UserDeletePlan) er
 	return tx.Commit()
 }
 
-// SetRole changes a user's role to "admin" or "user".
+// SetRole changes a user's role to admin, user or requester.
 //
-// When demoting an admin to "user", the last-admin guard (COUNT check + UPDATE)
-// runs inside a single transaction to prevent a TOCTOU race.
+// When demoting an admin to any other role, the last-admin guard (COUNT check +
+// UPDATE) runs inside a single transaction to prevent a TOCTOU race. The guard
+// keys on "anything but admin" rather than on one target role, so a demotion
+// to requester is refused exactly like a demotion to user.
 func (r *UserRepo) SetRole(ctx context.Context, id int64, role string) error {
-	if role != "admin" && role != "user" {
-		return fmt.Errorf("invalid role %q: must be admin or user", role)
+	if !auth.ValidRole(role) {
+		return fmt.Errorf("invalid role %q: must be admin, user or requester", role)
 	}
 
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -536,7 +540,7 @@ func (r *UserRepo) SetRole(ctx context.Context, id int64, role string) error {
 	defer tx.Rollback() //nolint:errcheck
 
 	// Guard: refuse to demote the last admin.
-	if role == "user" {
+	if role != auth.RoleAdmin {
 		var targetRole string
 		if err := tx.QueryRowContext(ctx, "SELECT role FROM users WHERE id=?", id).Scan(&targetRole); err != nil {
 			return fmt.Errorf("get user role: %w", err)

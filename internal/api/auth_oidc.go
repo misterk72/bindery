@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/vavallee/bindery/internal/auth"
 	"github.com/vavallee/bindery/internal/auth/oidc"
 	"github.com/vavallee/bindery/internal/db"
 	"github.com/vavallee/bindery/internal/httpsec"
@@ -91,7 +92,7 @@ type OIDCHandler struct {
 	// promote-first-OIDC-user fallback (issue #688) is armed.
 	localAuthEnabled bool
 	// oidcDefaultRole is the role assigned to a freshly auto-provisioned OIDC
-	// user (issue #688). "admin" or "user"; coerced to "user" if invalid.
+	// user (issue #688). Any auth.ValidRole value; coerced to "user" if invalid.
 	oidcDefaultRole string
 	// oidcAdminGroup, when non-empty, makes the IdP authoritative for the admin
 	// role: every login promotes/demotes the user based on group membership.
@@ -122,17 +123,17 @@ func (h *OIDCHandler) bgCtx() context.Context {
 	return context.Background()
 }
 
-func NewOIDCHandler(mgr *oidc.Manager, users *db.UserRepo, settings *db.SettingsRepo, auth *AuthHandler, resolveBase func(*http.Request) string) *OIDCHandler {
+func NewOIDCHandler(mgr *oidc.Manager, users *db.UserRepo, settings *db.SettingsRepo, authHandler *AuthHandler, resolveBase func(*http.Request) string) *OIDCHandler {
 	return &OIDCHandler{
 		mgr:               mgr,
 		users:             users,
 		settings:          settings,
-		auth:              auth,
+		auth:              authHandler,
 		resolveBase:       resolveBase,
 		oidcAutoProvision: true,
 		oidcEmailLink:     false,
 		localAuthEnabled:  true,
-		oidcDefaultRole:   "user",
+		oidcDefaultRole:   auth.RoleUser,
 		oidcGroupClaim:    "groups",
 	}
 }
@@ -199,11 +200,11 @@ func (h *OIDCHandler) WithLocalAuthEnabled(v bool) *OIDCHandler {
 }
 
 // WithOIDCDefaultRole sets the role assigned at OIDC auto-provision time
-// (issue #688). Valid values are "admin" and "user"; any other value falls
-// back to "user".
+// (issue #688). Valid values are "admin", "user" and "requester"; any other
+// value falls back to "user".
 func (h *OIDCHandler) WithOIDCDefaultRole(role string) *OIDCHandler {
-	if role != "admin" && role != "user" {
-		role = "user"
+	if !auth.ValidRole(role) {
+		role = auth.RoleUser
 	}
 	h.oidcDefaultRole = role
 	return h
@@ -509,8 +510,9 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 
 	// 4. Group-claim role sync (issue #688). When BINDERY_OIDC_ADMIN_GROUP is
 	// configured, the IdP is authoritative for the admin role on every login:
-	// promote when the group is present, demote when absent. This intentionally
-	// overrides any role set via PUT /api/v1/auth/users/{id}/role for OIDC users.
+	// promote when the group is present, demote an admin when it is absent.
+	// Membership decides admin and nothing else, so a non admin keeps the role
+	// an admin gave them (see groupSyncRole).
 	if h.oidcAdminGroup != "" {
 		groups := oidc.GroupClaimValues(claims.Raw, h.oidcGroupClaim)
 		// An absent claim is not a denial. Both the ID token and userinfo were
@@ -527,10 +529,7 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 				"admin_group", h.oidcAdminGroup,
 				"hint", "the IdP is not sending this claim in the id_token or userinfo; check the scope and claim mapping")
 		} else {
-			want := "user"
-			if oidc.ContainsGroup(groups, h.oidcAdminGroup) {
-				want = "admin"
-			}
+			want := groupSyncRole(user.Role, oidc.ContainsGroup(groups, h.oidcAdminGroup), h.oidcDefaultRole)
 			if user.Role != want {
 				if err := h.users.SetRoleUnguarded(ctx, user.ID, want); err != nil {
 					slog.Error("oidc: group-claim role sync failed", "error", err, "user_id", user.ID)
@@ -554,6 +553,30 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
+// groupSyncRole is the role a login's admin group membership leaves the user
+// with, when BINDERY_OIDC_ADMIN_GROUP is set and the group claim is present:
+//
+//   - in the admin group: admin;
+//   - not in it and currently admin: the configured default role, or user when
+//     that default is itself admin, so leaving the group always demotes;
+//   - otherwise: the current role, unchanged.
+//
+// The group grants admin and nothing below it. Before the requester role the
+// rule was "in the group gives admin, otherwise user", which would have turned
+// every requester into a full user at their next login.
+func groupSyncRole(current string, inAdminGroup bool, defaultRole string) string {
+	if inAdminGroup {
+		return auth.RoleAdmin
+	}
+	if current != auth.RoleAdmin {
+		return current
+	}
+	if defaultRole == auth.RoleAdmin || !auth.ValidRole(defaultRole) {
+		return auth.RoleUser
+	}
+	return defaultRole
+}
+
 // resolveProvisionRole decides the role for a brand-new OIDC user (issue #688).
 //
 // It starts from the configured BINDERY_OIDC_DEFAULT_ROLE. The
@@ -570,10 +593,10 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 // the fallback does not fire and the configured default role is used.
 func (h *OIDCHandler) resolveProvisionRole(ctx context.Context) string {
 	role := h.oidcDefaultRole
-	if role != "admin" && role != "user" {
-		role = "user"
+	if !auth.ValidRole(role) {
+		role = auth.RoleUser
 	}
-	if role == "admin" {
+	if role == auth.RoleAdmin {
 		return role // already admin; fallback would be a no-op
 	}
 	if h.localAuthEnabled {
@@ -601,7 +624,7 @@ func (h *OIDCHandler) resolveProvisionRole(ctx context.Context) string {
 		return role // another concurrent first-time login already claimed it
 	}
 	slog.Warn("oidc: promoting first OIDC user to admin — local auth disabled and no admin exists")
-	return "admin"
+	return auth.RoleAdmin
 }
 
 // TestDiscovery probes <issuer>/.well-known/openid-configuration and returns

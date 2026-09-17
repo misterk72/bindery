@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/vavallee/bindery/internal/auth"
 )
 
 // Config holds the application configuration loaded from environment variables.
@@ -36,7 +38,7 @@ type Config struct {
 	// OIDC role mapping (issue #688).
 	// OIDCDefaultRole is the role assigned to a freshly auto-provisioned OIDC
 	// user. Valid values: "user", "admin"; anything else falls back to "user".
-	OIDCDefaultRole string // BINDERY_OIDC_DEFAULT_ROLE (default "user")
+	OIDCDefaultRole string // BINDERY_OIDC_DEFAULT_ROLE: admin, user (default) or requester
 	// OIDCAdminGroup, when non-empty, makes the IdP authoritative for the admin
 	// role: on every OIDC login the user is promoted to admin if this group is
 	// present in the group claim, and demoted to user if absent.
@@ -181,17 +183,16 @@ func defaultDataDir(goos string, userConfigDir func() (string, error)) string {
 	return "/config"
 }
 
-// normalizeOIDCRole validates the BINDERY_OIDC_DEFAULT_ROLE value. Only
-// "user" and "admin" are accepted (case-insensitive); anything else — typos,
-// empty, "Admin ", "moderator" — falls back to "user" so a misconfigured env
-// var can never silently grant unintended privileges.
+// normalizeOIDCRole validates the BINDERY_OIDC_DEFAULT_ROLE value. The three
+// role names ("admin", "user", "requester") are accepted case-insensitively;
+// anything else (typos, empty, "moderator") falls back to "user" so a
+// misconfigured env var can never silently grant unintended privileges.
 func normalizeOIDCRole(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "admin":
-		return "admin"
-	default:
-		return "user"
+	role := strings.ToLower(strings.TrimSpace(raw))
+	if auth.ValidRole(role) {
+		return role
 	}
+	return auth.RoleUser
 }
 
 func envOr(key, fallback string) string {
