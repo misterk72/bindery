@@ -407,9 +407,12 @@ every notification that existed before it, so an upgrade sends nothing new
 until an admin turns it on.
 
 **`bookAnnounced`** is sent once per author run when a refresh (manual, bulk,
-Refresh all, relink) or scheduled discovery adds books to an author whose
-catalogue was already populated. The first population of a new author and the
-single book add never send it.
+Refresh all, relink) or scheduled discovery adds books to an author that had
+at least one book row, excluded ones included, before the run started. The
+first population of a new author, the refill of an author whose books were all
+deleted, and the single book add never send it. Two syncs of the same author
+that overlap run their writes one after the other, so a work is announced
+once.
 
 | Field | Meaning |
 |-------|---------|

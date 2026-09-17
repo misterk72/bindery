@@ -511,20 +511,32 @@ and each new book is monitored or not according to the author's monitor mode.
   Daily, Weekly or Monthly. The change applies within the hour, no restart.
 - **How it spreads out:** every hour Bindery checks a small share of your
   authors (at most 25), so a week's worth of checks is spread over the week
-  instead of arriving in one burst. Authors never checked go first.
+  instead of arriving in one burst. Authors never checked go first. One
+  author gets at most 10 minutes; one that takes longer is counted as checked
+  and waits for its next turn.
+- **Your refreshes come first:** while **Refresh all** or a bulk refresh of
+  selected authors is running, discovery stops until the next hour. A
+  **Refresh metadata** click on an author discovery is checking right then
+  says so; try again a minute later. A bulk refresh that reaches that author
+  waits for the check to finish, so nothing is added or announced twice.
+- **Changes since the hour started:** an author you unmonitor, delete or set
+  to *Don't add them* while a pass is running is skipped.
 - **Grabbing:** discovery only adds books. A new monitored book is picked up
   by the next wanted search, and only when **auto grab** is on.
 - **Opting an author out:** set their **Monitor new items** to *Don't add
   them*. Unmonitored authors and Calibre library authors are not checked
   either.
-- **Rate limits:** when Hardcover is your primary provider and it starts
-  refusing requests, the pass stops and the remaining authors wait for the
-  next hour.
+- **When a provider struggles:** when OpenLibrary or Hardcover refuses with a
+  rate limit, the pass stops and the remaining authors wait for the next
+  hour. When three authors in a row fail for any reason, the pass stops too
+  and those authors keep their place in the queue. A single author that keeps
+  failing is counted as checked, so it cannot hold up everyone else.
 - **Getting told:** a webhook with **New book** turned on receives one
   `bookAnnounced` message per author run that added books to an author you
   already had, listing up to ten titles. It is **off for every webhook until
   you turn it on**, existing ones included. The first fill of a newly added
-  author, and adding a single book, never send it.
+  author, refilling an author whose books you had all deleted, and adding a
+  single book never send it.
 
 **A risk worth knowing.** OpenLibrary can be edited by anyone. A false "new
 book" added to an author you follow becomes a Wanted, monitored book, and with
