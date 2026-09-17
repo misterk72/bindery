@@ -142,7 +142,7 @@ export default function AdoptionTable({ list, onSearchShortcut, onAddAuthor, onI
             const editorId = `adoption-editor-${item.id}`
             return (
               <Fragment key={entryKey(entry) + (entry.groupKey ?? '')}>
-                <AdoptionRow {...common} item={item} outcome={state.outcomes[item.id]} error={state.errors[item.id]}
+                <AdoptionRow {...common} item={item} outcome={state.outcomes[item.id]} error={state.errors[item.id]} note={state.notes[item.id]}
                   expanded={expanded} inGroup={Boolean(entry.groupKey)} editorId={editorId}
                   onOpen={showFiles => (expanded && !showFiles ? closeEditor(item) : openEditor(item, showFiles))}
                   onConfirm={() => confirm(item)} onIgnore={() => void list.ignore(item)} onUndo={() => void list.undo(item)}

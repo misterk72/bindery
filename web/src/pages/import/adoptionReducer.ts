@@ -29,12 +29,15 @@ export interface AdoptionListState {
   loadError: string
   outcomes: Record<number, Outcome>
   errors: Record<number, string>
+  // Quiet notes on rows, such as Undo keeping a book that is in use. Cleared
+  // with the next fetch, like outcomes.
+  notes: Record<number, 'keptBook'>
   expandedId: number | null
 }
 
 export const initialAdoptionState: AdoptionListState = {
   items: [], total: 0, facets: null, summary: null, scan: null,
-  loading: true, loaded: false, loadError: '', outcomes: {}, errors: {}, expandedId: null,
+  loading: true, loaded: false, loadError: '', outcomes: {}, errors: {}, notes: {}, expandedId: null,
 }
 
 export type AdoptionAction =
@@ -48,7 +51,7 @@ export type AdoptionAction =
   | { type: 'ignoreRequested'; id: number }
   | { type: 'ignoreSucceeded'; id: number }
   | { type: 'undoRequested'; id: number }
-  | { type: 'undoSucceeded'; id: number; item: AdoptionItem; restored: boolean }
+  | { type: 'undoSucceeded'; id: number; item: AdoptionItem; restored: boolean; keptBook: boolean }
   | { type: 'requestFailed'; id: number; error: string; revertTo: Outcome | null }
   | { type: 'scanStatus'; summary: AdoptionSummary; scan: AdoptionScanStatus }
 
@@ -79,6 +82,7 @@ export function adoptionReducer(state: AdoptionListState, action: AdoptionAction
         scan: response.scan,
         outcomes: {},
         errors: {},
+        notes: {},
         expandedId: response.items.some(i => i.id === state.expandedId) ? state.expandedId : null,
       }
     }
@@ -100,7 +104,10 @@ export function adoptionReducer(state: AdoptionListState, action: AdoptionAction
       return withOutcome(state, action.id, { kind: 'undoing' })
     case 'undoSucceeded': {
       const next = withOutcome(state, action.id, action.restored ? { kind: 'restored' } : null)
-      return { ...next, items: state.items.map(i => (i.id === action.id ? action.item : i)) }
+      const notes = { ...state.notes }
+      if (action.keptBook) notes[action.id] = 'keptBook'
+      else delete notes[action.id]
+      return { ...next, notes, items: state.items.map(i => (i.id === action.id ? action.item : i)) }
     }
     case 'requestFailed': {
       const next = withOutcome(state, action.id, action.revertTo)

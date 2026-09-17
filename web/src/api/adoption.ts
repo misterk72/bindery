@@ -49,6 +49,9 @@ export interface AdoptionItem {
   members: string[]
   firstSeenAt: string
   resolvedAt?: string
+  // Set when an outcome needs explaining, such as Undo keeping a book that
+  // has been used since the adoption added it.
+  message?: string
 }
 
 export interface AdoptionFacetCount {

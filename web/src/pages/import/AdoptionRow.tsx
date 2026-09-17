@@ -15,6 +15,7 @@ interface Props {
   item: AdoptionItem
   outcome: Outcome | undefined
   error: string | undefined
+  note: 'keptBook' | undefined
   expanded: boolean
   focusable: boolean
   inGroup: boolean
@@ -35,7 +36,7 @@ interface Props {
 // the middle cell into a quiet line and the action into Undo, until the next
 // fetch.
 const AdoptionRow = forwardRef<HTMLTableRowElement, Props>(function AdoptionRow(
-  { item, outcome, error, expanded, focusable, inGroup, editorId, onFocusRow, onKeyDown, onOpen, onConfirm, onIgnore, onUndo, onAddAuthor }, ref,
+  { item, outcome, error, note, expanded, focusable, inGroup, editorId, onFocusRow, onKeyDown, onOpen, onConfirm, onIgnore, onUndo, onAddAuthor }, ref,
 ) {
   const { t } = useTranslation()
   const name = unitDisplayName(item)
@@ -137,6 +138,11 @@ const AdoptionRow = forwardRef<HTMLTableRowElement, Props>(function AdoptionRow(
           <span className="sr-only">{shortHint(item, t)}</span>
         ) : (
           <p className="truncate text-xs text-fg-muted" title={tooltip}>{shortHint(item, t)}</p>
+        )}
+        {note === 'keptBook' && (
+          <p role="status" className="mt-0.5 truncate text-xs text-fg-muted" title={t('adoption.outcome.keptBook', 'Files removed. The book stayed because it is now in use.')}>
+            {t('adoption.outcome.keptBook', 'Files removed. The book stayed because it is now in use.')}
+          </p>
         )}
         {error && <p role="alert" className="mt-0.5 truncate text-xs text-red-600 dark:text-red-400" title={error}>{error}</p>}
       </td>

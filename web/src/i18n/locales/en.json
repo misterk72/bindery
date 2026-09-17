@@ -195,7 +195,8 @@
       "created": "Added to your library, unmonitored.",
       "ignored": "Ignored. Later scans keep it out of this list.",
       "undoing": "Undoing…",
-      "restored": "Back in Needs a decision."
+      "restored": "Back in Needs a decision.",
+      "keptBook": "Files removed. The book stayed because it is now in use."
     },
     "editor": {
       "heading": "Which book is {{name}}?",

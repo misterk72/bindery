@@ -107,6 +107,37 @@ describe('AdoptionView', () => {
     expect(await within(row).findByRole('button', { name: 'Confirm' })).toBeInTheDocument()
   })
 
+  it('says quietly when Undo kept a book that is now in use', async () => {
+    serve(listResponse([suggested]))
+    server.use(
+      http.post(apiUrl('/library/unmatched/1/adopt'), () => HttpResponse.json({ ...suggested, state: 'adopted', book: martian, bookCreated: true })),
+      http.post(apiUrl('/library/unmatched/1/undo'), () =>
+        HttpResponse.json({ ...suggested, message: 'The files are no longer adopted. The book it added stays in your library because it has been used since.' })),
+    )
+    const table = await renderView()
+    const row = within(table).getByRole('row', { name: 'The Martian' })
+    fireEvent.click(within(row).getByRole('button', { name: 'Confirm' }))
+    fireEvent.click(await within(row).findByRole('button', { name: 'Undo' }))
+
+    expect(await within(row).findByText('Files removed. The book stayed because it is now in use.')).toBeInTheDocument()
+    expect(within(row).getByRole('button', { name: 'Confirm' })).toBeInTheDocument()
+    expect(within(row).queryByRole('alert')).toBeNull()
+  })
+
+  it('says nothing extra when Undo removed the book too', async () => {
+    serve(listResponse([suggested]))
+    server.use(
+      http.post(apiUrl('/library/unmatched/1/adopt'), () => HttpResponse.json({ ...suggested, state: 'adopted', book: martian })),
+      http.post(apiUrl('/library/unmatched/1/undo'), () => HttpResponse.json(suggested)),
+    )
+    const table = await renderView()
+    const row = within(table).getByRole('row', { name: 'The Martian' })
+    fireEvent.click(within(row).getByRole('button', { name: 'Confirm' }))
+    fireEvent.click(await within(row).findByRole('button', { name: 'Undo' }))
+    await within(row).findByRole('button', { name: 'Confirm' })
+    expect(within(row).queryByText(/The book stayed/)).toBeNull()
+  })
+
   it('reverts an optimistic adopt and shows the error on the row', async () => {
     serve(listResponse([suggested]))
     server.use(
