@@ -34,6 +34,13 @@ type addBookParams struct {
 	// when the direct insert produced no row. With it set, the core looks
 	// for the row once instead of polling, since nothing it started could
 	// still create it. False keeps the handler's behaviour.
+	//
+	// That fallback is the only sync this core ever starts, so the skip
+	// removes exactly one author works call and the row it would create.
+	// It skips nothing else: the fallback is a single work run, which never
+	// refreshes the author profile (description, image), never relinks a
+	// Calibre author and never searches. SearchOnAdd is independent of it
+	// and still searches for the added book, so the two may be combined.
 	SkipCatalogueSync bool
 }
 

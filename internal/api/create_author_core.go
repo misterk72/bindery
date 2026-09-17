@@ -36,6 +36,16 @@ type createAuthorParams struct {
 	MediaType       string
 	// SkipCatalogueSync creates or relinks the author without starting its
 	// catalogue sync. False keeps the handler's behaviour.
+	//
+	// The sync is everything that happens to the author after the row is
+	// written, so skipping it skips all of: the author profile refresh
+	// (description, image, disambiguation, ratings), the Calibre relink, the
+	// secondary provider identities, the catalogue works fetch and its
+	// Audible supplement, every book row the sync would create along with
+	// the library file check for each, the sync summary shown on the author
+	// page, and the search on add, which only ever runs inside that sync.
+	// Because SearchOnAdd would silently do nothing, the core refuses the
+	// combination with errCreateAuthorSearchNeedsSync.
 	SkipCatalogueSync bool
 }
 
@@ -54,6 +64,11 @@ type createAuthorResult struct {
 var (
 	errCreateAuthorFieldsRequired         = errors.New("create author: foreignAuthorId and authorName required")
 	errCreateAuthorInvalidMonitorNewItems = errors.New("create author: invalid monitorNewItems")
+	// errCreateAuthorSearchNeedsSync refuses SearchOnAdd with
+	// SkipCatalogueSync. The search runs inside the catalogue sync, so the
+	// pair would accept a search request and never search. Only a non HTTP
+	// caller can set SkipCatalogueSync, so the handler never returns it.
+	errCreateAuthorSearchNeedsSync = errors.New("create author: searchOnAdd requires the catalogue sync")
 )
 
 var createAuthorErrorResponses = []struct {
@@ -62,6 +77,7 @@ var createAuthorErrorResponses = []struct {
 }{
 	{errCreateAuthorFieldsRequired, "foreignAuthorId and authorName required"},
 	{errCreateAuthorInvalidMonitorNewItems, "invalid monitorNewItems"},
+	{errCreateAuthorSearchNeedsSync, "searchOnAdd requires the catalogue sync"},
 }
 
 // createAuthorOptionError is an invalid monitorMode or monitorLatestCount.
@@ -125,6 +141,9 @@ func (h *AuthorHandler) writeCreateAuthorError(w http.ResponseWriter, r *http.Re
 func (h *AuthorHandler) createAuthorCore(ctx context.Context, req createAuthorParams) (createAuthorResult, error) {
 	if req.ForeignID == "" || req.Name == "" {
 		return createAuthorResult{}, errCreateAuthorFieldsRequired
+	}
+	if req.SearchOnAdd && req.SkipCatalogueSync {
+		return createAuthorResult{}, errCreateAuthorSearchNeedsSync
 	}
 	monitorMode, monitorLatestCount, err := h.resolveCreateMonitorOptions(ctx, req.MonitorMode, req.MonitorLatestCount)
 	monitorNewItems := models.DefaultAuthorMonitorNewItems

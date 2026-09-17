@@ -328,33 +328,140 @@ func TestCreateAuthorCore_SkipCatalogueSyncFiresNoFetch(t *testing.T) {
 	}
 }
 
-// The handler maps every sentinel to the status and body it answered with
-// before the split. This pins the table against the literal bodies.
+// errorResponseCase is one row of the error mapping tables below. body holds
+// the exact JSON object the handler must write, keys and values both.
+type errorResponseCase struct {
+	name   string
+	err    error
+	status int
+	body   map[string]any
+}
+
+func assertErrorResponses(t *testing.T, write func(http.ResponseWriter, *http.Request, error), cases []errorResponseCase) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			write(rec, httptest.NewRequest(http.MethodPost, "/api/v1/test", nil), tc.err)
+			if rec.Code != tc.status {
+				t.Errorf("status = %d, want %d", rec.Code, tc.status)
+			}
+			var got any
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("body %q: %v", rec.Body.String(), err)
+			}
+			// Round trip the expectation through JSON so numbers and nested
+			// structs compare in the same shape the handler's body decodes to.
+			wantRaw, err := json.Marshal(tc.body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var want any
+			if err := json.Unmarshal(wantRaw, &want); err != nil {
+				t.Fatal(err)
+			}
+			gotJSON, _ := json.Marshal(got)
+			wantJSON, _ := json.Marshal(want)
+			if string(gotJSON) != string(wantJSON) {
+				t.Errorf("body = %s\nwant   %s", gotJSON, wantJSON)
+			}
+		})
+	}
+}
+
+func errorBody(msg string) map[string]any { return map[string]any{"error": msg} }
+
+// Every error addBookCore can return, with the literal status and body the
+// AddBook handler answered with before the split. The bodies are spelled out
+// here rather than read from addBookErrorResponses, so a change to that table
+// fails this test.
 func TestWriteAddBookError_Statuses(t *testing.T) {
 	h := &AuthorHandler{}
-	cases := []struct {
-		err    error
-		status int
-		body   string
-	}{
-		{errAddBookForeignBookIDRequired, http.StatusBadRequest, "foreignBookId required"},
-		{errAddBookInvalidMediaType, http.StatusBadRequest, "mediaType must be 'ebook', 'audiobook', or 'both'"},
-		{errAddBookAuthorExists, http.StatusConflict, "author already exists"},
-		{errAddBookAuthorUnresolved, http.StatusInternalServerError, "could not resolve author"},
-		{errAddBookCancelled, http.StatusGatewayTimeout, "request cancelled"},
-		{errAddBookHeldByAnotherUser, http.StatusConflict, "book is held by another user"},
-		{&addBookLookupError{Err: errors.New("look up book metadata: boom")}, http.StatusBadGateway, "look up book metadata: boom"},
-		{errors.New("disk on fire"), http.StatusInternalServerError, "internal server error"},
+	existing := &models.Book{ID: 42, ForeignID: "OL1W", Title: "Kept"}
+	assertErrorResponses(t, h.writeAddBookError, []errorResponseCase{
+		{"foreign book id required", errAddBookForeignBookIDRequired, http.StatusBadRequest,
+			errorBody("foreignBookId required")},
+		{"invalid media type", errAddBookInvalidMediaType, http.StatusBadRequest,
+			errorBody("mediaType must be 'ebook', 'audiobook', or 'both'")},
+		{"author metadata unavailable", errAddBookAuthorMetadataUnavailable, http.StatusUnprocessableEntity,
+			errorBody("Author metadata unavailable for this result. Add the author manually first (Authors → Add Author by name), then try again.")},
+		{"author exists", errAddBookAuthorExists, http.StatusConflict,
+			errorBody("author already exists")},
+		{"author unresolved", errAddBookAuthorUnresolved, http.StatusInternalServerError,
+			errorBody("could not resolve author")},
+		{"cancelled", errAddBookCancelled, http.StatusGatewayTimeout,
+			errorBody("request cancelled")},
+		{"not found after sync", errAddBookNotFound, http.StatusNotFound,
+			errorBody("book not found after author sync — try again shortly")},
+		{"held by another user", errAddBookHeldByAnotherUser, http.StatusConflict,
+			errorBody("book is held by another user")},
+		{"book in library", &bookInLibraryError{Book: existing}, http.StatusConflict, map[string]any{
+			"error":          "book already in your library; change its format or monitoring from the book page",
+			"existingBookId": existing.ID,
+			"existingBook":   existing,
+		}},
+		{"primary provider unavailable", &primaryProviderUnavailableError{Primary: "hardcover"}, http.StatusServiceUnavailable,
+			errorBody("The primary metadata provider (hardcover) did not answer, so no record from another provider was used. Please try again once it responds.")},
+		{"book lookup failed", &addBookLookupError{Err: errors.New("look up book metadata: boom")}, http.StatusBadGateway,
+			errorBody("look up book metadata: boom")},
+		{"unknown error", errors.New("disk on fire"), http.StatusInternalServerError,
+			errorBody("internal server error")},
+	})
+	// A sentinel added to the table without a row above would go unchecked.
+	if len(addBookErrorResponses) != 8 {
+		t.Errorf("addBookErrorResponses has %d rows, this test covers 8; add a case for the new one", len(addBookErrorResponses))
 	}
-	for _, tc := range cases {
-		rec := httptest.NewRecorder()
-		h.writeAddBookError(rec, httptest.NewRequest(http.MethodPost, "/api/v1/author/book", nil), tc.err)
-		var got map[string]any
-		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-			t.Fatalf("%v: body %q: %v", tc.err, rec.Body.String(), err)
-		}
-		if rec.Code != tc.status || got["error"] != tc.body {
-			t.Errorf("%v: got %d %v, want %d %q", tc.err, rec.Code, got["error"], tc.status, tc.body)
-		}
+}
+
+// Every error createAuthorCore can return, with the literal status and body
+// the Create handler answered with before the split.
+func TestWriteCreateAuthorError_Statuses(t *testing.T) {
+	h := &AuthorHandler{}
+	canonical := &models.Author{ID: 7, ForeignID: "OL7A", Name: "Canon"}
+	assertErrorResponses(t, h.writeCreateAuthorError, []errorResponseCase{
+		{"fields required", errCreateAuthorFieldsRequired, http.StatusBadRequest,
+			errorBody("foreignAuthorId and authorName required")},
+		{"invalid monitor new items", errCreateAuthorInvalidMonitorNewItems, http.StatusBadRequest,
+			errorBody("invalid monitorNewItems")},
+		{"search needs sync", errCreateAuthorSearchNeedsSync, http.StatusBadRequest,
+			errorBody("searchOnAdd requires the catalogue sync")},
+		{"invalid monitor option", &createAuthorOptionError{Err: errors.New("monitorMode must be one of: all, future, latest, none")}, http.StatusBadRequest,
+			errorBody("monitorMode must be one of: all, future, latest, none")},
+		{"upstream lookup failed", &createAuthorLookupError{Err: errors.New("openlibrary: upstream 502")}, http.StatusBadGateway,
+			errorBody("openlibrary: upstream 502")},
+		{"conflict with canonical author", &authorConflictError{Canonical: canonical, Message: "author already exists"}, http.StatusConflict, map[string]any{
+			"error":             "author already exists",
+			"canonicalAuthorId": canonical.ID,
+			"canonicalAuthor":   canonical,
+		}},
+		{"conflict without canonical author", &authorConflictError{Message: "author name resolves ambiguously — merge manually"}, http.StatusConflict,
+			errorBody("author name resolves ambiguously — merge manually")},
+		{"unknown error", errors.New("disk on fire"), http.StatusInternalServerError,
+			errorBody("internal server error")},
+	})
+	if len(createAuthorErrorResponses) != 3 {
+		t.Errorf("createAuthorErrorResponses has %d rows, this test covers 3; add a case for the new one", len(createAuthorErrorResponses))
+	}
+}
+
+// SearchOnAdd only ever runs inside the catalogue sync, so asking for it with
+// the sync skipped is refused before anything is written.
+func TestCreateAuthorCore_SearchOnAddWithSkipIsRefused(t *testing.T) {
+	provider := wellsCreateProvider()
+	f := newCoreFixture(t, provider)
+	p := wellsCreateParams
+	p.SkipCatalogueSync = true
+	p.SearchOnAdd = true
+
+	_, err := f.h.createAuthorCore(context.Background(), p)
+	if !errors.Is(err, errCreateAuthorSearchNeedsSync) {
+		t.Fatalf("err = %v, want errCreateAuthorSearchNeedsSync", err)
+	}
+	f.drain(t)
+	if got, _ := f.authors.GetByForeignID(context.Background(), "OL39307A"); got != nil {
+		t.Errorf("refused call still created author %+v", got)
+	}
+	if n := provider.worksCalls.Load(); n != 0 {
+		t.Errorf("author works calls = %d, want 0", n)
 	}
 }
