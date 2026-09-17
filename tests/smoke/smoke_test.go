@@ -19,6 +19,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -152,6 +153,114 @@ func TestSmoke(t *testing.T) {
 			t.Errorf("/ did not return an HTML document — was the binary built without web assets?\ngot: %s", truncate(body, 200))
 		}
 	})
+
+	// The requester allow list can only be proven against the real router,
+	// which main() builds inline: sign in as a requester and try routes on
+	// both API trees and OPDS.
+	t.Run("requester is held to the allow list", func(t *testing.T) {
+		smokeRequester(t, base)
+	})
+}
+
+// smokeRequester creates an admin through first run setup, a requester
+// through the admin API, signs the requester in with a cookie, and checks a
+// grab, a library read, the Arr queue and OPDS are refused while the
+// requester's own routes answer.
+func smokeRequester(t *testing.T, base string) {
+	t.Helper()
+	post := func(url string, body any) *http.Response {
+		b, _ := json.Marshal(body)
+		req := mustReq(t, http.MethodPost, url, bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		return do(t, req)
+	}
+	resp := post(base+"/api/v1/auth/setup", map[string]string{"username": "smoke-admin", "password": "smoke-admin-password"})
+	resp.Body.Close()
+	resp = post(base+"/api/v1/auth/users", map[string]string{"username": "smoke-reader", "password": "smoke-reader-password", "role": "requester"})
+	if resp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("create requester: %d %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Jar: jar, Timeout: httpTimeout}
+	send := func(method, url string, body []byte, csrf string) *http.Response {
+		req, err := http.NewRequest(method, url, bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Requested-With", "bindery-ui")
+		if csrf != "" {
+			req.Header.Set("X-CSRF-Token", csrf)
+		}
+		r, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, url, err)
+		}
+		return r
+	}
+	login, _ := json.Marshal(map[string]any{"username": "smoke-reader", "password": "smoke-reader-password"})
+	resp = send(http.MethodPost, base+"/api/v1/auth/login", login, "")
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("requester login: %d %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+	resp = send(http.MethodGet, base+"/api/v1/auth/csrf", nil, "")
+	var tok struct {
+		CSRFToken string `json:"csrfToken"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&tok)
+	resp.Body.Close()
+	if tok.CSRFToken == "" {
+		t.Fatal("no CSRF token for the requester session")
+	}
+
+	for _, c := range []struct {
+		method, path string
+		body         []byte
+	}{
+		{http.MethodPost, "/api/v1/queue/grab", []byte(`{}`)},
+		{http.MethodGet, "/api/v1/author", nil},
+		{http.MethodGet, "/api/v1/book/1/file", nil},
+		{http.MethodGet, "/api/v1/setting", nil},
+		{http.MethodGet, "/api/queue", nil},
+		{http.MethodGet, "/api/v1//queue", nil},
+		{http.MethodGet, "/api/v1/book/1%2Ffile", nil},
+	} {
+		r := send(c.method, base+c.path, c.body, tok.CSRFToken)
+		b, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		if r.StatusCode != http.StatusForbidden {
+			t.Errorf("requester %s %s: %d %s, want 403", c.method, c.path, r.StatusCode, truncate(b, 200))
+		}
+	}
+	for _, path := range []string{"/api/v1/requests", "/api/v1/requests/library", "/api/v1/auth/status"} {
+		r := send(http.MethodGet, base+path, nil, "")
+		r.Body.Close()
+		if r.StatusCode != http.StatusOK {
+			t.Errorf("requester GET %s: %d, want 200", path, r.StatusCode)
+		}
+	}
+
+	// OPDS by Basic credentials, which is how a reading app signs in.
+	req, _ := http.NewRequest(http.MethodGet, base+"/opds/", nil)
+	req.SetBasicAuth("smoke-reader", "smoke-reader-password")
+	r, err := (&http.Client{Timeout: httpTimeout}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if r.StatusCode != http.StatusForbidden {
+		t.Errorf("requester OPDS: %d, want 403", r.StatusCode)
+	}
 }
 
 // resolveBinary locates the bindery binary the test will drive. Search order:
