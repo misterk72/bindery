@@ -119,7 +119,7 @@ func decodeRequest(t *testing.T, rec *httptest.ResponseRecorder) requestResponse
 	return out
 }
 
-func errorBody(rec *httptest.ResponseRecorder) string {
+func requestErrorBody(rec *httptest.ResponseRecorder) string {
 	var m map[string]string
 	_ = json.Unmarshal(rec.Body.Bytes(), &m)
 	return m["error"]
@@ -205,8 +205,8 @@ func TestRequestsCreate_Conflicts(t *testing.T) {
 		t.Fatalf("first: %d %s", rec.Code, rec.Body.String())
 	}
 	rec := f.create(t, f.requester, `{"kind":"book","foreignId":"OL27482W"}`)
-	if rec.Code != http.StatusConflict || !strings.Contains(errorBody(rec), "already requested") {
-		t.Fatalf("repeat: %d %q, want 409 already requested", rec.Code, errorBody(rec))
+	if rec.Code != http.StatusConflict || !strings.Contains(requestErrorBody(rec), "already requested") {
+		t.Fatalf("repeat: %d %q, want 409 already requested", rec.Code, requestErrorBody(rec))
 	}
 	// Another requester can ask for the same book.
 	if rec := f.create(t, f.other, `{"kind":"book","foreignId":"OL27482W"}`); rec.Code != http.StatusCreated {
@@ -220,12 +220,12 @@ func TestRequestsCreate_Conflicts(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec = f.create(t, f.requester, `{"kind":"book","foreignId":"OL-INLIB"}`)
-	if rec.Code != http.StatusConflict || errorBody(rec) != "This book is already in the library." {
-		t.Fatalf("book in library: %d %q", rec.Code, errorBody(rec))
+	if rec.Code != http.StatusConflict || requestErrorBody(rec) != "This book is already in the library." {
+		t.Fatalf("book in library: %d %q", rec.Code, requestErrorBody(rec))
 	}
 	rec = f.create(t, f.requester, `{"kind":"author","foreignId":"OL39307A"}`)
-	if rec.Code != http.StatusConflict || errorBody(rec) != "This author is already in the library." {
-		t.Fatalf("author in library: %d %q", rec.Code, errorBody(rec))
+	if rec.Code != http.StatusConflict || requestErrorBody(rec) != "This author is already in the library." {
+		t.Fatalf("author in library: %d %q", rec.Code, requestErrorBody(rec))
 	}
 
 	// Declined earlier.
@@ -234,8 +234,8 @@ func TestRequestsCreate_Conflicts(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec = f.create(t, f.other, `{"kind":"book","foreignId":"OL27482W"}`)
-	if rec.Code != http.StatusConflict || !strings.Contains(errorBody(rec), "declined") {
-		t.Fatalf("after decline: %d %q", rec.Code, errorBody(rec))
+	if rec.Code != http.StatusConflict || !strings.Contains(requestErrorBody(rec), "declined") {
+		t.Fatalf("after decline: %d %q", rec.Code, requestErrorBody(rec))
 	}
 }
 
@@ -377,12 +377,13 @@ func TestRequestsApprove_AuthorRequestUsesAdminChoices(t *testing.T) {
 
 // fakeAdder records what an approval asked for and can hold the call open.
 type fakeAdder struct {
-	calls   atomic.Int32
-	hold    time.Duration
-	err     error
-	lastCtx context.Context
-	mu      sync.Mutex
-	last    addBookParams
+	calls      atomic.Int32
+	hold       time.Duration
+	err        error
+	lastCtx    context.Context
+	mu         sync.Mutex
+	last       addBookParams
+	lastAuthor createAuthorParams
 }
 
 func (a *fakeAdder) addBookCore(ctx context.Context, req addBookParams) (addBookResult, error) {
@@ -400,6 +401,9 @@ func (a *fakeAdder) addBookCore(ctx context.Context, req addBookParams) (addBook
 
 func (a *fakeAdder) createAuthorCore(ctx context.Context, req createAuthorParams) (createAuthorResult, error) {
 	a.calls.Add(1)
+	a.mu.Lock()
+	a.lastCtx, a.lastAuthor = ctx, req
+	a.mu.Unlock()
 	time.Sleep(a.hold)
 	if a.err != nil {
 		return createAuthorResult{}, a.err
@@ -504,8 +508,8 @@ func TestRequestsApprove_RevalidatesPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := f.approve(f.admin, created.ID, `{}`)
-	if rec.Code != http.StatusConflict || errorBody(rec) != "This book is already in the library." {
-		t.Fatalf("approve after it reached the library: %d %q", rec.Code, errorBody(rec))
+	if rec.Code != http.StatusConflict || requestErrorBody(rec) != "This book is already in the library." {
+		t.Fatalf("approve after it reached the library: %d %q", rec.Code, requestErrorBody(rec))
 	}
 	if row, _ := f.requests.GetByID(ctx, created.ID); row.Status != models.RequestStatusPending {
 		t.Fatalf("status after refused approval = %q, want pending", row.Status)
@@ -541,6 +545,48 @@ func TestRequestsDecline(t *testing.T) {
 	if rec := f.approve(f.admin, created.ID, `{}`); rec.Code != http.StatusConflict {
 		t.Fatalf("approve after decline: %d, want 409", rec.Code)
 	}
+}
+
+// TestRequestsApprove_AuthorSearchOnAddKeepsTheSync: search on add runs inside
+// the author's catalogue sync, and createAuthorCore refuses SearchOnAdd with
+// SkipCatalogueSync. Approval must never send that pair, with the real core
+// (which would answer errCreateAuthorSearchNeedsSync) and as recorded by the
+// fake; and if the sentinel ever surfaces, the admin gets a sentence.
+func TestRequestsApprove_AuthorSearchOnAddKeepsTheSync(t *testing.T) {
+	t.Run("real core", func(t *testing.T) {
+		f := newRequestsFixture(t, wellsRequestStub(), nil)
+		created := decodeRequest(t, f.create(t, f.requester, `{"kind":"author","foreignId":"OL39307A"}`))
+		rec := f.approve(f.admin, created.ID, `{"searchOnAdd":true}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("approve with search on add: %d %s", rec.Code, rec.Body.String())
+		}
+	})
+	t.Run("params", func(t *testing.T) {
+		adder := &fakeAdder{}
+		f := newRequestsFixture(t, wellsRequestStub(), adder)
+		created := decodeRequest(t, f.create(t, f.requester, `{"kind":"author","foreignId":"OL39307A"}`))
+		if rec := f.approve(f.admin, created.ID, `{"searchOnAdd":true}`); rec.Code != http.StatusOK {
+			t.Fatalf("approve: %d %s", rec.Code, rec.Body.String())
+		}
+		adder.mu.Lock()
+		p := adder.lastAuthor
+		adder.mu.Unlock()
+		if !p.SearchOnAdd || p.SkipCatalogueSync {
+			t.Fatalf("author params SearchOnAdd=%v SkipCatalogueSync=%v, want search with the sync", p.SearchOnAdd, p.SkipCatalogueSync)
+		}
+	})
+	t.Run("sentinel is explained", func(t *testing.T) {
+		adder := &fakeAdder{err: errCreateAuthorSearchNeedsSync}
+		f := newRequestsFixture(t, wellsRequestStub(), adder)
+		created := decodeRequest(t, f.create(t, f.requester, `{"kind":"author","foreignId":"OL39307A"}`))
+		rec := f.approve(f.admin, created.ID, `{"searchOnAdd":true}`)
+		if rec.Code != http.StatusInternalServerError || !strings.Contains(requestErrorBody(rec), "Search on add needs") {
+			t.Fatalf("sentinel: %d %q, want 500 with the admin sentence", rec.Code, requestErrorBody(rec))
+		}
+		if row, _ := f.requests.GetByID(context.Background(), created.ID); row.Status != models.RequestStatusPending {
+			t.Fatalf("status after the sentinel = %q, want pending", row.Status)
+		}
+	})
 }
 
 // requesterLibraryBookFields is the S1 allow list. Adding a field to

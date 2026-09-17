@@ -625,6 +625,9 @@ func (h *RequestHandler) runApproval(ctx context.Context, req *models.LibraryReq
 			MonitorNewItems:       body.MonitorNewItems,
 			SearchOnAdd:           searchOnAdd,
 			MediaType:             mediaType,
+			// The catalogue sync always runs: search on add happens inside
+			// it, and the core refuses search on add without it.
+			SkipCatalogueSync: false,
 		})
 		if aerr != nil {
 			status, msg, err := approvalErrorResponse(aerr)
@@ -660,6 +663,12 @@ func approvalErrorResponse(err error) (int, string, error) {
 	var option *createAuthorOptionError
 	if errors.As(err, &option) {
 		return http.StatusBadRequest, option.Err.Error(), nil
+	}
+	// runApproval never skips the catalogue sync, so this cannot happen
+	// today. If a later change skips it, say what went wrong in words an
+	// admin can act on rather than the core's internal sentence.
+	if errors.Is(err, errCreateAuthorSearchNeedsSync) {
+		return http.StatusInternalServerError, "Search on add needs the author's catalogue sync, and this approval skipped it. Approve again without search on add, then search from the author page.", nil
 	}
 	for _, resp := range addBookErrorResponses {
 		if errors.Is(err, resp.err) {
