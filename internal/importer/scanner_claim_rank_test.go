@@ -137,8 +137,8 @@ func TestScanLibrary_EbookContainerOutranksTextSidecar(t *testing.T) {
 			// The passed-over sidecar is the container's companion, not an
 			// orphan the user has to go and fix, so it must not show up in the
 			// Unmatched list either.
-			for _, f := range readUnmatchedFiles(t, ctx, settings) {
-				if filepath.Clean(f.Path) == filepath.Clean(sidecar) {
+			for _, f := range readUnmatchedFiles(t, ctx, s) {
+				if filepath.Clean(f.UnitPath) == filepath.Clean(sidecar) {
 					t.Errorf("sidecar reported unmatched with reason %q; it is the epub's companion", f.Reason)
 				}
 			}

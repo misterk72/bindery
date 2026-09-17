@@ -62,6 +62,7 @@ func unmatchedFixture(t *testing.T) (s *Scanner, downloads *db.DownloadRepo, boo
 	libraryDir = t.TempDir()
 	s = NewScanner(downloads, db.NewDownloadClientRepo(database), books, authors, db.NewHistoryRepo(database), libraryDir, "", "", "", "")
 	s.WithSettings(settings)
+	s.WithUnmatchedUnits(db.NewUnmatchedUnitRepo(database))
 	if err := settings.Set(ctx, "import.mode", "copy"); err != nil {
 		t.Fatal(err)
 	}

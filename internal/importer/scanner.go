@@ -101,6 +101,9 @@ type Scanner struct {
 	absLib               absNotifier
 	absLibraryIDsFn      func() []string
 	notif                eventNotifier
+	// unmatchedUnits stores the books a library scan could not match, for
+	// library adoption. Nil stores nothing (see WithUnmatchedUnits).
+	unmatchedUnits UnmatchedUnitStore
 
 	// jobs, when set, tracks the detached scan goroutine launched by StartScan
 	// so process shutdown can cancel and drain it before the database closes
@@ -2852,9 +2855,13 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 		return
 	}
 
+	scanStartedAt := time.Now()
+
 	// walkDir appends all book files found under root to foundFiles, tracking
 	// which root each file belongs to so the author-inference fallback can
-	// strip the correct prefix.
+	// strip the correct prefix. The size and mode the walk already has are
+	// kept for the unmatched units (P2).
+	walked := make(map[string]walkedFile)
 	walkDir := func(root string) []string {
 		var files []string
 		if err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
@@ -2863,6 +2870,7 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 			}
 			if IsBookFile(path) {
 				files = append(files, path)
+				walked[path] = walkedFile{size: info.Size(), mode: info.Mode()}
 			}
 			return nil
 		}); err != nil {
@@ -2881,7 +2889,7 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 	slog.Info("library scan found files", "paths", []string{s.libraryDir, s.audiobookDir}, "count", len(foundFiles))
 
 	if len(foundFiles) == 0 {
-		s.writeScanResult(ctx, len(foundFiles), 0, 0, 0, 0, nil)
+		s.writeScanResult(ctx, len(foundFiles), 0, 0, 0, 0, s.unmatchedUnitCounts(ctx, false))
 		return
 	}
 
@@ -3130,7 +3138,7 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 		return set, parsedAuthor
 	}
 
-	var unmatchedFiles []unmatchedFile
+	var unmatchedFiles unmatchedCollector
 	var reconciled, unmatched, alreadyTracked, tagReadFailed int
 
 	// tryReconcileTitle attempts to reconcile path to the given wanted book via
@@ -3244,7 +3252,7 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 		// every epub sitting next to an attached audiobook from the scan
 		// (#1957) — the mirror image of the one-format-per-pass claim below.
 		if trackedPaths[cleanPath] ||
-			(detectedFmt == models.MediaTypeAudiobook && trackedPaths[filepath.Clean(filepath.Dir(cleanPath))]) {
+			(detectedFmt == models.MediaTypeAudiobook && audioTrackedByFolder(trackedPaths, cleanPath)) {
 			alreadyTracked++
 			continue
 		}
@@ -3460,15 +3468,10 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 			slog.Debug("library scan: unmatched file", "path", path, "parsedTitle", parsed.Title,
 				"parsedAuthor", parsed.Author, "matchAuthor", matchAuthor, "reason", reason)
 			unmatched++
-			// Collect up to 1000 unmatched entries for UI display
-			if len(unmatchedFiles) < 1000 {
-				unmatchedFiles = append(unmatchedFiles, unmatchedFile{
-					Path:         path,
-					ParsedTitle:  parsed.Title,
-					ParsedAuthor: parsed.Author,
-					Reason:       reason,
-				})
-			}
+			unmatchedFiles.add(unmatchedScanFile{
+				path: path, format: detectedFmt, size: walked[path].size, mode: walked[path].mode,
+				title: parsed.Title, author: parsed.Author, layoutAuthor: layoutAuthor, reason: reason,
+			})
 		}
 	}
 
@@ -3488,7 +3491,15 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 	slog.Info("library scan complete", "paths", scanRoots, "bookFiles", len(foundFiles),
 		"reconciled", reconciled, "unmatched", unmatched, "tagReadFailed", tagReadFailed)
 
-	s.writeScanResult(ctx, len(foundFiles), reconciled, unmatched, alreadyTracked, tagReadFailed, unmatchedFiles)
+	// Suggestions come from the catalogue already in memory, ranked once per
+	// unit rather than per file.
+	units := s.recordUnmatchedUnits(ctx, &unmatchedFiles, scanRoots, scanStartedAt,
+		func(title, author, layoutAuthor string) []db.UnmatchedCandidate {
+			authorSet, _ := resolveAuthors(author, layoutAuthor)
+			return rankCandidates(normalizeTitle(title), wantedBooks, booksByAuthor, authorSet)
+		})
+
+	s.writeScanResult(ctx, len(foundFiles), reconciled, unmatched, alreadyTracked, tagReadFailed, units)
 }
 
 // refreshStaleRenderedPaths re-derives the file path shown for books that
@@ -3640,22 +3651,12 @@ const (
 	unmatchedReasonNoTitleParsed = "no_title_parsed"
 )
 
-// unmatchedFile represents a file that could not be reconciled during library scan.
-type unmatchedFile struct {
-	Path         string `json:"path"`
-	ParsedTitle  string `json:"parsed_title"`
-	ParsedAuthor string `json:"parsed_author"`
-	// Reason is one of the unmatchedReason* constants. Omitted when empty so
-	// results written before this field existed keep parsing unchanged.
-	Reason string `json:"reason,omitempty"`
-}
-
 // writeScanError persists a failed-scan result so the UI reflects the failure
 // instead of a stale prior scan (#965). It reuses the same "library.lastScan"
 // shape as a normal scan — zero counts plus a non-empty scan_error message the
 // frontend renders the same way as the other scan-outcome warnings.
 func (s *Scanner) writeScanError(ctx context.Context, message string) {
-	s.writeScanResultWithError(ctx, 0, 0, 0, 0, 0, nil, message)
+	s.writeScanResultWithError(ctx, 0, 0, 0, 0, 0, s.unmatchedUnitCounts(ctx, false), message)
 }
 
 // writeScanResult persists the scan summary to the settings table under
@@ -3664,30 +3665,16 @@ func (s *Scanner) writeScanError(ctx context.Context, message string) {
 // api.SettingLibraryLastScan on the read side, where the settings endpoints
 // reserve it for admins because the blob carries absolute paths (#2361). Keep
 // the two spellings in sync.
-func (s *Scanner) writeScanResult(ctx context.Context, filesFound, reconciled, unmatched, alreadyTracked, tagReadFailed int, unmatchedFiles []unmatchedFile) {
-	s.writeScanResultWithError(ctx, filesFound, reconciled, unmatched, alreadyTracked, tagReadFailed, unmatchedFiles, "")
+func (s *Scanner) writeScanResult(ctx context.Context, filesFound, reconciled, unmatched, alreadyTracked, tagReadFailed int, units unitCounts) {
+	s.writeScanResultWithError(ctx, filesFound, reconciled, unmatched, alreadyTracked, tagReadFailed, units, "")
 }
 
 // writeScanResultWithError is the shared writer for both successful scans and
 // early-return failures. scanError is empty for a normal scan and a
 // user-facing message when the scan could not complete (#965).
-func (s *Scanner) writeScanResultWithError(ctx context.Context, filesFound, reconciled, unmatched, alreadyTracked, tagReadFailed int, unmatchedFiles []unmatchedFile, scanError string) {
+func (s *Scanner) writeScanResultWithError(ctx context.Context, filesFound, reconciled, unmatched, alreadyTracked, tagReadFailed int, units unitCounts, scanError string) {
 	if s.settings == nil {
 		return
-	}
-
-	// Marshal unmatched files to JSON
-	var unmatchedJSON string
-	if len(unmatchedFiles) > 0 {
-		bytes, err := json.Marshal(unmatchedFiles)
-		if err != nil {
-			slog.Warn("library scan: failed to marshal unmatched files", "error", err)
-			unmatchedJSON = "[]"
-		} else {
-			unmatchedJSON = string(bytes)
-		}
-	} else {
-		unmatchedJSON = "[]"
 	}
 
 	// Surface the resolved roots that were actually walked so the UI can tell
@@ -3719,11 +3706,15 @@ func (s *Scanner) writeScanResultWithError(ctx context.Context, filesFound, reco
 		}
 	}
 
+	// The unmatched files now live in unmatched_units, one row per book, and
+	// the blob carries only their counts. unmatched_files stays as an empty
+	// list so a web bundle cached from before library adoption still parses
+	// the result. Added 2026-09 for v1.37; remove it in the release after.
 	payload := fmt.Sprintf(
-		`{"ran_at":%q,"files_found":%d,"reconciled":%d,"unmatched":%d,"already_tracked":%d,"tag_read_failed":%d,"unmatched_files":%s,"library_dir":%q,"audiobook_dir":%q,"scanned_paths":%s,"no_files_found":%t,"scan_error":%s}`,
+		`{"ran_at":%q,"files_found":%d,"reconciled":%d,"unmatched":%d,"already_tracked":%d,"tag_read_failed":%d,"unmatched_files":[],"unmatched_units":%d,"ignored_units":%d,"units_truncated":%t,"library_dir":%q,"audiobook_dir":%q,"scanned_paths":%s,"no_files_found":%t,"scan_error":%s}`,
 		time.Now().UTC().Format(time.RFC3339),
 		filesFound, reconciled, unmatched, alreadyTracked, tagReadFailed,
-		unmatchedJSON,
+		units.pending, units.ignored, units.truncated,
 		s.libraryDir, s.audiobookDir, pathsJSON, noFilesFound, scanErrorJSON,
 	)
 	if err := s.settings.Set(ctx, "library.lastScan", payload); err != nil {
