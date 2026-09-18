@@ -39,21 +39,32 @@ const autoGrabDisabledCode = "auto_grab_disabled"
 const autoGrabDisabledMessage = "automatic grabbing is disabled, so no search was run. Turn on Settings > General > Enable automatic grabbing, or search this book on its own page to pick a release by hand."
 
 // refuseSearchWhenAutoGrabDisabled reports whether a user initiated bulk
-// search must be refused outright, and logs one line naming the path when it
-// is. One line per request, not one per book: the point is to explain a
-// refusal a user is looking at, not to reproduce the scheduler's per book
-// INFO line.
+// search must be refused outright. It reads the same key, with the same fail
+// open default, as every other caller (autoGrabEnabled), so a handler can
+// never refuse a search the scheduler would have run.
 //
-// It reads the same key, with the same fail open default, as every other
-// caller (autoGrabEnabled), so a handler can never refuse a search the
-// scheduler would have run.
-func refuseSearchWhenAutoGrabDisabled(ctx context.Context, settings *db.SettingsRepo, path string, ids int) bool {
-	if autoGrabEnabled(ctx, settings) {
-		return false
+// Deliberately silent: the log line is emitted by logSearchRefusal after the
+// per ID ownership filter has run, so ids the caller does not own produce no
+// line. Logging the requested id count here instead would let a caller post a
+// list of arbitrary ids and write WARN lines about resources that are not
+// theirs, which is log noise whose volume the caller gets to choose. Nothing
+// leaks back either way; this just keeps the log about work the caller could
+// actually have done.
+func refuseSearchWhenAutoGrabDisabled(ctx context.Context, settings *db.SettingsRepo) bool {
+	return !autoGrabEnabled(ctx, settings)
+}
+
+// logSearchRefusal emits one line for a request whose search was refused,
+// counting only the ids that survived the ownership filter. One line per
+// request, not one per book: the point is to explain a refusal a user is
+// looking at, not to reproduce the scheduler's per book INFO line. A request
+// that refused nothing the caller owns logs nothing.
+func logSearchRefusal(path string, refused int) {
+	if refused <= 0 {
+		return
 	}
 	slog.Warn("manual search refused: automatic grabbing is disabled globally",
-		"path", path, "ids", ids, "setting", "autoGrab.enabled", "issue", 2669)
-	return true
+		"path", path, "refused", refused, "setting", "autoGrab.enabled", "issue", 2669)
 }
 
 // autoGrabDisabledResult is the per ID entry a refused search reports.

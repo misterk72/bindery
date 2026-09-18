@@ -1,10 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -227,4 +230,59 @@ func TestBulkSearch_NoSettingsRepo_FailsOpen(t *testing.T) {
 		t.Fatalf("result = %+v with no settings repo, want ok:true (fail open)", got)
 	}
 	f.searcher.waitForCall(t, 2*time.Second)
+}
+
+// captureLogs swaps the default slog logger for one writing into a buffer, and
+// restores it when the test ends.
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf
+}
+
+// The refusal log line counts ids that survived the ownership filter, not the
+// ids the request asked for. Otherwise a caller could post a list of arbitrary
+// ids with the switch off and choose how many WARN lines the operator's log
+// gets, about resources that are not theirs. Nothing leaked back to the caller
+// either way, so this is about log noise only.
+func TestBulkSearch_RefusalLog_CountsOnlyOwnedIDs(t *testing.T) {
+	f := newRefusalFixture(t, "false")
+	buf := captureLogs(t)
+
+	// Ids that do not resolve to a book this caller may act on: the per id
+	// answer is the opaque not-found, and there is nothing to refuse.
+	rec := postBulk(t, f.handler.WantedBulk, `{"ids":[9001,9002,9003],"action":"search"}`)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	resp := decodeBulk(t, rec)
+	for _, id := range []int64{9001, 9002, 9003} {
+		if got := resp.Results[fmt.Sprintf("%d", id)]; got.Error != errBulkBookNotOwned.Error() {
+			t.Fatalf("id %d result = %+v, want the opaque not-found", id, got)
+		}
+	}
+	if strings.Contains(buf.String(), "manual search refused") {
+		t.Fatalf("a request that owned none of its ids logged a refusal:\n%s", buf.String())
+	}
+}
+
+// The paired positive: a request that does refuse something the caller owns
+// still logs exactly one line, carrying the surviving count.
+func TestBulkSearch_RefusalLog_OneLinePerRequest(t *testing.T) {
+	f := newRefusalFixture(t, "false")
+	buf := captureLogs(t)
+	ids := f.bookIDs()
+
+	postBulk(t, f.handler.WantedBulk, fmt.Sprintf(`{"ids":[%d,%d,9001],"action":"search"}`, ids[0], ids[1]))
+
+	out := buf.String()
+	if n := strings.Count(out, "manual search refused"); n != 1 {
+		t.Fatalf("refusal log lines = %d, want exactly 1 per request:\n%s", n, out)
+	}
+	if !strings.Contains(out, "refused=2") {
+		t.Fatalf("refusal line does not report the surviving count (want refused=2):\n%s", out)
+	}
 }

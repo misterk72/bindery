@@ -3,6 +3,8 @@ import { Link, useNavigate } from 'react-router'
 import { useTranslation } from 'react-i18next'
 import { useConfirmDialog } from '../components/useConfirmDialog'
 import ViewToggle from '../components/ViewToggle'
+import BulkNotice from '../components/BulkNotice'
+import { isAutoGrabRefusal } from '../util/autoGrabRefusal'
 import { bookStatusBadge } from '../components/bookStatus'
 import FilterPopover, { FilterGroup } from '../components/FilterPopover'
 import BookStatusLegend from '../components/BookStatusLegend'
@@ -54,6 +56,9 @@ export default function BooksPage() {
   const { needsIndexer, needsClient, needsAny } = useNeedsSetup()
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
+  // A message from the last bulk action that is not an exception, e.g. the
+  // server refusing a search because automatic grabbing is off (#2669).
+  const [bulkNotice, setBulkNotice] = useState<string | null>(null)
   const [showAddBook, setShowAddBook] = useState(false)
   const addBookButtonRef = useRef<HTMLButtonElement>(null)
   const addBookWasOpenRef = useRef(false)
@@ -146,8 +151,17 @@ export default function BooksPage() {
       confirmLabel: t('common.delete'),
     })) return
     setBulkBusy(true)
+    setBulkNotice(null)
     try {
-      await api.bulkActionBooks([...selectedIds], action, mediaType)
+      const res = await api.bulkActionBooks([...selectedIds], action, mediaType)
+      // The server refused rather than queued: say so and keep the selection,
+      // so retrying after flipping the switch does not mean re-picking every
+      // book (#2669). Reloading here would also be a lie, since nothing
+      // changed.
+      if (isAutoGrabRefusal(res)) {
+        setBulkNotice(t('search.autoGrabDisabled'))
+        return
+      }
       clearSelection()
       load()
     } catch (err) {
@@ -209,6 +223,7 @@ export default function BooksPage() {
   return (
     <div className={selectedIds.size > 0 ? 'pb-16' : ''}>
       {confirmDialog}
+      <BulkNotice message={bulkNotice} onDismiss={() => setBulkNotice(null)} />
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
         <h2 className="text-2xl font-bold">{t('books.title')}</h2>
         <div className="ml-auto flex items-center gap-3 flex-wrap justify-end">

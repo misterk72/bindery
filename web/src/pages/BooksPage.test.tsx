@@ -64,6 +64,7 @@ vi.mock('react-i18next', () => ({
         'common.both': 'Both',
         'common.search': 'Search',
         'common.cancel': 'Cancel',
+        'search.autoGrabDisabled': 'No search was run. Automatic grabbing is off.',
       }
       if (labels[key]) return labels[key]
       if (typeof options === 'string') return options
@@ -141,6 +142,42 @@ afterEach(() => {
 })
 
 describe('BooksPage', () => {
+  // #2669: with automatic grabbing off the server refuses a bulk search
+  // instead of queueing it. This page ignored the response envelope entirely,
+  // so it cleared the selection and reloaded as if the search had run.
+  it('says nothing was searched when automatic grabbing is off, and keeps the selection', async () => {
+    let listCalls = 0
+    server.use(
+      http.get(apiUrl('/book'), () => {
+        listCalls++
+        return HttpResponse.json({
+          items: [makeBook({ id: 1, title: 'Dune', status: 'wanted' })],
+          total: 1,
+          limit: 50,
+          offset: 0,
+        })
+      }),
+      http.post(apiUrl('/book/bulk'), () =>
+        HttpResponse.json({
+          results: { 1: { ok: false, code: 'auto_grab_disabled', error: 'automatic grabbing is disabled' } },
+        }),
+      ),
+    )
+
+    renderBooksPage()
+
+    fireEvent.click(await screen.findByTitle('Select Dune'))
+    const callsBefore = listCalls
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('No search was run. Automatic grabbing is off.')
+    // The selection survives, so a retry after flipping the switch does not
+    // mean re-picking every book, and the list is not reloaded because
+    // nothing changed.
+    expect(screen.getByTitle('Select Dune')).toBeChecked()
+    await waitFor(() => expect(listCalls).toBe(callsBefore))
+  })
+
   it('renders book titles returned by the server', async () => {
     server.use(
       http.get(apiUrl('/book'), () =>

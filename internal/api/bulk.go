@@ -287,8 +287,12 @@ func (h *BulkHandler) AuthorsBulk(w http.ResponseWriter, r *http.Request) {
 	// A "search" that cannot dispatch is refused per ID rather than reported
 	// as ok:true (#2669). Decided once for the whole request: the switch is
 	// global, so it cannot differ between the authors in one batch.
-	searchRefused := req.Action == "search" &&
-		refuseSearchWhenAutoGrabDisabled(r.Context(), h.settings, "author bulk search", len(req.IDs))
+	searchRefused := req.Action == "search" && refuseSearchWhenAutoGrabDisabled(r.Context(), h.settings)
+	// Counted, not the requested id count: only ids the caller actually owns
+	// reach the refusal, so a stranger posting a list of ids cannot make the
+	// log talk about other people's authors.
+	searchesRefused := 0
+	defer func() { logSearchRefusal("author bulk search", searchesRefused) }()
 
 	for _, id := range req.IDs {
 		key := fmt.Sprintf("%d", id)
@@ -337,6 +341,7 @@ func (h *BulkHandler) AuthorsBulk(w http.ResponseWriter, r *http.Request) {
 			// refusal that only an owner should be able to trigger.
 			if searchRefused {
 				resp.Results[key] = autoGrabDisabledResult()
+				searchesRefused++
 				continue
 			}
 			books, err := h.books.ListByAuthor(r.Context(), id)
@@ -482,8 +487,9 @@ func (h *BulkHandler) BooksBulk(w http.ResponseWriter, r *http.Request) {
 
 	// Same refusal as the author and wanted bulk paths: the multi-select
 	// Search on the author page posts here (#2669).
-	searchRefused := req.Action == "search" &&
-		refuseSearchWhenAutoGrabDisabled(r.Context(), h.settings, "book bulk search", len(req.IDs))
+	searchRefused := req.Action == "search" && refuseSearchWhenAutoGrabDisabled(r.Context(), h.settings)
+	searchesRefused := 0
+	defer func() { logSearchRefusal("book bulk search", searchesRefused) }()
 
 	for _, id := range req.IDs {
 		key := fmt.Sprintf("%d", id)
@@ -503,6 +509,7 @@ func (h *BulkHandler) BooksBulk(w http.ResponseWriter, r *http.Request) {
 			}
 			if searchRefused {
 				resp.Results[key] = autoGrabDisabledResult()
+				searchesRefused++
 				continue
 			}
 			if h.searcher != nil {
@@ -564,11 +571,13 @@ func (h *BulkHandler) WantedBulk(w http.ResponseWriter, r *http.Request) {
 	// lookup miss, which yields the same not-owned result the per-id path did.
 	var booksByID map[int64]*models.Book
 	searchRefused := false
+	searchesRefused := 0
+	defer func() { logSearchRefusal("wanted bulk search", searchesRefused) }()
 	if req.Action == "search" {
 		booksByID, _ = h.books.GetByIDs(r.Context(), req.IDs)
 		// Refuse rather than accept work that the auto grab switch will
 		// throw away in a goroutine the user never sees (#2669).
-		searchRefused = refuseSearchWhenAutoGrabDisabled(r.Context(), h.settings, "wanted bulk search", len(req.IDs))
+		searchRefused = refuseSearchWhenAutoGrabDisabled(r.Context(), h.settings)
 	}
 
 	for _, id := range req.IDs {
@@ -583,6 +592,7 @@ func (h *BulkHandler) WantedBulk(w http.ResponseWriter, r *http.Request) {
 			}
 			if searchRefused {
 				resp.Results[key] = autoGrabDisabledResult()
+				searchesRefused++
 				continue
 			}
 			if h.searcher != nil {

@@ -75,6 +75,7 @@ vi.mock('react-i18next', () => ({
         'common.cancel': 'Cancel',
         'bulkActionBar.clear': 'Clear',
         'bulkActionBar.selected': 'Selected',
+        'search.autoGrabDisabled': 'No search was run. Automatic grabbing is off.',
       }
       if (labels[key]) return labels[key]
       // Ignore interpolation option objects; fall back to a string only.
@@ -106,6 +107,52 @@ describe('AuthorsPage', () => {
     vi.clearAllMocks()
     vi.mocked(api.listAuthors).mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 })
     vi.mocked(api.bulkSetAuthorMonitorMode).mockResolvedValue({ results: {} })
+  })
+
+  // #2669: with automatic grabbing off the server refuses a bulk search
+  // instead of queueing it. This page threw the response away, cleared the
+  // selection and reloaded, so "Search wanted for these authors" looked like
+  // it had worked.
+  it('says nothing was searched when automatic grabbing is off, and keeps the selection', async () => {
+    vi.mocked(api.listAuthors).mockResolvedValue({
+      items: [
+        {
+          id: 7,
+          foreignAuthorId: 'OL7',
+          authorName: 'Andy Weir',
+          sortName: 'Weir, Andy',
+          description: '',
+          imageUrl: '',
+          disambiguation: '',
+          ratingsCount: 0,
+          averageRating: 0,
+          monitored: true,
+        },
+      ],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    })
+    vi.mocked(api.bulkActionAuthors).mockResolvedValue({
+      results: { '7': { ok: false, code: 'auto_grab_disabled', error: 'automatic grabbing is disabled' } },
+    })
+
+    render(
+      <MemoryRouter>
+        <AuthorsPage />
+      </MemoryRouter>,
+    )
+
+    fireEvent.click(await screen.findByTitle('Select Andy Weir'))
+    const listCallsBefore = vi.mocked(api.listAuthors).mock.calls.length
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }))
+
+    await waitFor(() => expect(api.bulkActionAuthors).toHaveBeenCalledWith([7], 'search'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('No search was run. Automatic grabbing is off.')
+    // The selection survives and the list is not reloaded, because nothing
+    // happened.
+    expect(screen.getByTitle('Select Andy Weir')).toBeChecked()
+    await waitFor(() => expect(vi.mocked(api.listAuthors).mock.calls.length).toBe(listCallsBefore))
   })
 
   it('requests a bounded server page rather than the whole table (issue #1010)', async () => {

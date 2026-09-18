@@ -1027,7 +1027,7 @@
       "preferredLanguageEn": "English",
       "autoGrab": "Auto-grab",
       "autoGrabLabel": "Enable automatic grabbing",
-      "autoGrabHint": "When enabled, Bindery searches for wanted books and sends what it finds to the download client. When disabled, Bindery runs no searches of its own, and the Search buttons on the author and Wanted pages refuse to run and tell you why. Open a single book and use Search Indexers to look for a release and grab it yourself.",
+      "autoGrabHint": "When enabled, Bindery searches for wanted books and sends what it finds to the download client. When disabled, Bindery runs no searches of its own and the bulk Search actions on the Authors, Books, author and Wanted pages refuse to run and tell you why, but a single book Search Indexers still runs and lets you grab a release yourself.",
       "recommendations": "Recommendations",
       "recommendationsLabel": "Enable book recommendations",
       "recommendationsHint": "Analyse your library to suggest new books on the Discover page. Runs locally every 24 hours — no data leaves your server.",

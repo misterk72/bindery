@@ -12,6 +12,8 @@ import MoreMenu from '../components/MoreMenu'
 import Pagination from '../components/Pagination'
 import { useServerPagination } from '../components/usePagination'
 import ViewToggle from '../components/ViewToggle'
+import BulkNotice from '../components/BulkNotice'
+import { isAutoGrabRefusal } from '../util/autoGrabRefusal'
 import { useView } from '../components/useView'
 import SetupChecklist from '../components/SetupChecklist'
 import { btn, btnSize } from '../components/buttons'
@@ -64,6 +66,9 @@ export default function AuthorsPage() {
   const [view, setView] = useView('authors', 'grid')
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
+  // A message from the last bulk action that is not an exception, e.g. the
+  // server refusing a search because automatic grabbing is off (#2669).
+  const [bulkNotice, setBulkNotice] = useState<string | null>(null)
   const selectAllRef = useRef<HTMLInputElement>(null)
   // "Refresh all metadata" background job (#863). refreshStatus mirrors the
   // persisted server-side progress; refreshing is the in-flight flag that drives
@@ -225,8 +230,15 @@ export default function AuthorsPage() {
       confirmLabel: t('common.delete'),
     })) return
     setBulkBusy(true)
+    setBulkNotice(null)
     try {
-      await api.bulkActionAuthors([...selectedIds], action)
+      const res = await api.bulkActionAuthors([...selectedIds], action)
+      // Same refusal as every other bulk Search surface (#2669): the selection
+      // survives and the list is not reloaded, because nothing happened.
+      if (isAutoGrabRefusal(res)) {
+        setBulkNotice(t('search.autoGrabDisabled'))
+        return
+      }
       clearSelection()
       load()
     } catch (err) {
@@ -349,6 +361,7 @@ export default function AuthorsPage() {
   return (
     <div className={selectedIds.size > 0 ? 'pb-16' : ''}>
       {confirmDialog}
+      <BulkNotice message={bulkNotice} onDismiss={() => setBulkNotice(null)} />
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-2xl font-bold">{t('authors.title')}</h2>
         <div className="flex items-center gap-2 flex-wrap justify-end">
