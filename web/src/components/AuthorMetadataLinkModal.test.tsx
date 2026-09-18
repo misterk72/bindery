@@ -13,6 +13,7 @@ const tMock = vi.hoisted(() => (key: string, options?: string | Record<string, u
     'authorMetadataLink.link': 'Link',
     'authorMetadataLink.linking': 'Linking...',
     'authorMetadataLink.noResults': 'No alternate metadata candidates found',
+    'authorMetadataLink.previouslyLinked': 'previously linked',
     'common.cancel': 'Cancel',
   }
   if (typeof options === 'string') return options
@@ -171,5 +172,31 @@ describe('AuthorMetadataLinkModal', () => {
 
     await screen.findByRole('button', { name: 'Link' })
     expect(screen.queryByRole('link', { name: /View on/ })).toBeNull()
+  })
+
+  // #2688: a record the author was linked to before is offered again rather
+  // than hidden, so relinking is not a one way door. It has to stay linkable,
+  // and it has to be distinguishable from a record that was never used.
+  it('marks a previously linked candidate and still offers it', async () => {
+    vi.mocked(api.searchAuthorLinkCandidates).mockResolvedValue([
+      { ...author({ id: 0, foreignAuthorId: 'OL220796A', authorName: 'Amy Tan' }), previouslyLinked: true },
+      author({ id: 0, foreignAuthorId: 'OL9999999A', authorName: 'Amy Tan' }),
+    ])
+
+    render(
+      <AuthorMetadataLinkModal
+        author={author({ foreignAuthorId: 'OL15403031A', authorName: 'Amy Tan' })}
+        onClose={vi.fn()}
+        onLinked={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Link' })).toHaveLength(2))
+    expect(screen.getAllByText('previously linked')).toHaveLength(1)
+
+    const marker = screen.getByText('previously linked')
+    const row = marker.closest('div.flex.items-center.gap-3.justify-between')
+    if (!row) throw new Error('candidate row not found')
+    expect(row.querySelector('a[href="https://openlibrary.org/authors/OL220796A"]')).not.toBeNull()
   })
 })

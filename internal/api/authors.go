@@ -1316,33 +1316,14 @@ func (h *AuthorHandler) RelinkCandidates(w http.ResponseWriter, r *http.Request)
 	if candidates == nil {
 		candidates = []models.Author{}
 	}
-	attachedIDs := map[string]struct{}{}
-	if foreignID := strings.TrimSpace(author.ForeignID); foreignID != "" {
-		attachedIDs[strings.ToLower(foreignID)] = struct{}{}
-	}
 	identifiers, err := h.authors.ListAuthorIdentifiers(r.Context(), author.ID)
 	if err != nil {
 		writeServerError(w, r, err)
 		return
 	}
-	for _, identifier := range identifiers {
-		if foreignID := strings.TrimSpace(identifier.ForeignID); foreignID != "" {
-			attachedIDs[strings.ToLower(foreignID)] = struct{}{}
-		}
-	}
-	filtered := candidates[:0]
-	for i := range candidates {
-		foreignID := strings.TrimSpace(candidates[i].ForeignID)
-		if foreignID != "" {
-			if _, ok := attachedIDs[strings.ToLower(foreignID)]; ok {
-				continue
-			}
-		}
-		proxyAuthorImages(&candidates[i])
-		cleanAuthorDescription(&candidates[i])
-		filtered = append(filtered, candidates[i])
-	}
-	writeJSON(w, http.StatusOK, filtered)
+	// buildRelinkCandidates drops the current link and flags the author's
+	// former ones instead of hiding them (#2688).
+	writeJSON(w, http.StatusOK, buildRelinkCandidates(candidates, author.ForeignID, identifiers))
 }
 
 func (h *AuthorHandler) Delete(w http.ResponseWriter, r *http.Request) {

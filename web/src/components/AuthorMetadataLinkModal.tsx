@@ -1,6 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { api, ApiError, Author, AuthorConflictBody } from '../api/client'
+import { api, ApiError, Author, AuthorConflictBody, RelinkAuthorLinkCandidate } from '../api/client'
 import { metadataSourceLink } from '../util/metadataSource'
 
 interface Props {
@@ -36,7 +36,7 @@ function conflictBody(err: unknown): AuthorConflictBody | null {
 export default function AuthorMetadataLinkModal({ author, onClose, onLinked }: Props) {
   const { t } = useTranslation()
   const [query, setQuery] = useState(author.authorName)
-  const [results, setResults] = useState<Author[]>([])
+  const [results, setResults] = useState<RelinkAuthorLinkCandidate[]>([])
   const [searching, setSearching] = useState(false)
   const [linking, setLinking] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -79,7 +79,7 @@ export default function AuthorMetadataLinkModal({ author, onClose, onLinked }: P
     await runSearch(query, true)
   }
 
-  const link = async (candidate: Author) => {
+  const link = async (candidate: RelinkAuthorLinkCandidate) => {
     setLinking(candidate.foreignAuthorId)
     setError(null)
     setConflict(null)
@@ -158,6 +158,17 @@ export default function AuthorMetadataLinkModal({ author, onClose, onLinked }: P
                       <span className="px-1.5 py-0.5 rounded bg-slate-300 dark:bg-zinc-700 text-[10px] uppercase text-slate-700 dark:text-zinc-300">
                         {providerLabel(candidate)}
                       </span>
+                      {/*
+                        A record this author was linked to before (#2688). It stays
+                        selectable, because moving back to it is the whole point; the
+                        marker is only there so you can tell it apart from a record you
+                        have never used.
+                      */}
+                      {candidate.previouslyLinked && (
+                        <span className="px-1.5 py-0.5 rounded border border-slate-400 dark:border-zinc-600 text-[10px] text-slate-600 dark:text-zinc-400">
+                          {t('authorMetadataLink.previouslyLinked', 'previously linked')}
+                        </span>
+                      )}
                     </div>
                     <div className="text-xs text-slate-600 dark:text-zinc-500 flex flex-wrap gap-x-3">
                       {candidate.disambiguation && <span>{candidate.disambiguation}</span>}

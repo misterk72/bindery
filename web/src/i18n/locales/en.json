@@ -1382,6 +1382,7 @@
     "openExisting": "Open existing author",
     "books": "{{count}} books",
     "ratings": "{{count}} ratings",
+    "previouslyLinked": "previously linked",
     "noResults": "No alternate metadata candidates found"
   },
   "mergeAuthorsModal": {

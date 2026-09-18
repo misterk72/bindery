@@ -143,6 +143,12 @@ candidates and still match the database-level guard: same author, status
 It returns an `applied` summary with `requested`, `deleted`, and `skipped`.
 Neither route removes files from disk.
 
+`GET /api/v1/author/{id}/relink-upstream/candidates` returns author records
+from every configured provider, minus the one the author is linked to right now.
+Records the author was linked to previously are returned with
+`"previouslyLinked": true` rather than being hidden, so a relink can be undone
+(#2688). The field is omitted on every other candidate.
+
 `POST /api/v1/author/{id}/relink-upstream` may be called without a body for
 automatic upstream matching. Manual relink can send:
 

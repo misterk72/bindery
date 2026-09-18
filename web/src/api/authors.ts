@@ -128,6 +128,14 @@ export interface RelinkAuthorCandidate {
   authorName?: string
 }
 
+// RelinkAuthorLinkCandidate is one row of the relink picker. previouslyLinked
+// marks a record this author used to be linked to and is no longer (#2688).
+// The server returns those rows instead of hiding them, so relinking is not a
+// one way door; the flag is a label, not a reason to skip the row.
+export interface RelinkAuthorLinkCandidate extends Author {
+  previouslyLinked?: boolean
+}
+
 export interface MergeAuthorsResult {
   BooksReparented: number
   AliasesMigrated: number
@@ -261,7 +269,7 @@ export const authorsApi = {
       body: JSON.stringify({ bookIds }),
     }),
   searchAuthorLinkCandidates: (id: number, term: string) =>
-    request<Author[]>(`/author/${id}/relink-upstream/candidates?term=${encodeURIComponent(term)}`),
+    request<RelinkAuthorLinkCandidate[]>(`/author/${id}/relink-upstream/candidates?term=${encodeURIComponent(term)}`),
   relinkAuthorUpstream: (id: number, candidate?: RelinkAuthorCandidate) =>
     request<Author>(`/author/${id}/relink-upstream`, {
       method: 'POST',
