@@ -542,12 +542,16 @@ func TestCatalogueSync_CoAuthoredRowKeepsOneRowForASeriesItIsAlreadyIn(t *testin
 	}
 }
 
-// Review item 2. The create loop adds each book it makes to seenTitles as it
-// goes, so a later work with the same normalised title reaches the title
-// branch holding a row created after the snapshot was taken. The create path
-// links that book's series itself a moment later, so the linker must leave it
-// alone; otherwise the two writers each stamp a primary series.
-func TestCatalogueSync_ABookCreatedThisRunIsLeftToTheCreatePath(t *testing.T) {
+// Review item 2, round 2 item 1. The create loop adds each book it makes to
+// seenTitles as it goes, so a later work with the same normalised title
+// reaches the title branch holding a row created after the snapshot was taken.
+//
+// Two writers must not compete for that row's primary series, AND the second
+// work's series must not be thrown away: the create path iterates the created
+// rows, not the works, so it never sees the second work's refs at all. The
+// assertion is therefore on the whole set of links, not only on how many are
+// primary, which is what let the dropped row through the first time.
+func TestCatalogueSync_ABookCreatedThisRunKeepsBothWorksSeries(t *testing.T) {
 	f := newSeriesLinkFixture(t, true)
 	first := seriesWork("OL2236W1", "Ancillary Justice", "1")
 	// Same canonical title, different work id, different series.
@@ -564,10 +568,23 @@ func TestCatalogueSync_ABookCreatedThisRunIsLeftToTheCreatePath(t *testing.T) {
 		t.Fatalf("the first work was not created: %v", err)
 	}
 	links := linksForBook(t, f, book.ID)
+	got := make(map[string]string, len(links))
 	var primaries int
 	for _, l := range links {
+		got[l.seriesTitle] = l.position
 		if l.primary {
 			primaries++
+		}
+	}
+	want := map[string]string{"Imperial Radch": "1", "Radch Chronology": "4"}
+	if len(got) != len(want) {
+		t.Fatalf("got %d series links, want both works' series %v: %+v", len(got), want, links)
+	}
+	for title, position := range want {
+		if pos, ok := got[title]; !ok {
+			t.Fatalf("series %q was dropped: %+v", title, links)
+		} else if pos != position {
+			t.Fatalf("series %q at position %q, want %q", title, pos, position)
 		}
 	}
 	if primaries != 1 {

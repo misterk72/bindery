@@ -2563,6 +2563,12 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 				}
 				// A losing race still ends with the book present, so this is a
 				// match and not a failure.
+				//
+				// No series link here, deliberately (#2328): the sync that won
+				// the race is about to run its own create path over this row,
+				// including handleNewWantedBook, and linking it from here
+				// would put two writers on one book's primary series. The row
+				// gets its links from that sync, or from the next refresh.
 				matched++
 				continue
 			}
@@ -2632,6 +2638,11 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 			searchQueue = append(searchQueue, b)
 		}
 	}
+	// Now that every created book has its own series written, release the refs
+	// held back from them (#2328). Two provider works sharing a normalised
+	// title means the second one's series never reached the create path at
+	// all, because that pass iterates the created rows and not the works.
+	seriesLinker.linkDeferred(ctx)
 	seriesLinker.logSummary(author.Name)
 	// Every write is done and the announcement list is final, so the next
 	// sync of this author may start. Indexer searches and webhook delivery

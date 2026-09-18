@@ -41,10 +41,11 @@ const existingBookSeriesLinkSampleLimit = 5
 //   - the title branch sees books created by this very run, because the create
 //     loop adds them to seenTitles as it goes.
 //
-// So: a book this run created is skipped outright, since handleNewWantedBook
-// links it from the same refs a moment later and two writers would fight over
-// which series is primary. Any other book the snapshot does not cover gets one
-// membership query of its own, cached for the rest of the sync.
+// So: refs aimed at a book this run created are held and written by
+// linkDeferred once the create path has finished with it, because those two
+// writers would otherwise fight over which series is primary. Any other book
+// the snapshot does not cover gets one membership query of its own, cached for
+// the rest of the sync.
 //
 // The primary flag is never decided from the snapshot at all. It is decided at
 // write time by LinkBookPreservingPrimary, which re-reads HasPrimarySeries, so
@@ -85,6 +86,9 @@ type existingBookSeriesLinker struct {
 	// resolved is the books outside covered whose memberships have since been
 	// fetched one at a time.
 	resolved map[int64]struct{}
+	// deferred holds refs aimed at a book this run created, until the create
+	// path has written that book's own series.
+	deferred []deferredLink
 
 	loaded bool
 	failed bool
@@ -117,15 +121,52 @@ func newExistingBookSeriesLinker(series *db.SeriesRepo, authorID int64, covered 
 	}
 }
 
-// markCreated records a book this run created, so the title branch does not
-// link it a second time. handleNewWantedBook writes its series from the same
-// refs in the pass below, and a book that has just been inserted has no
-// membership to repair.
+// markCreated records a book this run created. Its series come from the create
+// path, which runs later, so linking it now would race that writer over which
+// series is primary: handleNewWantedBook passes the provider's own flag to
+// LinkBook unconditionally, and both rows would land primary.
 func (l *existingBookSeriesLinker) markCreated(bookID int64) {
 	if l == nil || bookID == 0 {
 		return
 	}
 	l.created[bookID] = struct{}{}
+}
+
+// deferredLink is a set of refs aimed at a book this run created, held until
+// the create path has finished with it.
+type deferredLink struct {
+	book models.Book
+	refs []models.SeriesRef
+}
+
+// linkDeferred writes the refs held back from books this run created. It runs
+// after the created-books pass, so handleNewWantedBook has already written
+// each book's own series and the membership read below sees it.
+//
+// This exists because "the create path links the same refs a moment later" is
+// only true of the work that created the row. When two provider works share a
+// normalised title, the second one reaches the title branch holding the first
+// one's row, and the create path never sees the second work's refs at all: it
+// iterates createdBooks, which holds one entry per created row. Dropping those
+// refs silently lost a real series the provider had reported.
+//
+// Ordering is the point. Running here rather than in the loop means the book's
+// own series is already stored, so LinkBookPreservingPrimary files these as
+// additional memberships instead of competing for the primary slot.
+func (l *existingBookSeriesLinker) linkDeferred(ctx context.Context) {
+	if l == nil || len(l.deferred) == 0 {
+		return
+	}
+	pending := l.deferred
+	l.deferred = nil
+	for i := range pending {
+		if ctx.Err() != nil {
+			return
+		}
+		// Release the claim: the create path is done with this row.
+		delete(l.created, pending[i].book.ID)
+		l.link(ctx, &pending[i].book, pending[i].refs)
+	}
 }
 
 // seriesTitleKey normalises a series title for the "already in this series
@@ -157,6 +198,9 @@ func (l *existingBookSeriesLinker) link(ctx context.Context, book *models.Book, 
 		return
 	}
 	if _, isNew := l.created[book.ID]; isNew {
+		// Held, not dropped: see linkDeferred. The create path owns this row
+		// until it has written the series of the work that created it.
+		l.deferred = append(l.deferred, deferredLink{book: *book, refs: refs})
 		return
 	}
 	if !l.load(ctx) {
