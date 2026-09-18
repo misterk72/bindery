@@ -455,6 +455,55 @@ describe('Shell, group tab strips', () => {
     expect(await screen.findByTestId('page-books')).toBeInTheDocument()
   })
 
+  // Four Activity tabs measure 347px, wider than a 320px phone. Before this the
+  // page itself scrolled sideways and the last tab was only reachable that way.
+  it('scrolls the strip inside itself rather than widening the page', () => {
+    window.history.pushState(null, '', '/wanted')
+    renderShell()
+
+    const tabs = screen.getByRole('navigation', { name: 'Activity' })
+    const classes = tabs.className.split(' ')
+    expect(classes).toContain('overflow-x-auto')
+    expect(classes).toContain('max-w-full')
+    // Each tab must keep its width inside the scroller instead of being
+    // squeezed, which is what would make the row fit without scrolling.
+    for (const tab of Array.from(tabs.querySelectorAll('a'))) {
+      expect(tab.className.split(' ')).toContain('shrink-0')
+      expect(tab.className.split(' ')).toContain('whitespace-nowrap')
+    }
+  })
+
+  it('brings the active tab into view when the strip overflows', () => {
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+    // jsdom reports every element as 0 by 0, so describe an overflowing strip.
+    const scrollWidth = vi.spyOn(Element.prototype, 'scrollWidth', 'get').mockReturnValue(347)
+    const clientWidth = vi.spyOn(Element.prototype, 'clientWidth', 'get').mockReturnValue(320)
+    try {
+      window.history.pushState(null, '', '/history')
+      renderShell()
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest', inline: 'nearest' })
+    } finally {
+      scrollWidth.mockRestore()
+      clientWidth.mockRestore()
+    }
+  })
+
+  it('leaves the scroll position alone when the strip fits', () => {
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+    const scrollWidth = vi.spyOn(Element.prototype, 'scrollWidth', 'get').mockReturnValue(347)
+    const clientWidth = vi.spyOn(Element.prototype, 'clientWidth', 'get').mockReturnValue(900)
+    try {
+      window.history.pushState(null, '', '/history')
+      renderShell()
+      expect(scrollIntoView).not.toHaveBeenCalled()
+    } finally {
+      scrollWidth.mockRestore()
+      clientWidth.mockRestore()
+    }
+  })
+
   it('shows the Activity tabs on an Activity page', () => {
     window.history.pushState(null, '', '/history')
     renderShell()
