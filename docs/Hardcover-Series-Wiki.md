@@ -49,9 +49,10 @@ Most series rows are not created on the Series page at all. They arrive when Bin
 
 When Hardcover enriches an author whose works come from OpenLibrary, both providers can claim a series for the same book. Hardcover wins. Its series carry a stable catalog id and a position, while OpenLibrary parses a free text string, and keeping both would create two local series for one real one and put the book in each. Providers other than Hardcover only fill in a series when the work has none yet.
 
-Two limits are worth knowing:
+Refreshing an author links the series of the books you already have, not only the ones the refresh creates. That is how an imported library gains its series: point the author at the metadata record you want and refresh, and each book the provider puts in a series is filed under it. A link that is already stored is left exactly as it is, position included, so a position you corrected by hand survives every later refresh. Nothing is unlinked, and a book already in a series keeps that series even when the provider now names the same one under a different catalog id.
 
-- Only books Bindery creates get linked. Books already in your library are not backfilled when a later refresh finds series data for them, so an author added before this behaviour existed keeps an empty series list until those books are recreated.
+Two more limits are worth knowing:
+
 - A series that came from Hardcover metadata is linked to the Hardcover catalog as it is created, because the provider supplied the catalog id exactly. Series from other providers are local series like any other, and linking them is the manual step described below.
 - Series created before this behaviour existed keep no link. Use **Search** on the series to link them, which also unlocks the catalog diff and missing-book fill for them.
 

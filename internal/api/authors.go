@@ -2066,6 +2066,12 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 		}
 	}
 
+	// Series links for the books the library already has (#2328). Lazy: it
+	// reads nothing until the first existing book turns up carrying a series
+	// ref, so a sync that creates everything, or a provider with no series
+	// data, costs nothing.
+	seriesLinker := newExistingBookSeriesLinker(h.series, author.ID)
+
 	searchQueue := make([]models.Book, 0)
 	// createdBooks collects the books this sync creates so their edition
 	// hydration and on-disk check run as one batched pass afterwards rather
@@ -2398,6 +2404,13 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 			// sync from either provider resolves it exactly rather than
 			// relying on a title comparison (#1705).
 			h.recordBookIdentities(ctx, existing, b.ForeignID, b.HardcoverForeignID)
+			// The other half of "a refresh may always UPDATE the books the
+			// library already has". This branch is the id-resolved match: the
+			// work carries an id some local row already holds, which on an
+			// imported library is every work. Before #2328 series membership
+			// was only ever written for books the sync CREATED, so the one
+			// repair nobody could perform was the series one.
+			seriesLinker.link(ctx, existing, b.SeriesRefs)
 			matched++
 			continue
 		}
@@ -2481,6 +2494,15 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 			if hydrateExistingFromMatchedHardcover {
 				h.hydrateMatchedHardcoverEditions(ctx, existing, b.HardcoverForeignID, nil)
 			}
+			// Same treatment as the id-resolved branch, for the row this run
+			// recognised by title instead: a calibre stub just upgraded to a
+			// real provider id, a dual-format merge, or a same-format
+			// duplicate. All three end with one local row standing for this
+			// work, and the provider has just told us which series it is in
+			// (#2328). The title match is the branch an ABS or calibre import
+			// lands in most often, and those rows are precisely the ones that
+			// arrived with no series at all.
+			seriesLinker.link(ctx, existing, b.SeriesRefs)
 			// Same bucket as the id-resolved branch above. From the user's side
 			// there is no difference worth a separate number: the work is in
 			// their library, Bindery found it, and it did not need creating.
@@ -2592,6 +2614,7 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 			searchQueue = append(searchQueue, b)
 		}
 	}
+	seriesLinker.logSummary(author.Name)
 	// Every write is done and the announcement list is final, so the next
 	// sync of this author may start. Indexer searches and webhook delivery
 	// can take minutes and need no lock.

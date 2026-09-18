@@ -920,6 +920,55 @@ func (r *SeriesRepo) ListBookSeriesByAuthor(ctx context.Context, authorID int64)
 	return out, rows.Err()
 }
 
+// BookSeriesMembership is one series_books row joined to the series it points
+// at. The series foreign id travels with it because the catalogue sync decides
+// whether a membership already exists by comparing against what the provider
+// sent, and the provider names a series by foreign id and never by our row id.
+type BookSeriesMembership struct {
+	BookID          int64
+	SeriesID        int64
+	SeriesForeignID string
+	SeriesTitle     string
+	Position        string
+	Primary         bool
+}
+
+// ListBookSeriesMembershipsByAuthor returns every series membership held by
+// the author's books, keyed by book id. One query stands in for the
+// GetSeriesIDsForBook plus HasPrimarySeries pair a catalogue sync would
+// otherwise run per book while linking series onto rows that already exist
+// (#2328).
+//
+// A manually created series carries a synthetic "manual:series:" foreign id,
+// so it comes back like any other and simply never matches a provider ref. A
+// row that somehow holds no foreign id at all comes back with an empty one
+// rather than being dropped, because it still counts towards the book already
+// having a primary series, which is the other thing the caller reads here.
+func (r *SeriesRepo) ListBookSeriesMembershipsByAuthor(ctx context.Context, authorID int64) (map[int64][]BookSeriesMembership, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT sb.book_id, sb.series_id, COALESCE(s.foreign_id, ''), COALESCE(s.title, ''),
+		       COALESCE(sb.position_in_series, ''), COALESCE(sb.primary_series, 0)
+		FROM books b
+		JOIN series_books sb ON sb.book_id = b.id
+		JOIN series s ON s.id = sb.series_id
+		WHERE b.author_id = ?`, authorID)
+	if err != nil {
+		return nil, fmt.Errorf("list series memberships for author %d: %w", authorID, err)
+	}
+	defer rows.Close()
+	out := make(map[int64][]BookSeriesMembership)
+	for rows.Next() {
+		var m BookSeriesMembership
+		var primary int
+		if err := rows.Scan(&m.BookID, &m.SeriesID, &m.SeriesForeignID, &m.SeriesTitle, &m.Position, &primary); err != nil {
+			return nil, fmt.Errorf("scan series membership: %w", err)
+		}
+		m.Primary = primary != 0
+		out[m.BookID] = append(out[m.BookID], m)
+	}
+	return out, rows.Err()
+}
+
 // GetSeriesIDsForBook returns the IDs of every series the book currently belongs to.
 func (r *SeriesRepo) GetSeriesIDsForBook(ctx context.Context, bookID int64) ([]int64, error) {
 	rows, err := r.db.QueryContext(ctx, `SELECT series_id FROM series_books WHERE book_id = ?`, bookID)
