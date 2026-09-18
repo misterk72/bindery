@@ -71,6 +71,13 @@ func (s universalStub) Queue(w http.ResponseWriter, _ *http.Request)            
 func (s universalStub) PendingCount(w http.ResponseWriter, _ *http.Request)          { s.h(w) }
 func (s universalStub) Approve(w http.ResponseWriter, _ *http.Request)               { s.h(w) }
 func (s universalStub) Decline(w http.ResponseWriter, _ *http.Request)               { s.h(w) }
+func (s universalStub) Diagnose(w http.ResponseWriter, _ *http.Request)              { s.h(w) }
+func (s universalStub) Summary(w http.ResponseWriter, _ *http.Request)               { s.h(w) }
+func (s universalStub) Adopt(w http.ResponseWriter, _ *http.Request)                 { s.h(w) }
+func (s universalStub) Undo(w http.ResponseWriter, _ *http.Request)                  { s.h(w) }
+func (s universalStub) Ignore(w http.ResponseWriter, _ *http.Request)                { s.h(w) }
+func (s universalStub) Unignore(w http.ResponseWriter, _ *http.Request)              { s.h(w) }
+func (s universalStub) IgnoreMany(w http.ResponseWriter, _ *http.Request)            { s.h(w) }
 
 // registerEnumerableRoutes mounts every register* helper main() uses.
 func registerEnumerableRoutes(r chi.Router) {
@@ -89,6 +96,7 @@ func registerEnumerableRoutes(r chi.Router) {
 	registerCalibreIntegrationRoutes(r, s, s, s)
 	registerMigrateRoutes(r, s)
 	registerRequestRoutes(r, s)
+	registerAdoptionRoutes(r, s)
 }
 
 type requesterFixture struct {

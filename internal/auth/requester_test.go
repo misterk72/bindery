@@ -55,8 +55,13 @@ var requesterDeniedRoutes = []struct{ method, path string }{
 	{http.MethodPost, "/api/v1/book/7/search"},
 	{http.MethodGet, "/api/v1/indexer/search"},
 	{http.MethodGet, "/api/v1/search/last-debug"},
-	// Library scan and bulk refresh.
+	// Library scan, adoption and bulk refresh.
 	{http.MethodPost, "/api/v1/library/scan"},
+	{http.MethodGet, "/api/v1/library/unmatched"},
+	{http.MethodGet, "/api/v1/library/unmatched/summary"},
+	{http.MethodPost, "/api/v1/library/unmatched/7/adopt"},
+	{http.MethodPost, "/api/v1/library/unmatched/7/ignore"},
+	{http.MethodPost, "/api/v1/downloadclient/7/diagnose"},
 	{http.MethodGet, "/api/v1/library/scan/status"},
 	{http.MethodPost, "/api/v1/authors/refresh-all"},
 	// History and blocklist.
