@@ -74,6 +74,13 @@ type BulkHandler struct {
 	blocklist *db.BlocklistRepo
 	searcher  BookSearcher
 
+	// settings is read only to answer one question: is the global
+	// autoGrab.enabled switch off, in which case a user initiated "search"
+	// action cannot dispatch anything and must say so instead of returning
+	// ok:true (#2669). Nil is tolerated and reads as enabled, matching
+	// autoGrabEnabled's fail open default everywhere else.
+	settings *db.SettingsRepo
+
 	// refreshAuthor re-reads a single author's metadata from the provider (and
 	// resolves the default media type for any newly-discovered books).
 	// Injected via WithRefreshFunc so the bulk "refresh" action reuses exactly
@@ -97,6 +104,17 @@ type BulkHandler struct {
 
 func NewBulkHandler(authors *db.AuthorRepo, books *db.BookRepo, blocklist *db.BlocklistRepo, searcher BookSearcher) *BulkHandler {
 	return &BulkHandler{authors: authors, books: books, blocklist: blocklist, searcher: searcher}
+}
+
+// WithSettingsRepo attaches the settings repository the "search" actions
+// consult for the global auto grab switch. Without it the handler assumes the
+// switch is on, which is the pre-#2669 behaviour and is what the tests that do
+// not care about the switch still get.
+func (h *BulkHandler) WithSettingsRepo(settings *db.SettingsRepo) *BulkHandler {
+	if settings != nil {
+		h.settings = settings
+	}
+	return h
 }
 
 // WithSeriesRepo attaches series lookups used by monitor-mode application.
@@ -147,6 +165,13 @@ func (h *BulkHandler) bgCtx() context.Context {
 type bulkItemResult struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+	// Code is a stable machine readable reason for a non-OK entry, set only
+	// where the client is expected to react to the specific cause rather than
+	// just show the message. Today the only value is autoGrabDisabledCode
+	// (#2669), which the web UI turns into a localised message that names the
+	// setting to change. Omitted for ordinary per-ID failures, whose text is
+	// already the whole story.
+	Code string `json:"code,omitempty"`
 }
 
 // bulkResponse is the envelope returned by all three bulk endpoints.
@@ -159,8 +184,10 @@ type bulkResponse struct {
 //
 // Supported actions: "monitor", "unmonitor", "delete", "search", "refresh", "set_media_type", "set_monitor_mode".
 // "search" fires an async indexer search for every wanted book belonging
-// to each requested author and always returns ok:true immediately (the search
-// outcome is visible in History).
+// to each requested author and returns ok:true immediately once the work is
+// queued (the search outcome is visible in History). It returns ok:false with
+// code "auto_grab_disabled" instead when the global auto grab switch is off,
+// because nothing would be searched in that case (#2669).
 // "refresh" re-reads each author's metadata from the provider (the same fetch
 // the per-author Refresh endpoint runs) — it fetches metadata only and never
 // auto-grabs, and only adds newly-discovered books for authors whose
@@ -257,6 +284,12 @@ func (h *BulkHandler) AuthorsBulk(w http.ResponseWriter, r *http.Request) {
 	// as "search" after the handler returns.
 	var refreshTargets []*models.Author
 
+	// A "search" that cannot dispatch is refused per ID rather than reported
+	// as ok:true (#2669). Decided once for the whole request: the switch is
+	// global, so it cannot differ between the authors in one batch.
+	searchRefused := req.Action == "search" &&
+		refuseSearchWhenAutoGrabDisabled(r.Context(), h.settings, "author bulk search", len(req.IDs))
+
 	for _, id := range req.IDs {
 		key := fmt.Sprintf("%d", id)
 		switch req.Action {
@@ -297,6 +330,13 @@ func (h *BulkHandler) AuthorsBulk(w http.ResponseWriter, r *http.Request) {
 			}
 			if author == nil || !auth.CheckOwnership(r.Context(), author.OwnerUserID) {
 				resp.Results[key] = bulkItemResult{Error: errBulkAuthorNotOwned.Error()}
+				continue
+			}
+			// Ownership first, so a non-owner still gets the opaque
+			// "not found" and cannot learn the author exists from a
+			// refusal that only an owner should be able to trigger.
+			if searchRefused {
+				resp.Results[key] = autoGrabDisabledResult()
 				continue
 			}
 			books, err := h.books.ListByAuthor(r.Context(), id)
@@ -440,6 +480,11 @@ func (h *BulkHandler) BooksBulk(w http.ResponseWriter, r *http.Request) {
 
 	var searchTargets []models.Book
 
+	// Same refusal as the author and wanted bulk paths: the multi-select
+	// Search on the author page posts here (#2669).
+	searchRefused := req.Action == "search" &&
+		refuseSearchWhenAutoGrabDisabled(r.Context(), h.settings, "book bulk search", len(req.IDs))
+
 	for _, id := range req.IDs {
 		key := fmt.Sprintf("%d", id)
 		var opErr error
@@ -454,6 +499,10 @@ func (h *BulkHandler) BooksBulk(w http.ResponseWriter, r *http.Request) {
 			book, err := h.books.GetByID(r.Context(), id)
 			if err != nil || book == nil || !auth.CheckOwnership(r.Context(), book.OwnerUserID) {
 				resp.Results[key] = bulkItemResult{Error: errBulkBookNotOwned.Error()}
+				continue
+			}
+			if searchRefused {
+				resp.Results[key] = autoGrabDisabledResult()
 				continue
 			}
 			if h.searcher != nil {
@@ -514,8 +563,12 @@ func (h *BulkHandler) WantedBulk(w http.ResponseWriter, r *http.Request) {
 	// 500-id bulk search was ~500 of those. A nil map (query error) makes every
 	// lookup miss, which yields the same not-owned result the per-id path did.
 	var booksByID map[int64]*models.Book
+	searchRefused := false
 	if req.Action == "search" {
 		booksByID, _ = h.books.GetByIDs(r.Context(), req.IDs)
+		// Refuse rather than accept work that the auto grab switch will
+		// throw away in a goroutine the user never sees (#2669).
+		searchRefused = refuseSearchWhenAutoGrabDisabled(r.Context(), h.settings, "wanted bulk search", len(req.IDs))
 	}
 
 	for _, id := range req.IDs {
@@ -526,6 +579,10 @@ func (h *BulkHandler) WantedBulk(w http.ResponseWriter, r *http.Request) {
 			book := booksByID[id]
 			if book == nil || !auth.CheckOwnership(r.Context(), book.OwnerUserID) {
 				resp.Results[key] = bulkItemResult{Error: errBulkBookNotOwned.Error()}
+				continue
+			}
+			if searchRefused {
+				resp.Results[key] = autoGrabDisabledResult()
 				continue
 			}
 			if h.searcher != nil {

@@ -345,7 +345,6 @@
       "preferredLanguageEn": "Engels",
       "autoGrab": "Automatisch downloaden",
       "autoGrabLabel": "Automatisch downloaden inschakelen",
-      "autoGrabHint": "Indien ingeschakeld stuurt Bindery gevonden boeken automatisch naar de download-client. Indien uitgeschakeld worden alle zoekopdrachten uitgevoerd, maar initieert u downloads handmatig vanaf de pagina Gewenst.",
       "fileNaming": "Bestandsnaamgeving",
       "bookTemplate": "Boeknaamsjabloon",
       "audiobookTemplate": "Luisterboek-mapsjabloon",

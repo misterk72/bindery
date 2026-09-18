@@ -276,6 +276,23 @@ describe('AuthorDetailPage', () => {
     await waitFor(() => expect(api.searchAuthorWanted).toHaveBeenCalledWith(42))
   })
 
+  // #2669: with automatic grabbing off the server refuses the search. Before
+  // the fix it answered ok:true, so the button flashed for a moment and the
+  // page said nothing at all.
+  it('says no search was run when automatic grabbing is off', async () => {
+    vi.mocked(api.searchAuthorWanted).mockResolvedValue({
+      results: { '42': { ok: false, code: 'auto_grab_disabled', error: 'automatic grabbing is disabled' } },
+    })
+
+    renderAuthorDetailPage([makeBook({ id: 10, title: 'Wanted Book', status: 'wanted' })])
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Search 1 wanted' }))
+
+    expect(await screen.findByText(/No search was run/i)).toBeInTheDocument()
+    // The message has to name the way out, not just report a failure.
+    expect(screen.getByText(/Enable automatic grabbing/i)).toBeInTheDocument()
+  })
+
   it('disables author search when there are no monitored wanted books', async () => {
     renderAuthorDetailPage([
       makeBook({ id: 10, title: 'Unmonitored Wanted Book', status: 'wanted', monitored: false }),

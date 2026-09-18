@@ -64,6 +64,7 @@ vi.mock('react-i18next', () => ({
         'wanted.colActions': 'Actions',
         'wanted.noCover': 'No cover',
         'wanted.authorUnknown': 'Author unknown',
+        'search.autoGrabDisabled': 'No search was run. Automatic grabbing is off.',
       }
       return labels[key] ?? key
     },
@@ -450,6 +451,40 @@ describe('WantedPage', () => {
     }
     expect(screen.queryByRole('link', { name: 'Dune' })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Hyperion' })).not.toBeInTheDocument()
+  })
+
+  // #2669: with automatic grabbing off the server refuses the search instead
+  // of queueing it. Before the fix every entry came back ok:true, the page
+  // cleared the selection and reloaded, and the user saw a button flash and
+  // no other sign that nothing had happened.
+  it('tells the user nothing was searched when automatic grabbing is off, and keeps the selection', async () => {
+    vi.mocked(api.listWanted).mockResolvedValue([
+      makeBook({ id: 1, title: 'Dune' }),
+      makeBook({ id: 2, title: 'Hyperion' }),
+    ])
+    vi.mocked(api.bulkActionWanted).mockResolvedValue({
+      results: {
+        1: { ok: false, code: 'auto_grab_disabled', error: 'automatic grabbing is disabled' },
+        2: { ok: false, code: 'auto_grab_disabled', error: 'automatic grabbing is disabled' },
+      },
+    })
+
+    renderWantedPage()
+
+    await screen.findByRole('link', { name: 'Dune' })
+    fireEvent.click(screen.getByTitle('Select Dune'))
+    fireEvent.click(screen.getByTitle('Select Hyperion'))
+
+    const bulkBar = screen.getByText('2 selected').closest('div')
+    if (!bulkBar) throw new Error('Bulk action bar was not rendered')
+    fireEvent.click(within(bulkBar).getByRole('button', { name: 'Search' }))
+
+    expect(await screen.findByText('No search was run. Automatic grabbing is off.')).toBeInTheDocument()
+    // The selection survives, so flipping the setting and pressing Search
+    // again does not mean re-picking every book.
+    expect(screen.getByText('2 selected')).toBeInTheDocument()
+    // And the list is not reloaded, because nothing changed.
+    expect(api.listWanted).toHaveBeenCalledTimes(1)
   })
 })
 

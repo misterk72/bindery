@@ -345,7 +345,6 @@
       "preferredLanguageEn": "Anglais",
       "autoGrab": "Téléchargement automatique",
       "autoGrabLabel": "Activer le téléchargement automatique",
-      "autoGrabHint": "Quand activé, Bindery envoie automatiquement les livres trouvés au client de téléchargement. Quand désactivé, toutes les recherches s'exécutent mais vous initiez manuellement les téléchargements depuis la page Recherchés.",
       "fileNaming": "Nommage des fichiers",
       "bookTemplate": "Modèle de nommage des livres",
       "audiobookTemplate": "Modèle de dossier pour les livres audio",

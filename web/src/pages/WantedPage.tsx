@@ -10,6 +10,7 @@ import { foldedIncludes } from '../util/foldForSearch'
 import { usePolling } from '../components/usePolling'
 import { safeHref } from '../util/safeHref'
 import { formatBytes } from '../util/format'
+import { isAutoGrabRefusal } from '../util/autoGrabRefusal'
 
 // Shared grid template so the header row and every list row line up exactly.
 // columns: checkbox · cover · title+author · format · actions
@@ -191,7 +192,14 @@ export default function WantedPage() {
     if (selectedIds.size === 0) return
     setBulkBusy(true)
     try {
-      await api.bulkActionWanted([...selectedIds], action)
+      const res = await api.bulkActionWanted([...selectedIds], action)
+      // Nothing was searched because automatic grabbing is off. Say so and
+      // keep the selection, so pressing Search again after flipping the
+      // setting does not mean re-picking every book (#2669).
+      if (isAutoGrabRefusal(res)) {
+        showToast(t('search.autoGrabDisabled'))
+        return
+      }
       clearSelection()
       load()
     } catch (err) {

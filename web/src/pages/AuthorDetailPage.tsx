@@ -14,6 +14,7 @@ import { useView } from '../components/useView'
 import MarkdownDescription from '../components/MarkdownDescription'
 import { canLinkAuthorMetadata } from '../util/authorMetadata'
 import { metadataSourceLink } from '../util/metadataSource'
+import { isAutoGrabRefusal } from '../util/autoGrabRefusal'
 import { btn, btnSize } from '../components/buttons'
 import Switch from '../components/Switch'
 import CoverPlaceholder from '../components/CoverPlaceholder'
@@ -352,6 +353,14 @@ export default function AuthorDetailPage() {
     setError(null)
     try {
       const res = await api.searchAuthorWanted(author.id)
+      // A refusal because automatic grabbing is off is not a failure of this
+      // author's search, it is a setting the user has to change, so it gets
+      // its own message naming the setting instead of a raw server string
+      // (#2669).
+      if (isAutoGrabRefusal(res)) {
+        setError(t('search.autoGrabDisabled'))
+        return
+      }
       const item = res.results[String(author.id)]
       if (item && !item.ok) {
         throw new Error(item.error || 'Search failed')
@@ -439,6 +448,13 @@ export default function AuthorDetailPage() {
     try {
       const ids = Array.from(selected)
       const res = await api.bulkActionBooks(ids, action, mediaType)
+      // Same refusal as the "Search wanted" button: say what did not happen
+      // and keep the selection so the user can retry after flipping the
+      // setting (#2669).
+      if (isAutoGrabRefusal(res)) {
+        setError(t('search.autoGrabDisabled'))
+        return
+      }
       let okCount = 0
       let firstError = ''
       for (const id of ids) {

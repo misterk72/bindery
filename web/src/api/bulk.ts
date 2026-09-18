@@ -8,7 +8,10 @@ export type BookBulkAction = 'monitor' | 'unmonitor' | 'delete' | 'search' | 'se
 export type WantedBulkAction = 'search' | 'blocklist' | 'unmonitor'
 
 export interface BulkResult {
-  results: Record<string, { ok: boolean; error?: string }>
+  // `code` is a stable machine readable reason for a failed entry, present
+  // only where the client should react to the specific cause. Today the one
+  // value is 'auto_grab_disabled' (#2669); see util/autoGrabRefusal.
+  results: Record<string, { ok: boolean; error?: string; code?: string }>
 }
 
 export interface BulkSetAuthorMonitorModeOptions {

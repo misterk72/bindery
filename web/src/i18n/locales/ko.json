@@ -537,7 +537,6 @@
       "preferredLanguageEn": "영어",
       "autoGrab": "자동 다운로드",
       "autoGrabLabel": "자동 다운로드 사용",
-      "autoGrabHint": "사용 시 Bindery가 발견한 도서를 자동으로 다운로드 클라이언트에 전송합니다. 사용 안 함 시 검색은 실행되지만 찾는 중 페이지에서 직접 다운로드를 시작해야 합니다.",
       "recommendations": "추천",
       "recommendationsLabel": "도서 추천 사용",
       "recommendationsHint": "라이브러리를 분석하여 탐색 페이지에서 새 도서를 추천합니다. 24시간마다 로컬에서 실행되며 서버 외부로 데이터가 전송되지 않습니다.",

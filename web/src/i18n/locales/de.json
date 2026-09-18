@@ -345,7 +345,6 @@
       "preferredLanguageEn": "Englisch",
       "autoGrab": "Automatisches Herunterladen",
       "autoGrabLabel": "Automatisches Herunterladen aktivieren",
-      "autoGrabHint": "Wenn aktiviert, sendet Bindery gefundene Bücher automatisch an den Download-Client. Wenn deaktiviert, laufen alle Suchen, aber Sie initiieren Downloads manuell von der Seite 'Gesucht'.",
       "fileNaming": "Dateibenennung",
       "bookTemplate": "Buchbenennungsvorlage",
       "audiobookTemplate": "Hörbuch-Ordnervorlage",

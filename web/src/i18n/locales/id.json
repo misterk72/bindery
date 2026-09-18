@@ -366,7 +366,6 @@
       "preferredLanguageEn": "Inggris",
       "autoGrab": "Ambil otomatis",
       "autoGrabLabel": "Aktifkan pengambilan otomatis",
-      "autoGrabHint": "Jika diaktifkan, Bindery otomatis mengirim buku yang ditemukan ke klien unduhan. Jika dinonaktifkan, semua pencarian tetap berjalan tetapi Anda memulai pengambilan secara manual dari halaman Dicari.",
       "recommendations": "Rekomendasi",
       "recommendationsLabel": "Aktifkan rekomendasi buku",
       "recommendationsHint": "Menganalisis perpustakaan Anda untuk menyarankan buku baru di halaman Temukan. Berjalan secara lokal setiap 24 jam — tidak ada data yang meninggalkan server Anda.",

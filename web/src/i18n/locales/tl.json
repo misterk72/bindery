@@ -366,7 +366,6 @@
       "preferredLanguageEn": "Ingles",
       "autoGrab": "Auto-grab",
       "autoGrabLabel": "Paganahin ang automatic grabbing",
-      "autoGrabHint": "Kapag pinagana, awtomatikong ipinapadala ng Bindery ang mga nahanap na libro sa download client. Kapag hindi pinagana, lahat ng paghahanap ay tatakbo ngunit manu-mano mong sisimulan ang mga pagkuha mula sa pahinang Hinahangad.",
       "recommendations": "Mga Rekomendasyon",
       "recommendationsLabel": "Paganahin ang mga rekomendasyon ng libro",
       "recommendationsHint": "Suriin ang iyong library para magmungkahi ng mga bagong libro sa pahinang Tumuklas. Tumatakbo ito lokal bawat 24 na oras — walang data na lumalabas sa iyong server.",

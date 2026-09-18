@@ -370,7 +370,6 @@
       "preferredLanguageEn": "Inglés",
       "autoGrab": "Descarga automática",
       "autoGrabLabel": "Activar descarga automática",
-      "autoGrabHint": "Cuando está activado, Bindery envía automáticamente los libros encontrados al cliente de descarga. Cuando está desactivado, las búsquedas se ejecutan pero debes iniciar las descargas manualmente desde la página de Buscados.",
       "recommendations": "Recomendaciones",
       "recommendationsLabel": "Activar recomendaciones de libros",
       "recommendationsHint": "Analiza tu biblioteca para sugerir nuevos libros en la página de Descubrir. Se ejecuta localmente cada 24 horas — ningún dato sale de tu servidor.",
