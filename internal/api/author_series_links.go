@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/vavallee/bindery/internal/db"
+	"github.com/vavallee/bindery/internal/indexer"
 	"github.com/vavallee/bindery/internal/models"
 )
 
@@ -25,17 +26,49 @@ const existingBookSeriesLinkSampleLimit = 5
 // That left no way at all to repair series membership, which is most of what
 // "relink this author to a better record and refresh" is for.
 //
-// Cost is the reason this is a type and not a function. It runs for every book
-// of every author on every refresh, including the unattended discovery pass,
-// so it holds the author's current memberships and resolved series ids across
-// the whole sync:
+// # What the snapshot can and cannot answer
+//
+// The linker holds one author-scoped snapshot of current memberships so the
+// common case costs one query for the whole sync. That snapshot describes the
+// books that were under this author when it was taken, and NOTHING else, which
+// is the trap the first version of this fell into: both call sites can hand it
+// a book the snapshot has never heard of, and an absent book reads as "this
+// book is in no series at all". Two such books exist:
+//
+//   - the id-resolved branch matches globally, so its row can still belong to
+//     another author. reparentMisattachedBook deliberately leaves a genuinely
+//     co-authored row where it is, so this is a permanent state, not a race.
+//   - the title branch sees books created by this very run, because the create
+//     loop adds them to seenTitles as it goes.
+//
+// So: a book this run created is skipped outright, since handleNewWantedBook
+// links it from the same refs a moment later and two writers would fight over
+// which series is primary. Any other book the snapshot does not cover gets one
+// membership query of its own, cached for the rest of the sync.
+//
+// The primary flag is never decided from the snapshot at all. It is decided at
+// write time by LinkBookPreservingPrimary, which re-reads HasPrimarySeries, so
+// a stale or absent snapshot entry cannot produce the second primary_series=1
+// row that #2525 exists to prevent. The residual window is the two statements
+// inside that call: a concurrent series fill can still slip a primary in
+// between them. Closing it needs a partial unique index on the table, which is
+// a migration and not this change. No duplicate membership is possible at any
+// time, concurrently or not, because series_books is keyed on
+// (series_id, book_id) and every insert here is INSERT OR IGNORE.
+//
+// # Cost
+//
+// It runs for every book of every author on every refresh, including the
+// unattended discovery pass, so:
 //   - no provider call, ever. The refs come from the works fetch the sync has
 //     already made, off the same models.Book the create path reads them from.
-//   - one extra SELECT per sync, taken lazily on the first existing book that
-//     carries a series ref. A provider that offers no series data, or an
-//     author whose books are all new, issues nothing.
-//   - writes only where a link is missing. A library already in the right
-//     shape does the SELECT and stops.
+//   - one SELECT per sync, taken lazily on the first existing book that
+//     carries a series ref, plus one per book the snapshot cannot cover (in
+//     practice zero: it takes a co-authored work to produce one).
+//   - per link actually written: the HasPrimarySeries read inside
+//     LinkBookPreservingPrimary, the insert, and the series upsert when the
+//     series is new to this sync. A library already in the right shape writes
+//     nothing and reads only the snapshot.
 //
 // It is not safe for concurrent use; a catalogue sync holds the author's lock
 // and walks its works serially.
@@ -43,19 +76,28 @@ type existingBookSeriesLinker struct {
 	series   *db.SeriesRepo
 	authorID int64
 
+	// covered is the ids of the books that were under this author before the
+	// run started. For those, and only those, an absent snapshot entry really
+	// does mean "in no series".
+	covered map[int64]struct{}
+	// created is the books this run made. They belong to the create path.
+	created map[int64]struct{}
+	// resolved is the books outside covered whose memberships have since been
+	// fetched one at a time.
+	resolved map[int64]struct{}
+
 	loaded bool
 	failed bool
 
 	// linkedForeignIDs is book id → series foreign id → stored position.
 	linkedForeignIDs map[int64]map[string]string
-	// linkedTitles is book id → set of lowercased series titles the book is
+	// linkedTitles is book id → set of canonical series title keys the book is
 	// already in, whatever id those rows carry. It is what stops the
-	// cross-provider duplicate: the two providers mint series ids in
-	// different namespaces, so "The Expanse" from Hardcover and "The
-	// Expanse" from OpenLibrary are two rows in `series`, and linking by id
-	// alone would file one book under both.
+	// cross-provider duplicate: the two providers mint series ids in different
+	// namespaces, so "The Expanse" from Hardcover and "The Expanse" from
+	// OpenLibrary are two rows in `series`, and linking by id alone would file
+	// one book under both.
 	linkedTitles map[int64]map[string]struct{}
-	hasPrimary   map[int64]bool
 	seriesIDs    map[string]int64
 
 	linked         int
@@ -63,8 +105,47 @@ type existingBookSeriesLinker struct {
 	conflictSample []string
 }
 
-func newExistingBookSeriesLinker(series *db.SeriesRepo, authorID int64) *existingBookSeriesLinker {
-	return &existingBookSeriesLinker{series: series, authorID: authorID}
+// newExistingBookSeriesLinker takes the ids of the author's books as they were
+// read at the top of the sync, before anything was created or re-parented.
+func newExistingBookSeriesLinker(series *db.SeriesRepo, authorID int64, covered map[int64]struct{}) *existingBookSeriesLinker {
+	return &existingBookSeriesLinker{
+		series:   series,
+		authorID: authorID,
+		covered:  covered,
+		created:  make(map[int64]struct{}),
+		resolved: make(map[int64]struct{}),
+	}
+}
+
+// markCreated records a book this run created, so the title branch does not
+// link it a second time. handleNewWantedBook writes its series from the same
+// refs in the pass below, and a book that has just been inserted has no
+// membership to repair.
+func (l *existingBookSeriesLinker) markCreated(bookID int64) {
+	if l == nil || bookID == 0 {
+		return
+	}
+	l.created[bookID] = struct{}{}
+}
+
+// seriesTitleKey normalises a series title for the "already in this series
+// under the other provider's id" comparison.
+//
+// indexer.CanonicalDedupKey, the normaliser TitleIndex is built on, but not
+// TitleIndex.Lookup itself. The index's second tier treats a title and the
+// same title plus a subtitle as one work, which is right for books and wrong
+// for series: "Discworld" and "Discworld: Witches" are two real series, and
+// matching them would mean the second one could never be linked. Verified
+// against the normaliser: it folds case, collapses a doubled internal space,
+// ignores an apostrophe difference and drops a parenthetical suffix, so
+// "The Expanse", "The  Expanse", "the expanse" and
+// "The Expanse (Publication Order)" all agree.
+//
+// Known gap: an inverted article ("Expanse, The" against "The Expanse") does
+// NOT agree, and produces a second series row. Fixing it belongs in the shared
+// normaliser rather than here, where it would apply to book titles too.
+func seriesTitleKey(title string) string {
+	return indexer.CanonicalDedupKey(title)
 }
 
 // link records the provider's series refs for a book that is already in the
@@ -75,7 +156,13 @@ func (l *existingBookSeriesLinker) link(ctx context.Context, book *models.Book, 
 	if l == nil || l.series == nil || book == nil || book.ID == 0 || len(refs) == 0 {
 		return
 	}
+	if _, isNew := l.created[book.ID]; isNew {
+		return
+	}
 	if !l.load(ctx) {
+		return
+	}
+	if !l.ensureResolved(ctx, book.ID) {
 		return
 	}
 	for _, ref := range refs {
@@ -98,6 +185,10 @@ func (l *existingBookSeriesLinker) link(ctx context.Context, book *models.Book, 
 			// provider: position is user editable, a renamer reads it, and a
 			// refresh silently rewriting it would undo hand corrections with
 			// no record. Counted and reported instead.
+			//
+			// Skipping the write is a cost decision, not a correctness one:
+			// the insert below ignores an exact duplicate, so letting it run
+			// would change nothing but the query count.
 			if pos := strings.TrimSpace(ref.Position); pos != "" && pos != have {
 				l.recordConflict(book, title, have, pos)
 			}
@@ -107,7 +198,12 @@ func (l *existingBookSeriesLinker) link(ctx context.Context, book *models.Book, 
 		// volume under two series rows, with the renamer and the series page
 		// each free to pick one. The stored row wins: it is the one the rest
 		// of the library already points at.
-		if _, sameTitle := l.linkedTitles[book.ID][strings.ToLower(title)]; sameTitle {
+		//
+		// Accepted consequence: a genuinely different series that happens to
+		// share a title with one the book is in is skipped, every time, with
+		// only this DEBUG line to say so. It is the rarer error of the two,
+		// and the alternative is a duplicate series in everyone's library.
+		if _, sameTitle := l.linkedTitles[book.ID][seriesTitleKey(title)]; sameTitle {
 			slog.Debug("a series with this title is already linked under another provider id; leaving it",
 				"book", book.Title, "bookId", book.ID, "series", title, "foreignId", foreignID)
 			continue
@@ -116,27 +212,27 @@ func (l *existingBookSeriesLinker) link(ctx context.Context, book *models.Book, 
 		if !ok {
 			continue
 		}
-		// #2525: a book that is already filed under a primary series keeps
-		// it. The create path can pass ref.Primary straight through because a
-		// book it just made has no other membership; a stored book can, and
-		// stamping a second primary_series row onto it leaves the renamer
-		// choosing between them by query plan order.
-		primary := ref.Primary && !l.hasPrimary[book.ID]
-		created, err := l.series.LinkBookIfMissing(ctx, seriesID, book.ID, ref.Position, primary)
+		// #2525: a book already filed under a primary series keeps it. The
+		// flag is resolved by the repo at write time and never from the
+		// snapshot, because a book the snapshot does not describe would
+		// otherwise read as having no primary and be stamped with a second
+		// one. The create path can still pass its own flag through, since a
+		// book it just made has no other membership.
+		created, err := l.series.LinkBookPreservingPrimary(ctx, seriesID, book.ID, ref.Position)
 		if err != nil {
 			slog.Warn("failed to link an existing book to its series", "book", book.Title, "series", title, "error", err)
 			continue
 		}
-		l.remember(book.ID, foreignID, title, ref.Position, primary)
+		l.remember(book.ID, foreignID, title, ref.Position)
 		if !created {
-			// The row was there but not in the snapshot, which happens when
-			// the book was re-parented onto this author during this same run.
-			// INSERT OR IGNORE means nothing was duplicated; nothing to count.
+			// The row was there but not in what we read, which a concurrent
+			// series fill or manual link can produce. INSERT OR IGNORE means
+			// nothing was duplicated; nothing to count.
 			continue
 		}
 		l.linked++
 		slog.Debug("linked an existing book to a series found on refresh",
-			"book", book.Title, "bookId", book.ID, "series", title, "position", ref.Position, "primary", primary)
+			"book", book.Title, "bookId", book.ID, "series", title, "position", ref.Position)
 		// Mirrors the create path (#2245): a ref that names the series by a
 		// Hardcover id is worth recording as a Hardcover link, or the series
 		// shows "(no Hardcover link)" and Fill does nothing. Only on a link
@@ -169,31 +265,53 @@ func (l *existingBookSeriesLinker) load(ctx context.Context) bool {
 	}
 	l.linkedForeignIDs = make(map[int64]map[string]string, len(memberships))
 	l.linkedTitles = make(map[int64]map[string]struct{}, len(memberships))
-	l.hasPrimary = make(map[int64]bool, len(memberships))
 	l.seriesIDs = make(map[string]int64)
 	for bookID, rows := range memberships {
-		for _, m := range rows {
-			if m.Primary {
-				l.hasPrimary[bookID] = true
-			}
-			if title := strings.ToLower(strings.TrimSpace(m.SeriesTitle)); title != "" {
-				if l.linkedTitles[bookID] == nil {
-					l.linkedTitles[bookID] = make(map[string]struct{}, len(rows))
-				}
-				l.linkedTitles[bookID][title] = struct{}{}
-			}
-			if m.SeriesForeignID == "" {
-				continue
-			}
-			if l.linkedForeignIDs[bookID] == nil {
-				l.linkedForeignIDs[bookID] = make(map[string]string, len(rows))
-			}
-			l.linkedForeignIDs[bookID][m.SeriesForeignID] = strings.TrimSpace(m.Position)
-			l.seriesIDs[m.SeriesForeignID] = m.SeriesID
-		}
+		l.absorb(bookID, rows)
 	}
 	l.loaded = true
 	return true
+}
+
+// ensureResolved guarantees the maps describe this book. A book the snapshot
+// covers needs nothing; any other book is read on its own, once. Returns false
+// when the read failed, so a book whose memberships are unknown is left alone
+// rather than linked blind.
+func (l *existingBookSeriesLinker) ensureResolved(ctx context.Context, bookID int64) bool {
+	if _, ok := l.covered[bookID]; ok {
+		return true
+	}
+	if _, ok := l.resolved[bookID]; ok {
+		return true
+	}
+	rows, err := l.series.ListBookSeriesMembershipsForBook(ctx, bookID)
+	if err != nil {
+		slog.Warn("could not read the series a book is already in; leaving its series links alone",
+			"bookId", bookID, "error", err)
+		return false
+	}
+	l.absorb(bookID, rows)
+	l.resolved[bookID] = struct{}{}
+	return true
+}
+
+func (l *existingBookSeriesLinker) absorb(bookID int64, rows []db.BookSeriesMembership) {
+	for _, m := range rows {
+		if key := seriesTitleKey(m.SeriesTitle); key != "" {
+			if l.linkedTitles[bookID] == nil {
+				l.linkedTitles[bookID] = make(map[string]struct{}, len(rows))
+			}
+			l.linkedTitles[bookID][key] = struct{}{}
+		}
+		if m.SeriesForeignID == "" {
+			continue
+		}
+		if l.linkedForeignIDs[bookID] == nil {
+			l.linkedForeignIDs[bookID] = make(map[string]string, len(rows))
+		}
+		l.linkedForeignIDs[bookID][m.SeriesForeignID] = strings.TrimSpace(m.Position)
+		l.seriesIDs[m.SeriesForeignID] = m.SeriesID
+	}
 }
 
 // resolveSeries maps a provider series foreign id to a local series row,
@@ -213,17 +331,16 @@ func (l *existingBookSeriesLinker) resolveSeries(ctx context.Context, foreignID,
 	return s.ID, true
 }
 
-func (l *existingBookSeriesLinker) remember(bookID int64, foreignID, title, position string, primary bool) {
+func (l *existingBookSeriesLinker) remember(bookID int64, foreignID, title, position string) {
 	if l.linkedForeignIDs[bookID] == nil {
 		l.linkedForeignIDs[bookID] = make(map[string]string, 1)
 	}
 	l.linkedForeignIDs[bookID][foreignID] = strings.TrimSpace(position)
-	if l.linkedTitles[bookID] == nil {
-		l.linkedTitles[bookID] = make(map[string]struct{}, 1)
-	}
-	l.linkedTitles[bookID][strings.ToLower(title)] = struct{}{}
-	if primary {
-		l.hasPrimary[bookID] = true
+	if key := seriesTitleKey(title); key != "" {
+		if l.linkedTitles[bookID] == nil {
+			l.linkedTitles[bookID] = make(map[string]struct{}, 1)
+		}
+		l.linkedTitles[bookID][key] = struct{}{}
 	}
 }
 

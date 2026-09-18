@@ -945,7 +945,7 @@ type BookSeriesMembership struct {
 // rather than being dropped, because it still counts towards the book already
 // having a primary series, which is the other thing the caller reads here.
 func (r *SeriesRepo) ListBookSeriesMembershipsByAuthor(ctx context.Context, authorID int64) (map[int64][]BookSeriesMembership, error) {
-	rows, err := r.db.QueryContext(ctx, `
+	out, err := r.scanBookSeriesMemberships(ctx, `
 		SELECT sb.book_id, sb.series_id, COALESCE(s.foreign_id, ''), COALESCE(s.title, ''),
 		       COALESCE(sb.position_in_series, ''), COALESCE(sb.primary_series, 0)
 		FROM books b
@@ -954,6 +954,31 @@ func (r *SeriesRepo) ListBookSeriesMembershipsByAuthor(ctx context.Context, auth
 		WHERE b.author_id = ?`, authorID)
 	if err != nil {
 		return nil, fmt.Errorf("list series memberships for author %d: %w", authorID, err)
+	}
+	return out, nil
+}
+
+// ListBookSeriesMembershipsForBook is the single-book form, for the rows an
+// author-scoped snapshot cannot describe: a globally id-matched book that
+// still belongs to another author, and any row whose author changed after the
+// snapshot was taken (#2328).
+func (r *SeriesRepo) ListBookSeriesMembershipsForBook(ctx context.Context, bookID int64) ([]BookSeriesMembership, error) {
+	out, err := r.scanBookSeriesMemberships(ctx, `
+		SELECT sb.book_id, sb.series_id, COALESCE(s.foreign_id, ''), COALESCE(s.title, ''),
+		       COALESCE(sb.position_in_series, ''), COALESCE(sb.primary_series, 0)
+		FROM series_books sb
+		JOIN series s ON s.id = sb.series_id
+		WHERE sb.book_id = ?`, bookID)
+	if err != nil {
+		return nil, fmt.Errorf("list series memberships for book %d: %w", bookID, err)
+	}
+	return out[bookID], nil
+}
+
+func (r *SeriesRepo) scanBookSeriesMemberships(ctx context.Context, query string, arg int64) (map[int64][]BookSeriesMembership, error) {
+	rows, err := r.db.QueryContext(ctx, query, arg)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 	out := make(map[int64][]BookSeriesMembership)

@@ -2070,7 +2070,18 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 	// reads nothing until the first existing book turns up carrying a series
 	// ref, so a sync that creates everything, or a provider with no series
 	// data, costs nothing.
-	seriesLinker := newExistingBookSeriesLinker(h.series, author.ID)
+	//
+	// It is handed the ids of the author's books as they are right now,
+	// before this run creates or re-parents anything. That set is what makes
+	// its one author-scoped membership snapshot trustworthy: for a book
+	// outside it, "no row in the snapshot" means "the snapshot cannot see
+	// this book", not "this book is in no series", and it reads that book on
+	// its own instead.
+	preexistingBookIDs := make(map[int64]struct{}, len(allBooks))
+	for i := range allBooks {
+		preexistingBookIDs[allBooks[i].ID] = struct{}{}
+	}
+	seriesLinker := newExistingBookSeriesLinker(h.series, author.ID, preexistingBookIDs)
 
 	searchQueue := make([]models.Book, 0)
 	// createdBooks collects the books this sync creates so their edition
@@ -2571,6 +2582,13 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 			failed++
 			continue
 		}
+		// Claim this row for the create path (#2328). seenTitles above already
+		// holds it, so a later work with the same normalised title reaches the
+		// title branch with a book this run made; handleNewWantedBook links
+		// its series a few lines below, from the same refs, and two writers
+		// racing over which of them is the primary series is exactly the
+		// #2525 shape.
+		seriesLinker.markCreated(b.ID)
 		// Hydration and the on-disk check happen in the pass below, once the
 		// whole created set is known, so their provider calls can be made a
 		// few at a time instead of one per book in sequence (#1929).

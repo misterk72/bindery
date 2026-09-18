@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"database/sql"
+	"log/slog"
+	"sync"
 	"testing"
 
 	"github.com/vavallee/bindery/internal/db"
@@ -126,6 +128,49 @@ func countRows(t *testing.T, f *seriesLinkFixture, query string) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// warnRecorder captures WARN and above from the default logger for the life of
+// a test. The mid loop budget guard is only observable through what it stops
+// the loop from attempting, and a failed attempt announces itself as a WARN.
+type warnRecorder struct {
+	mu   sync.Mutex
+	msgs []string
+}
+
+func (w *warnRecorder) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= slog.LevelWarn
+}
+
+func (w *warnRecorder) Handle(_ context.Context, r slog.Record) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.msgs = append(w.msgs, r.Message)
+	return nil
+}
+
+func (w *warnRecorder) WithAttrs([]slog.Attr) slog.Handler { return w }
+func (w *warnRecorder) WithGroup(string) slog.Handler      { return w }
+
+func (w *warnRecorder) count() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.msgs)
+}
+
+func (w *warnRecorder) messages() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.msgs...)
+}
+
+func captureWarnings(t *testing.T) *warnRecorder {
+	t.Helper()
+	rec := &warnRecorder{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(rec))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return rec
 }
 
 func refreshCatalogue(t *testing.T, h *AuthorHandler, author *models.Author) {
@@ -342,19 +387,284 @@ func TestDiscoverAuthorBooks_LinksSeriesForExistingBooksAndStillCreates(t *testi
 	}
 }
 
-// A cancelled context stops the linker instead of running every remaining ref
-// against a dead connection. The discovery job bounds each author with a
-// context deadline, and that is how it reaches this code.
-func TestExistingBookSeriesLinker_StopsOnACancelledContext(t *testing.T) {
+// The in loop budget guard, pinned by what it prevents rather than by the
+// absence of a write.
+//
+// The first version of this test cancelled before the first call, so all it
+// proved was that load() fails on a dead context: replacing the in loop
+// ctx.Err() check with `if false` still passed it. Here the linker is primed
+// first, so load() and ensureResolved() are both satisfied from memory and the
+// loop is genuinely reached. Without the guard the first ref runs CreateOrGet
+// against the cancelled context, which fails and logs a WARN; with it the loop
+// returns silently. Zero WARN records is therefore the discriminator.
+func TestExistingBookSeriesLinker_StopsMidLoopWhenTheBudgetExpires(t *testing.T) {
 	f := newSeriesLinkFixture(t, false)
 	book := f.addImportedBook(t, "OL2236W1", "Ancillary Justice")
-	linker := newExistingBookSeriesLinker(f.series, f.author.ID)
+	linker := newExistingBookSeriesLinker(f.series, f.author.ID,
+		map[int64]struct{}{book.ID: {}})
 
+	// Prime: one good call populates the snapshot and the resolved set.
+	linker.link(context.Background(), book, seriesWork("OL2236W1", "Ancillary Justice", "1").SeriesRefs)
+	if linker.linked != 1 {
+		t.Fatalf("priming call linked = %d, want 1", linker.linked)
+	}
+
+	warnings := captureWarnings(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	linker.link(ctx, book, seriesWork("OL2236W1", "Ancillary Justice", "1").SeriesRefs)
+	linker.link(ctx, book, []models.SeriesRef{
+		{ForeignID: "hc-series:900", Title: "Imperial Radch Chronology", Position: "1", Primary: true},
+		{ForeignID: "hc-series:901", Title: "Some Other Series", Position: "2", Primary: true},
+	})
 
-	if linker.linked != 0 {
+	if n := warnings.count(); n != 0 {
+		t.Fatalf("got %d WARN records, want none: the loop kept working on a cancelled context: %v", n, warnings.messages())
+	}
+	if linker.linked != 1 {
 		t.Fatalf("linked = %d, want nothing written after the budget ran out", linker.linked)
+	}
+	if links := linksForBook(t, f, book.ID); len(links) != 1 {
+		t.Fatalf("the cancelled call wrote links anyway: %+v", links)
+	}
+}
+
+// Review item 1. The id resolved branch matches on a globally UNIQUE foreign
+// id, so its row can belong to another author, and reparentMisattachedBook
+// deliberately leaves a genuinely co-authored row where it is. That book is
+// invisible to an author scoped snapshot, and the first version of this change
+// read it as "in no series" and stamped a second primary_series=1 row onto a
+// book that already had one.
+func TestCatalogueSync_CoAuthoredRowDoesNotGainASecondPrimarySeries(t *testing.T) {
+	f := newSeriesLinkFixture(t, false)
+	ctx := context.Background()
+
+	// The book lives under the co-author, credited on the work, so the synced
+	// author may not take it.
+	coAuthor := &models.Author{
+		ForeignID: "OL9999A", Name: "Co Author", SortName: "Author, Co",
+		MetadataProvider: "openlibrary", Monitored: true,
+	}
+	if err := f.authors.Create(ctx, coAuthor); err != nil {
+		t.Fatal(err)
+	}
+	shared := &models.Book{
+		ForeignID: "OL2236W1", AuthorID: coAuthor.ID, Title: "Ancillary Justice", SortTitle: "Ancillary Justice",
+		Language: "eng", MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted,
+		Genres: []string{}, MetadataProvider: "openlibrary", Monitored: true,
+	}
+	if err := f.books.Create(ctx, shared); err != nil {
+		t.Fatal(err)
+	}
+	stored := &models.Series{ForeignID: "ol-series:imperial-radch", Title: "Imperial Radch"}
+	if err := f.series.CreateOrGet(ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.series.LinkBookIfMissing(ctx, stored.ID, shared.ID, "1", true); err != nil {
+		t.Fatal(err)
+	}
+
+	work := seriesWork("OL2236W1", "Ancillary Justice", "1")
+	work.CreditedAuthorForeignIDs = []string{coAuthor.ForeignID, f.author.ForeignID}
+	work.SeriesRefs = []models.SeriesRef{
+		{ForeignID: "hc-series:1026", Title: "Imperial Radch Chronology", Position: "1", Primary: true},
+	}
+	h := f.handler(&stubMetaProvider{works: []models.Book{work}})
+
+	refreshCatalogue(t, h, f.author)
+
+	after, err := f.books.GetByForeignID(ctx, "OL2236W1")
+	if err != nil || after == nil {
+		t.Fatalf("book vanished: %v", err)
+	}
+	if after.AuthorID != coAuthor.ID {
+		t.Fatalf("the co-authored row was stolen from its author: author_id = %d, want %d", after.AuthorID, coAuthor.ID)
+	}
+	links := linksForBook(t, f, shared.ID)
+	var primaries []storedLink
+	for _, l := range links {
+		if l.primary {
+			primaries = append(primaries, l)
+		}
+	}
+	if len(primaries) != 1 {
+		t.Fatalf("got %d primary series rows, want exactly 1: %+v", len(primaries), links)
+	}
+	if primaries[0].seriesTitle != "Imperial Radch" {
+		t.Fatalf("primary series = %q, want the one that was already stored", primaries[0].seriesTitle)
+	}
+}
+
+// Review item 1, the other half: a book outside the snapshot must not be
+// linked to a series it is already in. Without the per book fallback read the
+// linker sees nothing stored and writes a row for a membership that exists.
+func TestCatalogueSync_CoAuthoredRowKeepsOneRowForASeriesItIsAlreadyIn(t *testing.T) {
+	f := newSeriesLinkFixture(t, false)
+	ctx := context.Background()
+	coAuthor := &models.Author{
+		ForeignID: "OL9999A", Name: "Co Author", SortName: "Author, Co",
+		MetadataProvider: "openlibrary", Monitored: true,
+	}
+	if err := f.authors.Create(ctx, coAuthor); err != nil {
+		t.Fatal(err)
+	}
+	shared := &models.Book{
+		ForeignID: "OL2236W1", AuthorID: coAuthor.ID, Title: "Ancillary Justice", SortTitle: "Ancillary Justice",
+		Language: "eng", MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted,
+		Genres: []string{}, MetadataProvider: "openlibrary", Monitored: true,
+	}
+	if err := f.books.Create(ctx, shared); err != nil {
+		t.Fatal(err)
+	}
+	stored := &models.Series{ForeignID: "ol-series:imperial-radch", Title: "Imperial Radch"}
+	if err := f.series.CreateOrGet(ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.series.LinkBookIfMissing(ctx, stored.ID, shared.ID, "3", true); err != nil {
+		t.Fatal(err)
+	}
+
+	// The provider names the same series under the OTHER namespace's id.
+	work := seriesWork("OL2236W1", "Ancillary Justice", "1")
+	work.CreditedAuthorForeignIDs = []string{coAuthor.ForeignID, f.author.ForeignID}
+	work.SeriesRefs = []models.SeriesRef{
+		{ForeignID: "hc-series:1026", Title: "Imperial Radch", Position: "1", Primary: true},
+	}
+	h := f.handler(&stubMetaProvider{works: []models.Book{work}})
+
+	refreshCatalogue(t, h, f.author)
+
+	links := linksForBook(t, f, shared.ID)
+	if len(links) != 1 {
+		t.Fatalf("got %d links, want the one already stored: %+v", len(links), links)
+	}
+	if links[0].position != "3" {
+		t.Fatalf("stored position = %q, want it untouched at 3", links[0].position)
+	}
+}
+
+// Review item 2. The create loop adds each book it makes to seenTitles as it
+// goes, so a later work with the same normalised title reaches the title
+// branch holding a row created after the snapshot was taken. The create path
+// links that book's series itself a moment later, so the linker must leave it
+// alone; otherwise the two writers each stamp a primary series.
+func TestCatalogueSync_ABookCreatedThisRunIsLeftToTheCreatePath(t *testing.T) {
+	f := newSeriesLinkFixture(t, true)
+	first := seriesWork("OL2236W1", "Ancillary Justice", "1")
+	// Same canonical title, different work id, different series.
+	second := seriesWork("OL2236W2", "Ancillary Justice", "4")
+	second.SeriesRefs = []models.SeriesRef{
+		{ForeignID: "hc-series:777", Title: "Radch Chronology", Position: "4", Primary: true},
+	}
+	h := f.handler(&stubMetaProvider{works: []models.Book{first, second}})
+
+	refreshCatalogue(t, h, f.author)
+
+	book, err := f.books.GetByForeignID(context.Background(), "OL2236W1")
+	if err != nil || book == nil {
+		t.Fatalf("the first work was not created: %v", err)
+	}
+	links := linksForBook(t, f, book.ID)
+	var primaries int
+	for _, l := range links {
+		if l.primary {
+			primaries++
+		}
+	}
+	if primaries != 1 {
+		t.Fatalf("got %d primary series rows on a book created this run, want exactly 1: %+v", primaries, links)
+	}
+}
+
+// Review item 3. A series fill or a manual link can write a primary series
+// between the snapshot and the insert, because the per author lock does not
+// cover them. Resolving the flag at write time rather than from the snapshot
+// is what makes that safe, so this stores a primary membership AFTER the
+// linker has loaded and checks the next link is not primary too.
+func TestExistingBookSeriesLinker_ResolvesPrimaryAtWriteTime(t *testing.T) {
+	f := newSeriesLinkFixture(t, false)
+	ctx := context.Background()
+	book := f.addImportedBook(t, "OL2236W1", "Ancillary Justice")
+	linker := newExistingBookSeriesLinker(f.series, f.author.ID,
+		map[int64]struct{}{book.ID: {}})
+
+	// Load the snapshot while the book is in no series at all.
+	if !linker.load(ctx) {
+		t.Fatal("snapshot load failed")
+	}
+	// Something else files the book, the way series fill does.
+	meanwhile := &models.Series{ForeignID: "ol-series:imperial-radch", Title: "Imperial Radch"}
+	if err := f.series.CreateOrGet(ctx, meanwhile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.series.LinkBookIfMissing(ctx, meanwhile.ID, book.ID, "1", true); err != nil {
+		t.Fatal(err)
+	}
+
+	linker.link(ctx, book, []models.SeriesRef{
+		{ForeignID: "hc-series:1026", Title: "Radch Chronology", Position: "1", Primary: true},
+	})
+
+	links := linksForBook(t, f, book.ID)
+	var primaries int
+	for _, l := range links {
+		if l.primary {
+			primaries++
+		}
+	}
+	if len(links) != 2 {
+		t.Fatalf("got %d links, want both series: %+v", len(links), links)
+	}
+	if primaries != 1 {
+		t.Fatalf("got %d primary series rows, want exactly 1: %+v", primaries, links)
+	}
+}
+
+// Review item 4. The cross provider title skip normalises through the shared
+// book title normaliser, so a doubled space, a case difference, an apostrophe
+// and a parenthetical suffix all count as the same series. An inverted article
+// is the documented gap, pinned here so the claim in the PR body and the wiki
+// stays honest.
+func TestExistingBookSeriesLinker_TitleSkipNormalisation(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		stored, offer string
+		wantSkipped   bool
+	}{
+		{"identical", "The Expanse", "The Expanse", true},
+		{"case", "The Expanse", "the expanse", true},
+		{"doubled space", "The Expanse", "The  Expanse", true},
+		{"apostrophe", "Dragon's Egg", "Dragons Egg", true},
+		{"parenthetical suffix", "The Expanse", "The Expanse (Publication Order)", true},
+		{"inverted article, known gap", "The Expanse", "Expanse, The", false},
+		{"genuinely different", "The Expanse", "Imperial Radch", false},
+		{"sub-series is not the parent", "Discworld", "Discworld: Witches", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSeriesLinkFixture(t, false)
+			ctx := context.Background()
+			book := f.addImportedBook(t, "OL2236W1", "Ancillary Justice")
+			stored := &models.Series{ForeignID: "ol-series:stored", Title: tc.stored}
+			if err := f.series.CreateOrGet(ctx, stored); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.series.LinkBookIfMissing(ctx, stored.ID, book.ID, "1", true); err != nil {
+				t.Fatal(err)
+			}
+			linker := newExistingBookSeriesLinker(f.series, f.author.ID,
+				map[int64]struct{}{book.ID: {}})
+			linker.link(ctx, book, []models.SeriesRef{
+				{ForeignID: "hc-series:1026", Title: tc.offer, Position: "1", Primary: true},
+			})
+
+			links := linksForBook(t, f, book.ID)
+			want := 2
+			if tc.wantSkipped {
+				want = 1
+			}
+			if len(links) != want {
+				t.Fatalf("stored %q, provider %q: got %d links, want %d: %+v",
+					tc.stored, tc.offer, len(links), want, links)
+			}
+		})
 	}
 }
