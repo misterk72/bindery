@@ -31,15 +31,25 @@ import (
 // common "Series/01 - Title.epub" shape parsing as title "01".
 //
 // The digit-count guard keeps a real title that opens with a year intact:
-// "1984 - George Orwell" matches the same regex, and positions of four digits
-// do not happen in practice. A prefix with nothing after it is left alone too,
-// so a file named "01.epub" keeps whatever little it has.
+// "1984 - George Orwell" matches the same regex. Four digits are refused
+// unless they are zero padded, because no year starts with a zero and a
+// library that pads to four ("0001 - Title") is naming a position. A prefix
+// with nothing after it is left alone too, so a file named "01.epub" keeps
+// whatever little it has.
+//
+// Three digits are always taken, which is the one accepted miss: a title that
+// is a bare number under 1000 followed by a separator, "100 - Bullets.epub",
+// comes out as "Bullets". Refusing it would cost the real "001 - Title"
+// libraries, which are far more common than that shape, and a file in a book
+// folder still reaches its book through the layout tier. Anything that is not
+// a bare number is unaffected, since the regex needs the number to be the
+// whole prefix.
 func stripLeadingPosition(name string) (rest, number string) {
 	m := leadingNumRe.FindStringSubmatch(name)
 	if len(m) != 2 {
 		return name, ""
 	}
-	if whole, _, _ := strings.Cut(m[1], "."); len(whole) > 3 {
+	if whole, _, _ := strings.Cut(m[1], "."); len(whole) > 3 && !strings.HasPrefix(whole, "0") {
 		return name, ""
 	}
 	stripped := strings.TrimSpace(leadingNumRe.ReplaceAllString(name, ""))
@@ -50,7 +60,7 @@ func stripLeadingPosition(name string) (rest, number string) {
 }
 
 // parseScanFile is ParseFilename for the library scan, with a leading position
-// number removed first.
+// number removed first for an EBOOK.
 //
 // ParseFilename strips that prefix only when it has already recognised a
 // series, and a plain "The Wheel of Time" folder carries no series marker for
@@ -60,10 +70,21 @@ func stripLeadingPosition(name string) (rest, number string) {
 // before parsing gives the title the file actually names, and hands the number
 // to the series tier when a series is known but unnumbered.
 //
+// Audiobooks are left exactly as ParseFilename read them, and the format gate
+// is the whole reason this takes a format at all. scanTitle keeps the folder
+// ahead of the filename for them, but a FLAT audiobook layout has no book
+// folder to keep: with tracks directly in the author folder, "01 - Rocky.mp3"
+// used to parse as title "01" and match nothing, and stripping the prefix
+// would turn it into a confident match on a chapter name. That is #1239 with
+// extra steps, and it is a regression the first draft of this fix shipped.
+//
 // The unstripped parse is kept as the fallback: if removing the prefix leaves
 // nothing that parses as a title, the file is parsed as it always was.
-func parseScanFile(path string) ParsedFile {
+func parseScanFile(path, detectedFormat string) ParsedFile {
 	parsed := ParseFilename(path)
+	if detectedFormat != models.MediaTypeEbook {
+		return parsed
+	}
 	ext := filepath.Ext(path)
 	base := dashNormalizer.Replace(strings.TrimSuffix(filepath.Base(path), ext))
 	stripped, number := stripLeadingPosition(base)

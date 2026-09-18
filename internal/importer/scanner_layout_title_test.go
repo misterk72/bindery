@@ -12,7 +12,7 @@ import (
 // title a file is matched on, so the table below can cover a lot of layouts
 // without building a library for each one.
 func effectiveScanTitle(path, root, format string) (title, layout string) {
-	parsed := parseScanFile(path)
+	parsed := parseScanFile(path, format)
 	_, layout, _ = authorTitleFromLayout(path, root)
 	return scanTitle(parsed.Title, layout, format), layout
 }
@@ -99,11 +99,40 @@ func TestEffectiveScanTitle(t *testing.T) {
 			wantLayout: "Project Hail Mary",
 		},
 		{
+			// A flat audiobook layout has no book folder for scanTitle to
+			// prefer, so the position strip alone would decide, and it would
+			// hand the scan a chapter name to match confidently. The strip is
+			// gated on the ebook format for exactly this.
+			name:       "flat audiobook track is parsed as it always was",
+			rel:        "Andy Weir/01 - Rocky.mp3",
+			format:     models.MediaTypeAudiobook,
+			wantTitle:  "01",
+			wantLayout: "",
+		},
+		{
 			name:       "a title that opens with a year keeps it",
 			rel:        "George Orwell/1984 - George Orwell.epub",
 			format:     models.MediaTypeEbook,
 			wantTitle:  "1984",
 			wantLayout: "",
+		},
+		{
+			name:       "a zero padded four digit position is still a position",
+			rel:        "Andy Weir/Project Hail Mary/0001 - Project Hail Mary.epub",
+			format:     models.MediaTypeEbook,
+			wantTitle:  "Project Hail Mary",
+			wantLayout: "Project Hail Mary",
+		},
+		{
+			// The known trade this PR makes, pinned so it is a decision and
+			// not a surprise: where the FOLDER is authoritative and the
+			// filename carries the series, the filename now wins. The layout
+			// tier only runs when the filename matches nothing at all.
+			name:       "folder authoritative, filename carries the series",
+			rel:        "Robert Jordan/The Eye of the World/The Wheel of Time 01.epub",
+			format:     models.MediaTypeEbook,
+			wantTitle:  "The Wheel of Time 01",
+			wantLayout: "The Eye of the World",
 		},
 		{
 			name:       "readarr series folder still strips its series prefix",
@@ -135,6 +164,8 @@ func TestStripLeadingPosition(t *testing.T) {
 		{"1 - Dune", "Dune", "1"},
 		{"1.5 - Interlude", "Interlude", "1.5"},
 		{"1984 - George Orwell", "1984 - George Orwell", ""},
+		{"0001 - Project Hail Mary", "Project Hail Mary", "0001"},
+		{"100 - Bullets", "Bullets", "100"},
 		{"11-22-63 - Stephen King", "11-22-63 - Stephen King", ""},
 		{"01", "01", ""},
 		{"The Eye of the World", "The Eye of the World", ""},
@@ -164,7 +195,9 @@ func TestScanLibrary_LayoutTitleIsOnlyAFallback(t *testing.T) {
 		titles []string
 		// files are library-relative; the first is the one asserted on.
 		files []string
-		want  string
+		// want is the title of the book the first file must land on, or ""
+		// for no book at all.
+		want string
 	}{
 		{
 			name:   "numbered file in a series folder",
@@ -227,6 +260,31 @@ func TestScanLibrary_LayoutTitleIsOnlyAFallback(t *testing.T) {
 			},
 			want: "Project Hail Mary",
 		},
+		{
+			// The flat audiobook layout, with a book in the catalogue whose
+			// title is track 01's chapter name. Stripping the position off an
+			// audiobook filename handed this file to "Rocky" with confidence;
+			// unmatched is what main does and what this must keep doing, so
+			// the tracks reach library adoption as one unit instead.
+			name:   "flat audiobook tracks with a book named after a chapter",
+			author: "Andy Weir",
+			titles: []string{"Project Hail Mary", "Rocky"},
+			files: []string{
+				"Andy Weir/01 - Rocky.mp3",
+				"Andy Weir/02 - Sinister Grey Mists.mp3",
+			},
+			want: "",
+		},
+		{
+			name:   "flat audiobook tracks with no book named after a chapter",
+			author: "Andy Weir",
+			titles: []string{"Project Hail Mary"},
+			files: []string{
+				"Andy Weir/01 - Rocky.mp3",
+				"Andy Weir/02 - Sinister Grey Mists.mp3",
+			},
+			want: "",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -245,8 +303,13 @@ func TestScanLibrary_LayoutTitleIsOnlyAFallback(t *testing.T) {
 
 			s.ScanLibrary(ctx)
 
-			if got := fileOwners(t, books, ctx, seeded, first); !slices.Equal(got, []string{c.want}) {
-				t.Errorf("file went to %v, want [%q]", got, c.want)
+			got := fileOwners(t, books, ctx, seeded, first)
+			want := []string{c.want}
+			if c.want == "" {
+				want = nil
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("file went to %v, want %v", got, want)
 			}
 		})
 	}

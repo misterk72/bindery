@@ -3298,7 +3298,7 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 		// assume a single filename order (#754). The book folder is a weaker
 		// signal than the author folder and no longer overrides the filename
 		// for an ebook: see scanTitle (#2171).
-		parsed := parseScanFile(path)
+		parsed := parseScanFile(path, detectedFmt)
 		var layoutTitle, layoutAuthor string
 		// flipped is the filename read the other way round, for an
 		// "Author - Title" name that sits in its author's folder. The title
