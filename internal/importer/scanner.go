@@ -2718,13 +2718,19 @@ type scanBook struct {
 // ("Discworld #8 - Guards! Guards!" → "Guards! Guards!", issue #1234): without
 // this the whole folder name, series tag and all, leaks through as the title
 // and only series openers (where book title == series title) reconcile.
+// A bare position prefix goes the same way ("01 - The Eye of the World
+// (1990)" → "The Eye of the World", #2171): the {series}/{seriesIndex} -
+// {title} layout writes the number without the "#" that parseSeriesFolder
+// looks for, and the number then blocked every title match.
 func cleanLayoutTitle(dir string) string {
 	if _, _, title, ok := parseSeriesFolder(dir); ok {
 		dir = title
 	}
 	s := cleanRe.ReplaceAllString(dir, "")
 	s = multiSp.ReplaceAllString(s, " ")
-	return strings.TrimSpace(s)
+	s = strings.TrimSpace(s)
+	stripped, _ := stripLeadingPosition(dashNormalizer.Replace(s))
+	return stripped
 }
 
 // authorTitleFromLayout derives author and title from a library file's folder
@@ -3287,29 +3293,33 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 
 		// Parse the filename for title/author hints, then let the folder
 		// hierarchy correct them. A file under <root>/<Author>/<Book>/<file>
-		// names author and title unambiguously and dash-safe, unlike splitting
-		// an "Author - Title" / "Title - Author" filename — the scan must not
-		// assume a single filename order (#754).
-		parsed := ParseFilename(path)
+		// names the AUTHOR unambiguously and dash-safe, unlike splitting an
+		// "Author - Title" / "Title - Author" filename — the scan must not
+		// assume a single filename order (#754). The book folder is a weaker
+		// signal than the author folder and no longer overrides the filename
+		// for an ebook: see scanTitle (#2171).
+		parsed := parseScanFile(path)
 		var layoutTitle, layoutAuthor string
 		// flipped is the filename read the other way round, for an
-		// "Author - Title" name in an author folder with no book folder below
-		// it. The title tier tries it first, and only for an author the
-		// catalogue knows (flipByLayout, #2331). A book folder names the title
-		// outright, so there is nothing to flip under one.
+		// "Author - Title" name that sits in its author's folder. The title
+		// tier tries it first, and only for an author the catalogue knows
+		// (flipByLayout, #2331). It used to be offered only where there was no
+		// book folder, because the book folder's own name was then taken as
+		// the title regardless. Now that the filename leads (#2171), a
+		// "Cal Newport - Deep Work.epub" under Cal Newport/Deep Work/ needs
+		// the same flip as the one directly under Cal Newport/, and it lands
+		// on the same title the folder names.
 		var flipped ParsedFile
 		var canFlip bool
 		if a, t, ok := authorTitleFromLayout(path, s.libraryDir, s.audiobookDir); ok {
-			if t == "" {
-				flipped, canFlip = flipByLayout(parsed, a)
-			}
+			flipped, canFlip = flipByLayout(parsed, a)
 			if a != "" {
 				parsed.Author = a
 				layoutAuthor = a
 			}
 			if t != "" {
-				parsed.Title = t
 				layoutTitle = t
+				parsed.Title = scanTitle(parsed.Title, t, detectedFmt)
 			}
 		}
 
@@ -3390,8 +3400,7 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 		// "Author - Title" filename in its author folder has the author's own
 		// name for a title, and the fuzzy title tier pairs that with any of the
 		// author's books named after them ("Tom Clancy Enemy Contact"). The
-		// flip is offered only in an author folder with no book folder below
-		// it, and taken only for a folder author the catalogue knows, so a
+		// flip is taken only for a folder author the catalogue knows, so a
 		// flat book folder (It/It - Stephen King.epub) still reconciles as it
 		// is.
 		if !matched && canFlip && len(matchingAuthors(flipped.Author)) > 0 {
@@ -3402,6 +3411,21 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 		}
 		if !matched && parsed.Title != "" {
 			matched = reconcileByTitle(path, cleanPath, detectedFmt, parsed.Title, parsed.Author, layoutAuthor)
+		}
+		// The book folder's title, one tier down (#2171). The filename now
+		// leads, so this is what keeps everything the folder used to match
+		// matching: a file whose own name resolves to no book at all is still
+		// offered to the book its folder names. It is also how a notes .txt or
+		// chapter .pdf beside an epub is recognised as that epub's companion
+		// rather than an orphan — its own name says "notes", only the folder
+		// says which book it belongs to (#2188).
+		if !matched && layoutTitle != "" && layoutTitle != parsed.Title {
+			if matched = reconcileByTitle(path, cleanPath, detectedFmt, layoutTitle, parsed.Author, layoutAuthor); matched {
+				// The log used to print only the winner, which is why the
+				// reported libraries looked healthy (#2171). Name both.
+				slog.Debug("library scan: reconciled on the book folder's title, not the file's",
+					"path", path, "folderTitle", layoutTitle, "fileTitle", parsed.Title)
+			}
 		}
 
 		if !matched && s.series != nil && parsed.Series != "" && parsed.SeriesNumber != "" {
