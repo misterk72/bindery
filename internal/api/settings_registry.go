@@ -171,8 +171,8 @@ var settingDescriptors = []SettingDescriptor{
 		State:           SettingStateActive,
 	},
 	{
-		Key: SettingAuthorDiscoveryInterval, Type: SettingTypeDuration, Default: "168h", Min: "24h", Max: "720h",
-		Description: "How often each monitored author's catalogue is checked for new books. \"off\" stops scheduled discovery.",
+		Key: SettingAuthorDiscoveryInterval, Type: SettingTypeDuration, Default: "off", Min: "24h", Max: "720h",
+		Description: "How often each monitored author's catalogue is checked for new books. Unset and \"off\" both mean no scheduled discovery; store a duration to turn it on.",
 		State:       SettingStateActive,
 	},
 	{

@@ -591,14 +591,17 @@ within a day.
 ### New releases arrive on their own
 
 Following an author means their next book shows up without a click. Bindery
-checks each monitored author's catalogue on a schedule, **weekly by default**,
-and adds the books it does not have yet. This is the same sync as **Refresh
-metadata**, so the same rules apply: the author must be monitored and set to
+can check each monitored author's catalogue on a schedule and add the books it
+does not have yet. It **ships off**: nothing is checked until you pick an
+interval, and **Weekly** is the one to pick if you are not sure. This is the
+same sync as **Refresh metadata**, so the same rules apply: the author must be monitored and set to
 take new items, the metadata profile's language and junk filters still run,
 and each new book is monitored or not according to the author's monitor mode.
 
-- **How often:** Settings → General → **New release discovery**. Choose Off,
-  Daily, Weekly or Monthly. The change applies within the hour, no restart.
+- **Turning it on and how often:** Settings → General → **New release
+  discovery**. It starts on Off; choose Daily, Weekly or Monthly to turn it
+  on, and Off again to stop it. The change applies within the hour, no
+  restart.
 - **How it spreads out:** every hour Bindery checks a small share of your
   authors (at most 25), so a week's worth of checks is spread over the week
   instead of arriving in one burst. Authors never checked go first. One
@@ -640,8 +643,8 @@ book" added to an author you follow becomes a Wanted, monitored book, and with
 auto grab on the next wanted search will try to download it. This could
 already happen when you clicked Refresh; discovery makes it happen without
 you. The profile filters, the small hourly batch and the `bookAnnounced`
-message are the mitigations, and *Don't add them* on an author, or Off in
-Settings, removes it entirely.
+message are the mitigations, and *Don't add them* on an author, or leaving
+discovery Off, removes it entirely.
 
 Discovery follows authors only. Watching a **series** for its next entry is
 planned separately
@@ -688,8 +691,8 @@ and Unmonitor or Exclude. Before adding more, pick a different mode on the Add
 Author dialog (it shows how many books will arrive and what will be searched
 for), or change the default in Settings → Metadata Profiles → Library
 Defaults. *None* lists the catalogue and searches for nothing. *Future books
-only* searches only for unreleased titles, and new releases join the list on
-their own through scheduled discovery
+only* searches only for unreleased titles, and with scheduled discovery turned
+on new releases join the list on their own
 ([New releases arrive on their own](#new-releases-arrive-on-their-own)).
 
 **Scan Library sees my files but imports nothing.**

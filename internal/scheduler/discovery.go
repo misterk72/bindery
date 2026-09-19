@@ -22,10 +22,14 @@ import (
 // The scheduler does not import internal/api, so the key is repeated here.
 const settingAuthorDiscoveryInterval = "authors.discovery.interval"
 
-// Bounds and default of the discovery interval, mirroring the API validator
-// for authors.discovery.interval. The default is weekly: a new book is rarely
-// urgent, and one author's check is not one call. A discovery run makes the
-// same provider calls as a manual Refresh, less what it can skip:
+// Bounds of the discovery interval, mirroring the API validator for
+// authors.discovery.interval, and the interval a stored but unusable value
+// falls back to. Discovery itself ships off (see resolveDiscoveryInterval),
+// so defaultDiscoveryInterval is reached only when an operator has asked for
+// discovery and the stored value cannot be honoured; weekly is the gentle
+// reading of that, because a new book is rarely urgent and one author's check
+// is not one call. A discovery run makes the same provider calls as a manual
+// Refresh, less what it can skip:
 //
 //   - the author profile lookup
 //   - the works lookup (OpenLibrary works and search endpoints, paged)
@@ -165,7 +169,10 @@ type discoveryTickResult struct {
 }
 
 // WithAuthorDiscoverer registers the hourly author-discovery job. A nil
-// discoverer registers nothing. It may be called before or after Start: the
+// discoverer registers nothing. The job is registered even while discovery is
+// off, because each tick re-reads the setting: that is what lets an operator
+// turn discovery on without restarting Bindery. A tick with no interval
+// stored returns before it touches the database or a provider. It may be called before or after Start: the
 // job is added to the cron directly, because the discoverer (the author
 // handler) is built after the scheduler has started.
 func (s *Scheduler) WithAuthorDiscoverer(d AuthorDiscoverer) {
@@ -183,14 +190,23 @@ func (s *Scheduler) WithAuthorDiscoverer(d AuthorDiscoverer) {
 	}))
 }
 
-// resolveDiscoveryInterval reads authors.discovery.interval. "off" disables
-// the job; anything unset, unparseable or out of bounds falls back to the
-// weekly default, the same rules as every other interval setting.
+// resolveDiscoveryInterval reads authors.discovery.interval. Discovery ships
+// off: an unset or empty key disables the job, as does the literal "off", and
+// only a stored interval turns it on. This is the one cadence where unset
+// cannot mean a default, because the job writes new rows into the library on
+// its own, and an upgrade should not start doing that for an operator who
+// never asked. Expressing it as a default of "off" is not open to us either:
+// the fallback here is a time.Duration and "off" is not one, so the unset
+// case is its own branch and defaultDiscoveryInterval stays what it was, the
+// fallback for a stored value that cannot be parsed or is out of bounds. An
+// instance that has already chosen an interval therefore keeps it.
 func (s *Scheduler) resolveDiscoveryInterval() (time.Duration, bool) {
-	if s.settings != nil {
-		if v, _ := s.settings.Get(s.ctx(), settingAuthorDiscoveryInterval); v != nil && v.Value == "off" {
-			return 0, false
-		}
+	if s.settings == nil {
+		return 0, false
+	}
+	v, _ := s.settings.Get(s.ctx(), settingAuthorDiscoveryInterval)
+	if v == nil || v.Value == "" || v.Value == "off" {
+		return 0, false
 	}
 	return s.resolveInterval(settingAuthorDiscoveryInterval, defaultDiscoveryInterval, minDiscoveryInterval, maxDiscoveryInterval), true
 }

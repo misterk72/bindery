@@ -225,12 +225,15 @@ func TestResolveDiscoveryInterval(t *testing.T) {
 		wantOn bool
 		want   time.Duration
 	}{
-		{"", true, 168 * time.Hour},
+		{"", false, 0},
 		{"off", false, 0},
 		{"24h", true, 24 * time.Hour},
 		{"720h", true, 720 * time.Hour},
 		{"1h", true, 168 * time.Hour},
 		{"nonsense", true, 168 * time.Hour},
+	}
+	if d, on := (&Scheduler{}).resolveDiscoveryInterval(); on || d != 0 {
+		t.Errorf("no settings repo: got (%s, %v), want discovery off", d, on)
 	}
 	s := schedulerWithSetting(t, true, settingAuthorDiscoveryInterval, "")
 	for _, tc := range cases {
@@ -241,6 +244,60 @@ func TestResolveDiscoveryInterval(t *testing.T) {
 		if on != tc.wantOn || got != tc.want {
 			t.Errorf("value %q: got (%s, %v), want (%s, %v)", tc.value, got, on, tc.want, tc.wantOn)
 		}
+	}
+}
+
+// Discovery ships off: with nothing stored under authors.discovery.interval
+// the registered hourly job must make no provider call and stamp no author,
+// and storing an interval must turn it on without a restart, since the job
+// re-reads the setting on every tick.
+func TestDiscovery_OffUntilAnIntervalIsStored(t *testing.T) {
+	prev := discoveryPace
+	discoveryPace = 0
+	t.Cleanup(func() { discoveryPace = prev })
+
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	ctx := context.Background()
+	authors := db.NewAuthorRepo(database)
+	author := &models.Author{ForeignID: "OL2236A", Name: "Ann Leckie", SortName: "Leckie, Ann", Monitored: true}
+	if err := authors.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+
+	disc := &fakeDiscoverer{outcomes: map[string]DiscoveryOutcome{}}
+	s := &Scheduler{
+		cron:     cron.New(cron.WithSeconds()),
+		authors:  authors,
+		settings: db.NewSettingsRepo(database),
+	}
+	s.WithAuthorDiscoverer(disc)
+	runTick := func() {
+		for _, e := range s.cron.Entries() {
+			e.Job.Run()
+		}
+	}
+
+	runTick()
+	if len(disc.calls) != 0 {
+		t.Fatalf("discovery ran with no interval stored: %v", disc.calls)
+	}
+	if when, err := authors.LastDiscoveryAt(ctx, author.ID); err != nil || when != nil {
+		t.Fatalf("author stamped with no interval stored: %v, %v", when, err)
+	}
+
+	if err := s.settings.Set(ctx, settingAuthorDiscoveryInterval, "168h"); err != nil {
+		t.Fatal(err)
+	}
+	runTick()
+	if len(disc.calls) != 1 {
+		t.Fatalf("discovery calls after storing an interval = %v, want the author checked", disc.calls)
+	}
+	if when, err := authors.LastDiscoveryAt(ctx, author.ID); err != nil || when == nil {
+		t.Fatalf("author not stamped after a run: %v, %v", when, err)
 	}
 }
 

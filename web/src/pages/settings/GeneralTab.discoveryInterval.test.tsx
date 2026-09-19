@@ -56,19 +56,36 @@ async function findPicker() {
   return (await screen.findByLabelText('settings.general.discoveryIntervalLabel')) as HTMLSelectElement
 }
 
-// #2236: discovery ships on, weekly. The picker offers Off, Daily, Weekly and
-// Monthly, saves on change, and never claims a restart is needed, because the
-// scheduler reads the setting on every tick.
+// #2236: discovery ships off. The picker offers Off, Daily, Weekly and
+// Monthly, shows Off until an interval is stored, saves on change, and never
+// claims a restart is needed, because the scheduler reads the setting on
+// every tick.
 describe('Release discovery interval picker', () => {
-  it('shows Weekly when nothing is stored', async () => {
+  it('shows Off when nothing is stored', async () => {
     render(<GeneralTab />)
     const select = await findPicker()
-    expect(select.value).toBe('168h')
+    expect(select.value).toBe('off')
     const options = within(select).getAllByRole('option').map(o => (o as HTMLOptionElement).value)
     expect(options).toEqual(['off', '24h', '168h', '720h'])
   })
 
+  it('keeps showing a stored interval', async () => {
+    seedSettings({ 'authors.discovery.interval': '168h' })
+    render(<GeneralTab />)
+    const select = await findPicker()
+    expect(select.value).toBe('168h')
+  })
+
+  it('saves Weekly when chosen', async () => {
+    render(<GeneralTab />)
+    const select = await findPicker()
+    fireEvent.change(select, { target: { value: '168h' } })
+    await waitFor(() => expect(api.setSetting).toHaveBeenCalledWith('authors.discovery.interval', '168h'))
+    expect(select.value).toBe('168h')
+  })
+
   it('saves Off when chosen', async () => {
+    seedSettings({ 'authors.discovery.interval': '24h' })
     render(<GeneralTab />)
     const select = await findPicker()
     fireEvent.change(select, { target: { value: 'off' } })

@@ -604,9 +604,10 @@ A key marked `inert` is kept so existing rows and existing clients keep working.
 Do not offer it as a control: nothing will happen.
 
 `authors.discovery.interval` is `off` or a duration from `24h` to `720h`
-(default `168h`). It sets how often each monitored author is checked for new
-books by the scheduled discovery job, and it is read on every hourly tick, so
-`restartRequired` is `false`.
+(default `off`). It sets how often each monitored author is checked for new
+books by the scheduled discovery job. Unset means `off` as well, so the job
+runs only once a duration is stored, and the value is read on every hourly
+tick, so `restartRequired` is `false`.
 
 ### Auth and users (admin)
 

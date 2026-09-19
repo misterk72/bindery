@@ -166,8 +166,9 @@ const SettingHardcoverSyncInterval = "hardcover.sync_interval"
 // SettingAuthorDiscoveryInterval is the KV key for how often each monitored
 // author's catalogue is checked for new books by the scheduled discovery job
 // (#2236). Value is "off" or a Go duration string bounded to [24h, 720h].
-// Empty or unset means the default, 168h (weekly). Read on every hourly tick,
-// so a change applies without a restart.
+// Empty or unset means off, like the literal "off": discovery creates library
+// rows on its own, so it runs only once someone stores an interval. Read on
+// every hourly tick, so a change applies without a restart.
 const SettingAuthorDiscoveryInterval = "authors.discovery.interval"
 
 // SettingImportAudiobookFlattenMultiDisc (#886) is "true" to flatten multi-disc
@@ -871,9 +872,9 @@ func validateSettingValue(key, value string) error {
 			return fmt.Errorf("hardcover.sync_interval %q exceeds the maximum of 168h (7 days)", value)
 		}
 	case SettingAuthorDiscoveryInterval:
-		// Empty = unset (weekly default). "off" stops scheduled discovery.
-		// Below a day every author would be re-checked faster than a
-		// provider's cache turns over, above 30 days it stops being a cadence.
+		// Empty = unset, which means off, as does "off" itself. Below a day
+		// every author would be re-checked faster than a provider's cache
+		// turns over, above 30 days it stops being a cadence.
 		if value == "" || value == "off" {
 			return nil
 		}

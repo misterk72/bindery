@@ -179,7 +179,9 @@ export default function GeneralTab({ onNavigate }: GeneralTabProps = {}) {
   // its own option rather than letting the select render blank (#1848).
   const hardcoverSyncInterval = settings['hardcover.sync_interval'] ?? '24h'
   const hardcoverSyncIntervalIsCustom = !HARDCOVER_SYNC_INTERVAL_PRESETS.includes(hardcoverSyncInterval)
-  const discoveryInterval = settings['authors.discovery.interval'] || '168h'
+  // Discovery ships off (#2236): nothing stored means Off, not the weekly
+  // default the other cadences fall back to.
+  const discoveryInterval = settings['authors.discovery.interval'] || 'off'
   const discoveryIntervalIsCustom = !DISCOVERY_INTERVAL_PRESETS.includes(discoveryInterval)
 
   if (loading) return <div className="text-slate-600 dark:text-zinc-500">{t('common.loading')}</div>

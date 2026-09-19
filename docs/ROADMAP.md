@@ -20,7 +20,7 @@ Work in flight for the next point release.
 
 - **Support-cost reducers** — download log files from the UI ([#1903](https://github.com/vavallee/bindery/issues/1903)) so users on rootless containers can attach logs to issues, and a live hardlink warning at the Import Mode selector ([#1720](https://github.com/vavallee/bindery/issues/1720)) instead of only down in the Storage section.
 
-- **Unattended release discovery** ([#2236](https://github.com/vavallee/bindery/issues/2236)): monitored authors are checked for new books on a schedule, weekly by default, and a new `bookAnnounced` webhook says what arrived. Series discovery ([#2523](https://github.com/vavallee/bindery/issues/2523)) follows once a new work can be told from a new edition ([#2524](https://github.com/vavallee/bindery/issues/2524)).
+- **Unattended release discovery** ([#2236](https://github.com/vavallee/bindery/issues/2236)): monitored authors are checked for new books on a schedule, off until you pick an interval in Settings, General, New release discovery, and a new `bookAnnounced` webhook says what arrived. Series discovery ([#2523](https://github.com/vavallee/bindery/issues/2523)) follows once a new work can be told from a new edition ([#2524](https://github.com/vavallee/bindery/issues/2524)).
 
 ## Next up
 

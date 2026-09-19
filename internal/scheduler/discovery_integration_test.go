@@ -28,6 +28,11 @@ func (p *worksMetaProvider) GetAuthorWorks(context.Context, string) ([]models.Bo
 // as a test: a monitored author already in the library publishes a new work
 // upstream, the scheduler's jobs run, and the new book must exist afterwards.
 // On main no scheduled job creates a book row, so the book never appears.
+//
+// Discovery ships off, so the test stores the Weekly interval first, which is
+// what an operator picks in Settings, General, New release discovery. That it
+// has to be stored at all is the point of
+// TestDiscovery_OffUntilAnIntervalIsStored; here it is only the precondition.
 func TestScheduledJobs_MonitoredAuthorGainsNewUpstreamWork(t *testing.T) {
 	prevPace := discoveryPace
 	discoveryPace = 0
@@ -57,6 +62,9 @@ func TestScheduledJobs_MonitoredAuthorGainsNewUpstreamWork(t *testing.T) {
 		Genres: []string{}, MetadataProvider: "openlibrary", Monitored: true,
 	}
 	if err := books.Create(ctx, &existing); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(ctx, settingAuthorDiscoveryInterval, "168h"); err != nil {
 		t.Fatal(err)
 	}
 
