@@ -276,32 +276,45 @@ func RemoveDownload(ctx context.Context, client *models.DownloadClient, dl *mode
 	}
 }
 
-// GetStalledIDs returns the set of remote IDs the client reports as stalled.
-// For qBittorrent this is the `stalledDL` state; for Transmission it is
-// torrents stopped with a non-empty error string. SABnzbd has no stall
-// concept — its failures are already surfaced as Failed-status NZBs in the
-// existing checkSABnzbdDownloads path.
+// GetStalledTorrents returns the remote IDs the client reports as stalled,
+// each mapped to why. For qBittorrent the client's own signal is the
+// `stalledDL` state; for Transmission it is torrents stopped with a non-empty
+// error string; for Deluge the Error state; for rTorrent a d.message on an
+// incomplete item. Alongside those, every torrent client is also checked for a
+// torrent it accepted but never resolved the metadata for (StallNoMetadata,
+// see nometadata.go) — none of the native signals cover that, which is how a
+// dead magnet sat in a reporter's queue for 34 days (#2709).
+//
+// SABnzbd has no stall concept — its failures are already surfaced as
+// Failed-status NZBs in the existing checkSABnzbdDownloads path.
+//
+// The StallNoMetadata entries are only safe to act on for a download that has
+// been grabbed for longer than the stall timeout, because a healthy magnet
+// looks identical while it resolves. The caller owns that gate; see the
+// comment block in nometadata.go.
 //
 // Keys for torrent clients are lower-cased hash strings; for SABnzbd they
 // would be NZO IDs (but SABnzbd always returns nil here). The second return
 // value matches GetLiveStatuses: true when IDs are torrent hashes.
-func GetStalledIDs(ctx context.Context, client *models.DownloadClient) (map[string]bool, bool, error) {
+func GetStalledTorrents(ctx context.Context, client *models.DownloadClient) (map[string]StallKind, bool, error) {
 	switch client.Type {
 	case "qbittorrent":
 		qb := QbittorrentFor(client)
 		// Poll every category this client may have grabbed under; categoriesToPoll
 		// returns both Category and CategoryAudiobook when the latter is set
 		// (closes #700).
-		out := make(map[string]bool)
+		out := make(map[string]StallKind)
 		for _, cat := range CategoriesToPoll(client) {
 			torrents, err := qb.GetTorrents(ctx, cat)
 			if err != nil {
 				return nil, true, err
 			}
 			for _, t := range torrents {
-				state := strings.ToLower(t.State)
-				if state == "stalleddl" {
-					out[strings.ToLower(t.Hash)] = true
+				switch {
+				case strings.ToLower(t.State) == "stalleddl":
+					out[strings.ToLower(t.Hash)] = StallClientReported
+				case qbittorrentHasNoMetadata(t):
+					out[strings.ToLower(t.Hash)] = StallNoMetadata
 				}
 			}
 		}
@@ -312,11 +325,14 @@ func GetStalledIDs(ctx context.Context, client *models.DownloadClient) (map[stri
 		if err != nil {
 			return nil, true, err
 		}
-		out := make(map[string]bool, len(torrents))
+		out := make(map[string]StallKind, len(torrents))
 		for _, t := range torrents {
+			switch {
 			// status 0 = stopped; treat stopped+error as stalled
-			if t.Status == 0 && strings.TrimSpace(t.ErrorString) != "" {
-				out[strconv.FormatInt(t.ID, 10)] = true
+			case t.Status == 0 && strings.TrimSpace(t.ErrorString) != "":
+				out[strconv.FormatInt(t.ID, 10)] = StallClientReported
+			case transmissionHasNoMetadata(t):
+				out[strconv.FormatInt(t.ID, 10)] = StallNoMetadata
 			}
 		}
 		return out, true, nil
@@ -326,10 +342,13 @@ func GetStalledIDs(ctx context.Context, client *models.DownloadClient) (map[stri
 		if err != nil {
 			return nil, true, err
 		}
-		out := make(map[string]bool, len(torrents))
+		out := make(map[string]StallKind, len(torrents))
 		for h, t := range torrents {
-			if strings.ToLower(t.State) == "error" {
-				out[h] = true
+			switch {
+			case strings.ToLower(t.State) == "error":
+				out[h] = StallClientReported
+			case delugeHasNoMetadata(t):
+				out[h] = StallNoMetadata
 			}
 		}
 		return out, true, nil
@@ -341,14 +360,17 @@ func GetStalledIDs(ctx context.Context, client *models.DownloadClient) (map[stri
 		if err != nil {
 			return nil, true, err
 		}
-		out := make(map[string]bool, len(torrents))
+		out := make(map[string]StallKind, len(torrents))
 		for _, t := range torrents {
+			switch {
 			// rTorrent has no stall state. d.message is its per-torrent error
 			// slot — a tracker rejection or a failed hash check lands there and
 			// the torrent then sits inactive, which is the shape the stall
 			// detector exists to surface.
-			if t.Message != "" && !t.Complete {
-				out[t.Hash] = true
+			case t.Message != "" && !t.Complete:
+				out[t.Hash] = StallClientReported
+			case rtorrentHasNoMetadata(t):
+				out[t.Hash] = StallNoMetadata
 			}
 		}
 		return out, true, nil

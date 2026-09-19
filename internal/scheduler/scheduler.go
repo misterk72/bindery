@@ -1527,9 +1527,15 @@ const stallTimeoutDefault = 120 * time.Minute
 // re-grabbed, and a fresh search is triggered for the same book.
 //
 // Detection uses the download client's native stall signal where available
-// (qBittorrent: stalledDL state; Transmission: stopped with error). For
-// SABnzbd the existing Failed-state detection in CheckDownloads already
-// covers failures, so this job adds nothing for usenet downloads.
+// (qBittorrent: stalledDL state; Transmission: stopped with error), plus the
+// "accepted but never resolved" rule that catches a magnet the client is still
+// holding with no metadata (#2709). For SABnzbd the existing Failed-state
+// detection in CheckDownloads already covers failures, so this job adds
+// nothing for usenet downloads.
+//
+// The grabbed_at cutoff below is what makes the no-metadata rule safe: a
+// healthy magnet is indistinguishable from a dead one until it resolves, so
+// nothing is judged before it has had the whole stall timeout to do so.
 func (s *Scheduler) checkStalledDownloads(ctx context.Context) {
 	timeout := stallTimeoutDefault
 	if s.settings != nil {
@@ -1565,7 +1571,7 @@ func (s *Scheduler) checkStalledDownloads(ctx context.Context) {
 			continue
 		}
 
-		stalledIDs, _, err := downloader.GetStalledIDs(ctx, client)
+		stalledIDs, _, err := downloader.GetStalledTorrents(ctx, client)
 		if err != nil {
 			// Warn, not Debug: a persistent failure here silently disables stall
 			// detection for this client (same invisibility class as #1019).
@@ -1581,15 +1587,18 @@ func (s *Scheduler) checkStalledDownloads(ctx context.Context) {
 			if dl.TorrentID == nil {
 				continue
 			}
-			if !stalledIDs[strings.ToLower(*dl.TorrentID)] {
+			kind, ok := stalledIDs[strings.ToLower(*dl.TorrentID)]
+			if !ok {
 				continue
 			}
 			slog.Warn("stall detected",
 				"title", dl.Title,
 				"grabbed_at", dl.GrabbedAt,
 				"client", client.Name,
+				"kind", kind.String(),
+				"reason", kind.Reason(),
 			)
-			s.handleStalledDownload(ctx, &dl, client)
+			s.handleStalledDownload(ctx, &dl, client, kind)
 		}
 	}
 }
@@ -1600,8 +1609,17 @@ func (s *Scheduler) checkStalledDownloads(ctx context.Context) {
 //
 // client is the download client the release lives in; it may be nil for
 // callers that have no client to hand, in which case the removal is skipped.
-func (s *Scheduler) handleStalledDownload(ctx context.Context, dl *models.Download, client *models.DownloadClient) {
-	reason := "stalled: no peers / no download progress"
+//
+// kind decides the wording only. Both kinds get the same treatment, and for
+// the no-metadata kind that is the right treatment: a magnet nobody will serve
+// the metadata for is a property of the release, not of Bindery's wiring, so
+// blocklisting it and searching again is what gets the user the book. That is
+// the opposite call to importer.failDownloadThatNeverArrived, which does not
+// blocklist precisely because its usual cause is on Bindery's side of the
+// wire. The blocklist entry stays removable from the Blocklist page if the
+// swarm comes back.
+func (s *Scheduler) handleStalledDownload(ctx context.Context, dl *models.Download, client *models.DownloadClient, kind downloader.StallKind) {
+	reason := kind.Reason()
 
 	s.removeStalledFromClient(ctx, dl, client)
 
@@ -1679,9 +1697,11 @@ func (s *Scheduler) handleStalledDownload(ctx context.Context, dl *models.Downlo
 // dead torrents Bindery had already written off.
 //
 // Files are deleted along with it. Only qBittorrent's stalledDL and its
-// equivalents reach here (see downloader.GetStalledIDs) — never a seeding
+// equivalents reach here (see downloader.GetStalledTorrents) — never a seeding
 // torrent — so there is no completed release to keep sharing, and the partial
-// data belongs to a release that has just been blocklisted and replaced. Per
+// data belongs to a release that has just been blocklisted and replaced. A
+// torrent that never resolved its metadata has no data at all, so for that
+// kind the removal is only the empty entry going away. Per
 // indexer seed-ratio overrides (#883) apply to what a client does with a
 // download it finished; they have nothing to say about one that never started.
 //
