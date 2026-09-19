@@ -64,24 +64,36 @@ func TestGetStalledTorrents_Transmission_NoMetadata(t *testing.T) {
 	host, port := serverHostPort(t, srv.URL)
 	client := &models.DownloadClient{Type: "transmission", Host: host, Port: port}
 
-	stalled, _, err := GetStalledTorrents(context.Background(), client)
+	report, err := GetStalledTorrents(context.Background(), client)
 	if err != nil {
 		t.Fatalf("GetStalledTorrents: %v", err)
 	}
-	if stalled["7"] != StallNoMetadata {
-		t.Errorf("stopped magnet with no metadata: want StallNoMetadata, got %v", stalled["7"])
+	if !report.NoMetadata["7"] {
+		t.Error("stopped magnet with no metadata: want a NoMetadata entry")
 	}
-	if stalled["8"] != StallNoMetadata {
-		t.Errorf("downloading magnet with no metadata: want StallNoMetadata, got %v", stalled["8"])
+	if !report.NoMetadata["8"] {
+		t.Error("downloading magnet with no metadata: want a NoMetadata entry")
 	}
-	if _, ok := stalled["9"]; ok {
+	if report.NoMetadata["9"] || report.ClientReported["9"] {
 		t.Error("a healthy downloading torrent must not be reported as stalled")
 	}
-	if _, ok := stalled["10"]; ok {
+	if report.NoMetadata["10"] || report.ClientReported["10"] {
 		t.Error("a torrent with metadata but no progress yet must not be reported as stalled")
 	}
-	if stalled["11"] != StallClientReported {
-		t.Errorf("errored torrent: want StallClientReported, got %v", stalled["11"])
+	if !report.ClientReported["11"] {
+		t.Error("errored torrent: want a ClientReported entry")
+	}
+	if report.NoMetadata["11"] {
+		t.Error("an errored torrent must not also be reported as missing metadata")
+	}
+	// Two of the five have finished nothing but are not stuck; all five are
+	// incomplete, so 2 of 5 is under the outage threshold and these are
+	// individually actionable.
+	if report.Incomplete != 5 {
+		t.Errorf("incomplete count: want 5, got %d", report.Incomplete)
+	}
+	if report.LooksLikeClientOutage() {
+		t.Error("two dead magnets out of five is a release problem, not a client outage")
 	}
 }
 
@@ -102,7 +114,7 @@ func TestGetStalledTorrents_Transmission_NoMetadataFieldsRequested(t *testing.T)
 
 	host, port := serverHostPort(t, srv.URL)
 	client := &models.DownloadClient{Type: "transmission", Host: host, Port: port}
-	if _, _, err := GetStalledTorrents(context.Background(), client); err != nil {
+	if _, err := GetStalledTorrents(context.Background(), client); err != nil {
 		t.Fatalf("GetStalledTorrents: %v", err)
 	}
 	for _, field := range []string{"totalSize", "percentDone", "metadataPercentComplete"} {
@@ -136,17 +148,17 @@ func TestGetStalledTorrents_QBittorrent_MetaDL(t *testing.T) {
 	client := &models.DownloadClient{
 		Type: "qbittorrent", Host: host, Port: port, Username: "u", Password: "p",
 	}
-	stalled, _, err := GetStalledTorrents(context.Background(), client)
+	report, err := GetStalledTorrents(context.Background(), client)
 	if err != nil {
 		t.Fatalf("GetStalledTorrents: %v", err)
 	}
-	if stalled["aaa111"] != StallNoMetadata {
-		t.Errorf("metaDL: want StallNoMetadata, got %v", stalled["aaa111"])
+	if !report.NoMetadata["aaa111"] {
+		t.Error("metaDL: want a NoMetadata entry")
 	}
-	if stalled["bbb222"] != StallNoMetadata {
-		t.Errorf("forcedMetaDL: want StallNoMetadata, got %v", stalled["bbb222"])
+	if !report.NoMetadata["bbb222"] {
+		t.Error("forcedMetaDL: want a NoMetadata entry")
 	}
-	if _, ok := stalled["ccc333"]; ok {
+	if report.NoMetadata["ccc333"] || report.ClientReported["ccc333"] {
 		t.Error("a healthy downloading torrent must not be reported as stalled")
 	}
 }
@@ -187,14 +199,14 @@ func TestGetStalledTorrents_Deluge_NoMetadata(t *testing.T) {
 
 	host, port := serverHostPort(t, srv.URL)
 	client := &models.DownloadClient{Type: "deluge", Host: host, Port: port, Password: "pw"}
-	stalled, _, err := GetStalledTorrents(context.Background(), client)
+	report, err := GetStalledTorrents(context.Background(), client)
 	if err != nil {
 		t.Fatalf("GetStalledTorrents: %v", err)
 	}
-	if stalled["aaa111"] != StallNoMetadata {
-		t.Errorf("magnet with no metadata: want StallNoMetadata, got %v", stalled["aaa111"])
+	if !report.NoMetadata["aaa111"] {
+		t.Error("magnet with no metadata: want a NoMetadata entry")
 	}
-	if _, ok := stalled["ccc333"]; ok {
+	if report.NoMetadata["ccc333"] || report.ClientReported["ccc333"] {
 		t.Error("a healthy downloading torrent must not be reported as stalled")
 	}
 }
@@ -203,21 +215,21 @@ func TestGetStalledTorrents_Deluge_NoMetadata(t *testing.T) {
 // placeholder, which reports a zero d.size_bytes and no message at all.
 func TestGetStalledTorrents_Rtorrent_NoMetadata(t *testing.T) {
 	stub := newRtorrentSizeStub(t, 0, "0")
-	stalled, _, err := GetStalledTorrents(context.Background(), stub.client(t, 210))
+	report, err := GetStalledTorrents(context.Background(), stub.client(t, 210))
 	if err != nil {
 		t.Fatalf("GetStalledTorrents: %v", err)
 	}
-	if stalled[rtorrentTestHash] != StallNoMetadata {
-		t.Errorf("magnet placeholder: want StallNoMetadata, got %v", stalled[rtorrentTestHash])
+	if !report.NoMetadata[rtorrentTestHash] {
+		t.Error("magnet placeholder: want a NoMetadata entry")
 	}
 
 	healthy := newRtorrentSizeStub(t, 1000, "0")
-	stalled, _, err = GetStalledTorrents(context.Background(), healthy.client(t, 211))
+	report, err = GetStalledTorrents(context.Background(), healthy.client(t, 211))
 	if err != nil {
 		t.Fatalf("GetStalledTorrents: %v", err)
 	}
-	if len(stalled) != 0 {
-		t.Errorf("a healthy downloading torrent must not be reported as stalled, got %v", stalled)
+	if len(report.ClientReported)+len(report.NoMetadata) != 0 {
+		t.Errorf("a healthy downloading torrent must not be reported as stalled, got %+v", report)
 	}
 }
 
@@ -253,4 +265,61 @@ func newRtorrentSizeStub(t *testing.T, sizeBytes int64, complete string) *rtorre
 	}))
 	t.Cleanup(s.Close)
 	return s
+}
+
+// TestStallReport_LooksLikeClientOutage pins the batch guard's two halves: the
+// share, and the floor that stops the share from firing on a tiny queue.
+func TestStallReport_LooksLikeClientOutage(t *testing.T) {
+	report := func(noMeta, incomplete int) StallReport {
+		r := StallReport{NoMetadata: map[string]bool{}, Incomplete: incomplete}
+		for i := 0; i < noMeta; i++ {
+			r.NoMetadata[string(rune('a'+i))] = true
+		}
+		return r
+	}
+	cases := []struct {
+		name       string
+		noMeta     int
+		incomplete int
+		want       bool
+	}{
+		{"nothing stuck", 0, 10, false},
+		{"one dead magnet in a healthy queue", 1, 10, false},
+		{"one dead magnet and nothing else in flight", 1, 1, false},
+		{"two dead magnets and nothing else, under the floor", 2, 2, false},
+		{"three dead magnets, all of the queue", 3, 3, true},
+		{"three dead magnets, exactly half, not above the share", 3, 6, false},
+		{"four dead magnets of seven, above the share", 4, 7, true},
+		{"three dead of ten, above the floor but well under the share", 3, 10, false},
+		{"no denominator reported", 5, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := report(tc.noMeta, tc.incomplete).LooksLikeClientOutage(); got != tc.want {
+				t.Errorf("LooksLikeClientOutage() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStallKind_ZeroValueIsUnusable pins that the zero value cannot be acted on
+// by accident: its reason is obviously a bug report, not a plausible sentence
+// to show a user, and it does not blocklist.
+func TestStallKind_ZeroValueIsUnusable(t *testing.T) {
+	var k StallKind
+	if k != StallNone {
+		t.Fatalf("the zero StallKind must be StallNone, got %v", k)
+	}
+	if !strings.HasPrefix(k.Reason(), "BUG:") {
+		t.Errorf("StallNone reason must not read like a real stall, got %q", k.Reason())
+	}
+	if k.Blocklists() {
+		t.Error("StallNone must never blocklist")
+	}
+	if StallNoMetadata.Blocklists() {
+		t.Error("a no-metadata stall must not blocklist: it says nothing about the release")
+	}
+	if !StallClientReported.Blocklists() {
+		t.Error("a client-reported stall must still blocklist, as it did before #2709")
+	}
 }

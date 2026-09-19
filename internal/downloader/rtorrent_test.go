@@ -134,27 +134,27 @@ func TestGetLiveStatuses_Rtorrent(t *testing.T) {
 func TestGetStalledTorrents_Rtorrent(t *testing.T) {
 	t.Run("errored torrent is stalled", func(t *testing.T) {
 		stub := newRtorrentStub(t, "0", "Tracker: unregistered torrent")
-		ids, usesTorrentID, err := GetStalledTorrents(context.Background(), stub.client(t, 102))
+		report, err := GetStalledTorrents(context.Background(), stub.client(t, 102))
 		if err != nil {
 			t.Fatalf("GetStalledTorrents: %v", err)
 		}
-		if !usesTorrentID {
+		if !report.UsesTorrentID {
 			t.Fatal("expected hash keys")
 		}
-		if ids[rtorrentTestHash] != StallClientReported {
-			t.Fatalf("expected the errored torrent to be stalled, got %v", ids)
+		if !report.ClientReported[rtorrentTestHash] {
+			t.Fatalf("expected the errored torrent to be stalled, got %v", report.ClientReported)
 		}
 	})
 
 	t.Run("a message on a complete torrent is not a stall", func(t *testing.T) {
 		// Tracker chatter on a seeding torrent says nothing about its files.
 		stub := newRtorrentStub(t, "1", "Tracker: unregistered torrent")
-		ids, _, err := GetStalledTorrents(context.Background(), stub.client(t, 103))
+		report, err := GetStalledTorrents(context.Background(), stub.client(t, 103))
 		if err != nil {
 			t.Fatalf("GetStalledTorrents: %v", err)
 		}
-		if len(ids) != 0 {
-			t.Fatalf("expected no stalls, got %v", ids)
+		if len(report.ClientReported)+len(report.NoMetadata) != 0 {
+			t.Fatalf("expected no stalls, got %+v", report)
 		}
 	})
 }

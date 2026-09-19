@@ -36,23 +36,23 @@ func TestGetStalledTorrents_QBittorrent_StalledDL(t *testing.T) {
 		Username: "u", Password: "p",
 	}
 
-	stalled, usesTorrentID, err := GetStalledTorrents(context.Background(), client)
+	report, err := GetStalledTorrents(context.Background(), client)
 	if err != nil {
 		t.Fatalf("GetStalledTorrents: %v", err)
 	}
-	if !usesTorrentID {
-		t.Fatal("expected usesTorrentID=true for qbittorrent")
+	if !report.UsesTorrentID {
+		t.Fatal("expected UsesTorrentID=true for qbittorrent")
 	}
-	if len(stalled) != 2 {
-		t.Fatalf("expected 2 stalled entries, got %d: %v", len(stalled), stalled)
+	if len(report.ClientReported) != 2 {
+		t.Fatalf("expected 2 stalled entries, got %d: %v", len(report.ClientReported), report.ClientReported)
 	}
-	if stalled["abcdef"] != StallClientReported {
+	if !report.ClientReported["abcdef"] {
 		t.Error("expected 'abcdef' (lower-cased) to be stalled")
 	}
-	if stalled["ffffff"] != StallClientReported {
+	if !report.ClientReported["ffffff"] {
 		t.Error("expected case-insensitive match for 'StalledDL'")
 	}
-	if _, ok := stalled["123abc"]; ok {
+	if report.ClientReported["123abc"] {
 		t.Error("non-stalled torrent incorrectly flagged")
 	}
 }
@@ -76,12 +76,12 @@ func TestGetStalledTorrents_QBittorrent_EmptyList(t *testing.T) {
 		Username: "u", Password: "p",
 	}
 
-	stalled, _, err := GetStalledTorrents(context.Background(), client)
+	report, err := GetStalledTorrents(context.Background(), client)
 	if err != nil {
 		t.Fatalf("GetStalledTorrents: %v", err)
 	}
-	if len(stalled) != 0 {
-		t.Errorf("expected empty map, got %v", stalled)
+	if len(report.ClientReported)+len(report.NoMetadata) != 0 {
+		t.Errorf("expected an empty report, got %+v", report)
 	}
 }
 
@@ -115,18 +115,21 @@ func TestGetStalledTorrents_Transmission_StoppedWithError(t *testing.T) {
 	host, port := serverHostPort(t, srv.URL)
 	client := &models.DownloadClient{Type: "transmission", Host: host, Port: port}
 
-	stalled, usesTorrentID, err := GetStalledTorrents(context.Background(), client)
+	report, err := GetStalledTorrents(context.Background(), client)
 	if err != nil {
 		t.Fatalf("GetStalledTorrents: %v", err)
 	}
-	if !usesTorrentID {
-		t.Fatal("expected usesTorrentID=true for transmission")
+	if !report.UsesTorrentID {
+		t.Fatal("expected UsesTorrentID=true for transmission")
 	}
-	if len(stalled) != 1 {
-		t.Fatalf("expected 1 stalled entry, got %d: %v", len(stalled), stalled)
+	if len(report.ClientReported) != 1 {
+		t.Fatalf("expected 1 stalled entry, got %d: %v", len(report.ClientReported), report.ClientReported)
 	}
-	if stalled["1"] != StallClientReported {
+	if !report.ClientReported["1"] {
 		t.Error("expected transmission id '1' to be stalled")
+	}
+	if len(report.NoMetadata) != 0 {
+		t.Errorf("no torrent here is missing metadata, got %v", report.NoMetadata)
 	}
 }
 
@@ -134,15 +137,15 @@ func TestGetStalledTorrents_Transmission_StoppedWithError(t *testing.T) {
 // with no error — the caller treats this as "nothing stalled".
 func TestGetStalledTorrents_Sabnzbd_NotSupported(t *testing.T) {
 	client := &models.DownloadClient{Type: "sabnzbd", Host: "localhost", Port: 1, APIKey: "k"}
-	stalled, usesTorrentID, err := GetStalledTorrents(context.Background(), client)
+	report, err := GetStalledTorrents(context.Background(), client)
 	if err != nil {
 		t.Fatalf("GetStalledTorrents sabnzbd: %v", err)
 	}
-	if usesTorrentID {
-		t.Error("expected usesTorrentID=false for sabnzbd")
+	if report.UsesTorrentID {
+		t.Error("expected UsesTorrentID=false for sabnzbd")
 	}
-	if stalled != nil {
-		t.Errorf("expected nil map for sabnzbd, got %v", stalled)
+	if len(report.ClientReported) != 0 || len(report.NoMetadata) != 0 {
+		t.Errorf("expected an empty report for sabnzbd, got %+v", report)
 	}
 }
 
@@ -163,7 +166,7 @@ func TestGetStalledTorrents_QBittorrent_ServerError(t *testing.T) {
 		Type: "qbittorrent", Host: host, Port: port,
 		Username: "u", Password: "p",
 	}
-	if _, _, err := GetStalledTorrents(context.Background(), client); err == nil {
+	if _, err := GetStalledTorrents(context.Background(), client); err == nil {
 		t.Fatal("expected error from 500 response, got nil")
 	}
 }

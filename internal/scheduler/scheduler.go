@@ -1571,7 +1571,7 @@ func (s *Scheduler) checkStalledDownloads(ctx context.Context) {
 			continue
 		}
 
-		stalledIDs, _, err := downloader.GetStalledTorrents(ctx, client)
+		report, err := downloader.GetStalledTorrents(ctx, client)
 		if err != nil {
 			// Warn, not Debug: a persistent failure here silently disables stall
 			// detection for this client (same invisibility class as #1019).
@@ -1579,7 +1579,21 @@ func (s *Scheduler) checkStalledDownloads(ctx context.Context) {
 				"client", client.Name, "error", err)
 			continue
 		}
-		if len(stalledIDs) == 0 {
+		// Breadth guard (#2709). "No metadata" is as much a property of the
+		// network as of the release, so a client that has lost DHT, UDP or its
+		// port forward reports it for everything it is working on at once.
+		// Failing that batch would turn one temporary fault into a pile of
+		// failed downloads. One line per client per run, at Warn, because a
+		// silent skip here looks exactly like a working stall detector.
+		if report.LooksLikeClientOutage() {
+			slog.Warn("stall check: most of this client's unfinished torrents have no metadata, so this is a download client or network fault rather than bad releases. Leaving them alone",
+				"client", client.Name,
+				"no_metadata", len(report.NoMetadata),
+				"incomplete", report.Incomplete,
+			)
+			report.NoMetadata = nil
+		}
+		if len(report.ClientReported) == 0 && len(report.NoMetadata) == 0 {
 			continue
 		}
 
@@ -1587,8 +1601,14 @@ func (s *Scheduler) checkStalledDownloads(ctx context.Context) {
 			if dl.TorrentID == nil {
 				continue
 			}
-			kind, ok := stalledIDs[strings.ToLower(*dl.TorrentID)]
-			if !ok {
+			id := strings.ToLower(*dl.TorrentID)
+			var kind downloader.StallKind
+			switch {
+			case report.ClientReported[id]:
+				kind = downloader.StallClientReported
+			case report.NoMetadata[id]:
+				kind = downloader.StallNoMetadata
+			default:
 				continue
 			}
 			slog.Warn("stall detected",
@@ -1597,6 +1617,7 @@ func (s *Scheduler) checkStalledDownloads(ctx context.Context) {
 				"client", client.Name,
 				"kind", kind.String(),
 				"reason", kind.Reason(),
+				"blocklisted", kind.Blocklists(),
 			)
 			s.handleStalledDownload(ctx, &dl, client, kind)
 		}
@@ -1604,21 +1625,29 @@ func (s *Scheduler) checkStalledDownloads(ctx context.Context) {
 }
 
 // handleStalledDownload removes the stalled release from the download client,
-// marks the download failed, records history, adds the release to the
-// blocklist, and triggers a fresh search for the same book.
+// marks the download failed, records history, blocklists the release when the
+// stall says something about it, and triggers a fresh search for the same
+// book.
 //
 // client is the download client the release lives in; it may be nil for
 // callers that have no client to hand, in which case the removal is skipped.
 //
-// kind decides the wording only. Both kinds get the same treatment, and for
-// the no-metadata kind that is the right treatment: a magnet nobody will serve
-// the metadata for is a property of the release, not of Bindery's wiring, so
-// blocklisting it and searching again is what gets the user the book. That is
-// the opposite call to importer.failDownloadThatNeverArrived, which does not
-// blocklist precisely because its usual cause is on Bindery's side of the
-// wire. The blocklist entry stays removable from the Blocklist page if the
-// swarm comes back.
+// kind decides the wording and whether the release is blocklisted. Only the
+// client's own per torrent signal blocklists: it is the client asserting that
+// something is wrong with this torrent. A no-metadata stall does not, because
+// nothing was learned about the release, and the blocklist is permanent and
+// hand-cleared, so one lost port forward could otherwise ban a run of good
+// releases for ever. See StallKind.Blocklists.
+//
+// kind must be a real stall. StallNone is rejected rather than defaulted,
+// because a caller that forgot to set it would otherwise fail a download with
+// a plausible-looking reason.
 func (s *Scheduler) handleStalledDownload(ctx context.Context, dl *models.Download, client *models.DownloadClient, kind downloader.StallKind) {
+	if kind == downloader.StallNone {
+		slog.Error("stall: handler called with no stall reason, ignoring",
+			"download_id", dl.ID, "title", dl.Title)
+		return
+	}
 	reason := kind.Reason()
 
 	s.removeStalledFromClient(ctx, dl, client)
@@ -1639,8 +1668,13 @@ func (s *Scheduler) handleStalledDownload(ctx context.Context, dl *models.Downlo
 		})
 	}
 
-	// Blocklist the release so the next search skips it.
-	if s.blocklist != nil && dl.IndexerID != nil {
+	// Blocklist the release so the next search skips it, but only for a stall
+	// that says something about the release itself.
+	if !kind.Blocklists() {
+		slog.Info("stall: not blocklisting the release, the stall says nothing about it",
+			"download_id", dl.ID, "title", dl.Title, "kind", kind.String())
+	}
+	if kind.Blocklists() && s.blocklist != nil && dl.IndexerID != nil {
 		entry := &models.BlocklistEntry{
 			BookID:    dl.BookID,
 			GUID:      dl.GUID,
