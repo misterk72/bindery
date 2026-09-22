@@ -89,7 +89,10 @@ The sequence that works is always: **populate the catalogue, then scan**. See
 
 Every book has a **status** — its acquisition lifecycle:
 
-`wanted → downloading → downloaded → imported` (plus `skipped`)
+`wanted → imported` (plus `skipped`)
+
+There is no in between status. A grab in flight lives on the Queue page and is
+never written onto the book, so a book stays `wanted` until its file is on disk.
 
 Every new book record starts as `wanted`, no matter how it was created. That
 is just "no file yet"; it does not by itself make Bindery do anything.
@@ -178,11 +181,11 @@ monitored.
 
 | Entry point | What it creates |
 |---|---|
-| **Add to library → an author row** (the **Add Author** button on Authors) | The author **plus their full catalogue** (up to ~100 titles), monitored per the monitor mode you pick |
+| **Add to library → an author row** (the **Add Author** button on Authors) | The author **plus their full catalogue** (up to 2,000 titles, after deduplication and the metadata profile's filters), monitored per the monitor mode you pick |
 | **Add to library → a book row** (the **Add Book** button on Books or Authors) | One book, and only that book, silently creating its author if needed. Select a search result to review its cover and identifiers before confirming; ISBN lookups show the searched ISBN separately from identifiers reported by the metadata source |
 | **Discover → Add to Wanted** | One recommended book |
 | **Series → Fill gaps** | The missing books of a linked series, wanted + monitored |
-| **Import lists** (Settings → Import, Hardcover reading lists) | Every list item, re-synced on the Hardcover list sync interval (Settings → General, 24h by default). Whether the items are also marked wanted is the per-list **Download books from this list** checkbox: on (the default) creates them monitored and queues downloads; off catalogues them unmonitored, so you can browse a Want to Read shelf in Bindery and fetch books one at a time. Authors created by a list never pull their back-catalogue in — only the listed books are added. **Sync now** starts the sync in the background and the row reports its progress, so a large shelf isn't cut short by a request timeout |
+| **Import lists** (Settings → Import / Migrate, Hardcover reading lists) | Every list item, re-synced on the Hardcover list sync interval (Settings → General, 24h by default). Whether the items are also marked wanted is the per-list **Download books from this list** checkbox: on (the default) creates them monitored and queues downloads; off catalogues them unmonitored, so you can browse a Want to Read shelf in Bindery and fetch books one at a time. Authors created by a list never pull their back-catalogue in — only the listed books are added. **Sync now** starts the sync in the background and the row reports its progress, so a large shelf isn't cut short by a request timeout |
 | **Library imports** (Calibre, Readarr, ABS, Goodreads CSV, author list) | Your existing catalogue — see the next section |
 
 **Add Author** and **Add Book** open the same dialog. Type an author name, a
@@ -227,14 +230,16 @@ changed for many authors at once from Authors → select → **Set monitor mode*
 
 The Books page shows the **whole catalogue** — monitored or not. "Why are
 there books here I never asked for?" is rule 2: unmonitored means "won't
-grab", not "won't list". Select the ones you never want and **Exclude** them.
+grab", not "won't list". Open the author and select the ones you never want there, then
+**Exclude** them; the Books page has Monitor, Unmonitor and Delete, but Exclude
+lives on the author page.
 
 ## From Wanted to your library
 
 **Search.** A scheduled sweep (default every 12 hours; interval in Settings →
 General, restart required) searches your indexers for every book on the
 Wanted page and auto-grabs the best release. The **Auto-grab** toggle in
-Settings → General turns grabbing off entirely if you prefer to grab by hand
+Settings → Metadata Profiles → Library Defaults turns grabbing off entirely if you prefer to grab by hand
 from the Wanted page. It covers every path that can start a download: the
 scheduled sweep, the searches an author add fires, a series fill, adding a
 single book, adding from recommendations, a bulk **Search** action, a book
@@ -303,8 +308,8 @@ would land in one book's folder. Automatic selection therefore skips releases
 that name themselves as a pack — an explicit range like `Books 1-4`, a box
 set, an omnibus, a "complete series". They still appear in interactive search
 so you can see them, and if you grab one by hand the import is blocked with an
-explanation rather than run. To take a pack, use **Queue → Manual import** and
-place each book's files against the right book record.
+explanation rather than run. To take a pack, point **Import → From a folder** at the
+finished download and place each book's files against the right book record.
 
 A release is only judged a pack on wording that single books do not use about
 themselves. `Part 1-2` is left alone, because that is how one long audiobook
@@ -343,7 +348,8 @@ on Reorganize. The book file itself is never modified.
 the recovery actions: **Retry import** (after fixing a path remap), **Match to
 book** (attach a failed import to the right book and import it from disk), and
 per-row error detail. History records every grab/import/failure and can
-blocklist a bad release in one click.
+blocklist a bad release in one click. Blocked releases are listed under
+Settings → Blocklist, where you can remove one to let it be grabbed again.
 
 Bindery does not chase format upgrades on its own: the sweep only searches
 Wanted books, and once a book has a file it is no longer Wanted. If you want
@@ -358,10 +364,10 @@ matches where your metadata lives, then scan:
 | You have | Do this first |
 |---|---|
 | A Calibre library | Settings → Calibre → **Library import** (reads `metadata.db`, creates authors + books) |
-| A Readarr install | Settings → Import → upload `readarr.db` ([guide](Migrating-From-Readarr-Wiki.md)) |
+| A Readarr install | Settings → Import / Migrate → upload `readarr.db` ([guide](Migrating-From-Readarr-Wiki.md)) |
 | An Audiobookshelf server | Settings → Audiobookshelf → configure + **Import** ([guide](ABS-Import-Wiki.md)) |
-| A Goodreads account | Settings → Import → **Goodreads CSV** (export, filter by shelf, preview, commit) |
-| Just a list of authors | Settings → Import → paste or upload the author list |
+| A Goodreads account | Settings → Import / Migrate → **Goodreads CSV** (export, filter by shelf, preview, commit) |
+| Just a list of authors | Settings → Import / Migrate → **Upload CSV**, one author name per line |
 | Only folders of files | Scan the library, then adopt on **Import → In your library**; or use **Import → From a folder** for files outside the library |
 
 Then run **Settings → General → Library → Scan Library** to attach your files
@@ -426,7 +432,7 @@ to the records. Things worth knowing before you judge the results:
   relocating the file is not available yet (#2055).
 - A folder holding both an ebook and an audiobook for the same book attaches
   both in a single scan — one file per format, so a second scan is not needed.
-- A PDF, TXT, RTF or CBZ sitting in a folder that also holds audio is treated as
+- A PDF, TXT, RTF, CBZ or CBR sitting in a folder that also holds audio is treated as
   an **audiobook supplement** (the companion PDF Audible-style releases ship)
   and is not attached as the book's ebook. The same file in a folder with no
   audio in it is treated as an ebook as usual.
@@ -563,7 +569,7 @@ When metadata is wrong, you have three levels of fix:
    never overwrite them ([guide](Metadata-Editing-Wiki.md)).
 2. **Re-bind** the book, or **relink** the author ("Find better match"), to a
    different provider record when the match itself is wrong.
-3. A **metadata profile** (languages, minimum popularity, skip part-books)
+3. A **metadata profile** (languages, minimum page count, skip part books)
    filters what a catalogue sync lets in.
 
 Box sets need no setting. A work whose title plainly names a bundle ("... Box
@@ -675,7 +681,9 @@ discovery Off, removes it entirely.
 
 Discovery follows authors only. Watching a **series** for its next entry is
 planned separately
-([#2523](https://github.com/vavallee/bindery/issues/2523)).
+([#2523](https://github.com/vavallee/bindery/issues/2523)). The **Add to
+shortlist** toggle on a series marks it so you can find it again; it does not
+make Bindery check the series.
 
 Changing a provider or tightening a metadata profile does not silently delete
 old catalogue rows during refresh. To apply the new catalogue rules to an
@@ -762,12 +770,17 @@ after fixing. ([troubleshooting](Troubleshooting-Wiki.md))
 In Docker, `localhost` inside Bindery's container is Bindery, not the client —
 use the service name or LAN IP. Also check for qBittorrent's persisted IP ban
 after failed logins. Note the image is distroless: there is no shell to debug
-from inside the container.
+from inside the container. Settings → Download Clients → **Diagnose** walks the
+connection, the category, the save path, the path remap and the hardlink check
+and names the first thing to fix. Copy report leaves out the host, port and
+username, so it is safe to paste into an issue.
 
 **Bindery is behind my VPN and metadata broke.**
-OpenLibrary blocks many VPN/datacenter IPs. Keep Prowlarr and the torrent
-client behind the VPN; Bindery itself doesn't need it — it only talks to
-Prowlarr, never to trackers directly. Gluetun users: allow LAN with
+OpenLibrary blocks many VPN/datacenter IPs. Keep the torrent client behind the VPN.
+Bindery needs to reach whatever you configured as an indexer, and it fetches
+each .torrent or NZB itself before handing it to the client, so if your indexers
+are direct Newznab or Torznab endpoints rather than Prowlarr, Bindery reaches
+them too. Gluetun users: allow LAN with
 `FIREWALL_OUTBOUND_SUBNETS`, or ABS/Calibre connections will time out.
 
 **The book has my ebook but still shows as not done.**
