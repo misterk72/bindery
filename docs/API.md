@@ -12,16 +12,18 @@ Every request to `/api/v1/*` is authenticated **except** the bootstrap and ident
 - `GET  /api/v1/auth/status`
 - `POST /api/v1/auth/login`, `/auth/logout`, `/auth/setup`
 - `GET  /api/v1/auth/oidc/{provider}/login` and `/callback`
+- `GET  /api/v1/auth/csrf`
+- `GET  /api/v1/auth/oidc/providers` (the read path only; `PUT` on the same path is an admin mutation)
 
 A request is allowed if **any** of the following holds:
 
 1. Auth mode is **Disabled** (configured in Settings → General → Security).
 2. Auth mode is **Local only** and the request originates from a private-range IP — `10/8`, `172.16/12`, `192.168/16`, `127/8`, IPv6 ULA, link-local, loopback.
-3. The request carries a valid `X-Api-Key` header (or `?apikey=` query parameter) matching the stored key.
+3. The request carries a valid `X-Api-Key` header matching the stored key. The `?apikey=` query parameter is accepted too, but only on `GET`, `HEAD` and `OPTIONS`: a key in a URL leaks into proxy logs, browser history and `Referer`, so it cannot authorise a mutation. Mutations must send the header.
 4. The request carries a valid `bindery_session` cookie.
 5. Auth mode is **Proxy** and a trusted upstream forwards `X-Forwarded-User` matching a Bindery account (see [auth-proxy.md](auth-proxy.md)).
 
-Otherwise the server returns `401`. Browser sessions also need a CSRF double-submit token on mutating requests (`POST` / `PUT` / `DELETE`); API-key clients are exempt from CSRF.
+Otherwise the server returns `401`. Browser sessions also need a CSRF double-submit token on mutating requests (anything other than `GET`, `HEAD` and `OPTIONS`); API-key clients are exempt from CSRF.
 
 Non-browser clients (curl, scripts, mobile apps) authenticating via API key do **not** need to send an `X-Requested-With: bindery-ui` header — that header is required only for browser sessions to satisfy the CSRF gate. The auth endpoints listed above (`/auth/login`, `/auth/logout`, `/auth/setup`, `/auth/status`, `/auth/csrf`) are exempt from the `X-Requested-With` check entirely, since there is no session to protect at that stage.
 
@@ -234,21 +236,27 @@ fails the search still succeeds, unstamped.
 ### Indexers, Prowlarr, root folders
 
 ```
-GET    /api/v1/indexer                            list configured indexers
+GET    /api/v1/indexer                            list configured indexers (admin)
+GET    /api/v1/indexer/{id}                       fetch one (admin)
 POST   /api/v1/indexer                            add (admin)
 PUT    /api/v1/indexer/{id}                       update (admin)
 DELETE /api/v1/indexer/{id}                       remove (admin)
-POST   /api/v1/indexer/{id}/test                  probe connectivity
+POST   /api/v1/indexer/{id}/test                  probe a saved indexer (admin)
+POST   /api/v1/indexer/test                       probe an unsaved config posted in the body (admin)
 GET    /api/v1/indexer/search?q=…                 multi-indexer ad-hoc query
 GET    /api/v1/search/last-debug                  last query plan & raw responses (debugging)
 
-GET    /api/v1/prowlarr                           list registered Prowlarr servers
-POST   /api/v1/prowlarr                           add a Prowlarr server
-POST   /api/v1/prowlarr/{id}/sync                 import indexers from Prowlarr
+GET    /api/v1/prowlarr                           list registered Prowlarr servers (admin)
+GET    /api/v1/prowlarr/{id}                      fetch one (admin)
+POST   /api/v1/prowlarr                           add a Prowlarr server (admin)
+PUT    /api/v1/prowlarr/{id}                      update (admin)
+DELETE /api/v1/prowlarr/{id}                      remove (admin)
+POST   /api/v1/prowlarr/{id}/test                 probe connectivity (admin)
+POST   /api/v1/prowlarr/{id}/sync                 import indexers from Prowlarr (admin)
 
 GET    /api/v1/rootfolder                         list library roots
-POST   /api/v1/rootfolder                         add a new root
-DELETE /api/v1/rootfolder/{id}                    remove
+POST   /api/v1/rootfolder                         add a new root (admin)
+DELETE /api/v1/rootfolder/{id}                    remove (admin)
 ```
 
 #### Per-indexer daily query cap
@@ -311,7 +319,7 @@ To test a saved indexer against its stored key, use
 ### Download clients, queue, history, blocklist
 
 ```
-GET    /api/v1/downloadclient                     list (filtered by visibility)
+GET    /api/v1/downloadclient                     list (admin)
 POST   /api/v1/downloadclient                     add (admin)
 GET    /api/v1/downloadclient/{id}                fetch one (admin)
 PUT    /api/v1/downloadclient/{id}                update (admin)
@@ -450,15 +458,18 @@ cannot read folder settings.
 ### Notifications, backups, system
 
 ```
-GET    /api/v1/notification                       list webhooks
-POST   /api/v1/notification                       create
-POST   /api/v1/notification/{id}/test             fire a test event
+GET    /api/v1/notification                       list webhooks (admin)
+POST   /api/v1/notification                       create (admin)
+GET    /api/v1/notification/{id}                  fetch one (admin)
+PUT    /api/v1/notification/{id}                  update (admin)
+DELETE /api/v1/notification/{id}                  remove (admin)
+POST   /api/v1/notification/{id}/test             fire a test event (admin)
 
-POST   /api/v1/backup                             snapshot the SQLite database (optional {"label": "..."})
-GET    /api/v1/backup                             list stored backups
-DELETE /api/v1/backup/{filename}                  delete one backup
+POST   /api/v1/backup                             snapshot the SQLite database (admin, optional {"label": "..."})
+GET    /api/v1/backup                             list stored backups (admin)
+DELETE /api/v1/backup/{filename}                  delete one backup (admin)
 POST   /api/v1/backup/{filename}/restore          stage a backup for the next restart (admin, X-Confirm-Restore: true)
-GET    /api/v1/system/status                      version, uptime, build info
+GET    /api/v1/system/status                      version, commit, build date, newest published release, image cache size, Hardcover feature state
 POST   /api/v1/library/scan                       start a library scan in the background (202)
 GET    /api/v1/library/scan/status                summary of the last library scan, paths included (admin)
 GET    /api/v1/library/unmatched                  books the scan could not match, one row per book (admin)
@@ -468,7 +479,10 @@ POST   /api/v1/library/unmatched/{id}/undo        reverse an adoption exactly (a
 POST   /api/v1/library/unmatched/{id}/ignore      set a pending row aside (admin)
 POST   /api/v1/library/unmatched/{id}/unignore    return an ignored row to pending (admin)
 POST   /api/v1/library/unmatched/ignore           ignore pending rows by {"ids":[..]} or {"authorFolder":"..."} (admin)
-PUT    /api/v1/system/loglevel                    runtime log-level switch (debug/info/warn/error)
+GET    /api/v1/system/logs                        app log lines (admin)
+GET    /api/v1/system/logs/export                 the same rows as a downloadable file (admin)
+GET    /api/v1/system/loglevel                    current log level (admin)
+PUT    /api/v1/system/loglevel                    runtime log-level switch, debug/info/warn/error (admin)
 GET    /api/v1/images?url=<encoded>               proxied + cached cover image (30-day TTL)
 ```
 
@@ -646,7 +660,7 @@ POST   /api/v1/auth/logout
 POST   /api/v1/auth/setup                         first-run admin creation (one-shot)
 PUT    /api/v1/auth/mode                          switch enabled/local-only/disabled/proxy (admin)
 POST   /api/v1/auth/password                      change own password
-POST   /api/v1/auth/apikey/regenerate             rotate the API key
+POST   /api/v1/auth/apikey/regenerate             rotate the instance API key (admin)
 
 GET    /api/v1/auth/oidc/providers                list configured providers
 PUT    /api/v1/auth/oidc/providers                update providers (admin)
@@ -736,7 +750,7 @@ that role, and `/opds` does too.
 GET    /api/queue                                 Sonarr/Radarr-style queue payload
 ```
 
-This endpoint sits **outside** `/api/v1/` and matches the queue contract used by [Harpoon](https://github.com/harpoon-io/harpoon) and similar *arr-aware tools. It returns `totalRecords`, supports pagination and sort, and surfaces per-record `size`, `sizeleft`, `status`, `client`, `remote ID`, and `protocol`. API-key authentication is required; browser-session CSRF protections do not apply.
+This endpoint sits **outside** `/api/v1/` and matches the queue contract used by Harpoon and similar *arr-aware tools. It returns `totalRecords`, supports pagination and sort, and surfaces per-record `size`, `sizeleft`, `status`, `client`, `remote ID`, and `protocol`. It sits behind the same authentication as `/api/v1`, so an API key, a session cookie or an auth mode that admits the caller all work. It is a `GET`, so no CSRF token is needed.
 
 ## OPDS
 

@@ -8,7 +8,7 @@ Bindery v1.0 introduces per-user library scoping: authors, books, downloads, qua
 >
 > When enforcement is on, Bindery scopes:
 > - **Tier-2 join-scoped resources** — download queue, history, pending grabs, and the OPDS catalogue — to the requesting user.
-> - **Per-user resources** — each user's own authors, books, profiles, API key, password, and notification preferences. (Root folders are **not** per-user; see the note above.)
+> - **Per-user resources** — each user's own authors, books, quality and metadata profiles, and password. (Root folders are **not** per-user; see the note above. The API key and the notification webhooks are instance wide and admin only.)
 >
 > **Admins see everything in list views.** With enforcement on, an `admin` is never filtered by ownership: the authors and books list endpoints (and the OPDS feed) return *all* users' libraries plus unowned/global rows, the same way an admin can already open any single item by ID. This is a **shared library across admins**, by design: it does not widen access, it makes lists consistent with per-item access. Non-admin (`user`) accounts stay isolated to their own rows plus unowned/global rows. Requests authenticated by API key, and requests the auth mode admits without a login (every request in `disabled` mode, local clients in `local-only` mode), act as the administrator: they carry the admin role and the first admin account's id, so they are likewise unscoped and anything they create is owned by that admin.
 >
@@ -38,8 +38,8 @@ Three roles exist: `admin`, `user` and `requester`.
 | View and manage own quality/metadata profiles | Yes | Yes | No |
 | Manage root folders (single shared/global pool) | Yes | No | No |
 | Change own password | Yes | Yes | Yes |
-| Change own API key | Yes | Yes | No |
-| Configure own notification preferences | Yes | Yes | No |
+| Read or rotate the instance API key | Yes | No | No |
+| Configure notification webhooks | Yes | No | No |
 | View other users' library data | Yes | No | Titles only, read only (see [Requester](#requester)) |
 | Manage other users' library data | Yes | No | No |
 | Search metadata providers | Yes | Yes | Yes, rate limited |
@@ -106,7 +106,7 @@ curl http://bindery:8787/api/v1/auth/users \
   -H "X-Api-Key: <admin-api-key>"
 ```
 
-Returns: `[{"id": 1, "username": "admin", "role": "admin", "last_seen": "..."}]`. Passwords and OIDC credentials are never returned.
+Returns: `[{"id": 1, "username": "admin", "role": "admin", "createdAt": "2026-01-01T00:00:00Z"}]`, with `email` and `displayName` present only when the account has them. Passwords and OIDC credentials are never returned.
 
 ### Updating a user
 
@@ -141,18 +141,18 @@ Deleting a user does **not** delete their library data. Authors, books, and down
 
 ## Settings UI layout
 
-Everyone sees the **General** tab (appearance, downloads, file naming, storage, backup, security — including their own API key and password change) and **About**. The remaining tabs are admin-only, in four groups:
+Everyone sees the **General** tab (appearance, and the Security section, which is where a user changes their own password) and **About**. The API key, the session secret rotation, downloads, file naming, storage and backup render inside General for admins only. The remaining tabs are admin-only, in four groups:
 
-- **Sources** — Indexers, Download Clients, Notifications
+- **Sources** — Indexers, Download Clients
 - **Library** — Quality Profiles, Metadata Profiles, Root Folders
-- **Integrations** — Calibre, Audiobookshelf, Grimmory, API Keys
-- **System** — Import, Blocklist, Logs
+- **Integrations** — Notifications, Calibre, Audiobookshelf, Grimmory, API Keys
+- **System** — Import / Migrate, Blocklist, Logs
 
 Non-admins who open an admin tab are redirected back to General; admin API routes return 403. Inside General itself, a non admin sees Appearance and Security; the sections that describe or configure the server (file naming, downloads, search, the default library location, storage, the library scan panel and the schedule intervals) render for admins only, and the routes behind them, including `GET /system/storage` and `GET /library/scan/status`, answer 403 to anyone else. Users are managed on the dedicated **Users** page (the people icon in the header), not inside Settings.
 
 ## CSRF tokens
 
-v1.0 replaces the `X-Requested-With` header check with a proper double-submit CSRF token on all session-cookie-authenticated mutations.
+Session cookie mutations pass two guards: the `X-Requested-With: bindery-ui` header, and a double submit `X-CSRF-Token`. Both must be present. v1.0 added the token alongside the header check rather than replacing it.
 
 **Browser users:** the UI handles this transparently.
 
@@ -160,7 +160,7 @@ v1.0 replaces the `X-Requested-With` header check with a proper double-submit CS
 
 ```bash
 TOKEN=$(curl -s -b "bindery_session=<value>" \
-  http://bindery:8787/api/v1/auth/csrf | jq -r .token)
+  http://bindery:8787/api/v1/auth/csrf | jq -r .csrfToken)
 
 curl -X POST http://bindery:8787/api/v1/author \
   -b "bindery_session=<value>" \
