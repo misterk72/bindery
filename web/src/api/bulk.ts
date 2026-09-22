@@ -30,8 +30,21 @@ export const bulkApi = {
   },
 
   // Bulk actions
-  bulkActionAuthors: (ids: number[], action: AuthorBulkAction, mediaType?: MediaType) =>
-    request<BulkResult>('/author/bulk', { method: 'POST', body: JSON.stringify({ ids, action, ...(mediaType ? { mediaType } : {}) }) }),
+  // `applyMonitorModeToExisting` applies only to 'monitor' and 'unmonitor',
+  // where it rewrites each author's existing books to match the author's new
+  // monitoring (#2742). Omitted means false, so the action stays a pure author
+  // level write, matching the unticked-by-default box on the single author
+  // path.
+  bulkActionAuthors: (ids: number[], action: AuthorBulkAction, mediaType?: MediaType, applyMonitorModeToExisting?: boolean) =>
+    request<BulkResult>('/author/bulk', {
+      method: 'POST',
+      body: JSON.stringify({
+        ids,
+        action,
+        ...(mediaType ? { mediaType } : {}),
+        ...(applyMonitorModeToExisting ? { applyMonitorModeToExisting: true } : {}),
+      }),
+    }),
   bulkSetAuthorMonitorMode: (ids: number[], monitorMode: AuthorBulkMonitorMode, opts: BulkSetAuthorMonitorModeOptions = {}) =>
     request<BulkResult>('/author/bulk', {
       method: 'POST',

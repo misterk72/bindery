@@ -202,6 +202,10 @@ type bulkResponse struct {
 // and optionally applies that mode to existing books when
 // "applyMonitorModeToExisting" is true. Series mode is intentionally excluded:
 // it needs each author's own selected series list.
+// "monitor" and "unmonitor" take the same "applyMonitorModeToExisting" flag,
+// which rewrites each of the author's books to what the author's monitoring
+// now implies. It defaults to false, so the action stays a pure author level
+// write unless the caller asks otherwise (#2742).
 func (h *BulkHandler) AuthorsBulk(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IDs                        []int64 `json:"ids"`
@@ -298,12 +302,12 @@ func (h *BulkHandler) AuthorsBulk(w http.ResponseWriter, r *http.Request) {
 		key := fmt.Sprintf("%d", id)
 		switch req.Action {
 		case "monitor":
-			if err := h.setAuthorMonitored(r.Context(), id, true); err != nil {
+			if err := h.setAuthorMonitored(r.Context(), id, true, req.ApplyMonitorModeToExisting); err != nil {
 				resp.Results[key] = bulkItemResult{Error: err.Error()}
 				continue
 			}
 		case "unmonitor":
-			if err := h.setAuthorMonitored(r.Context(), id, false); err != nil {
+			if err := h.setAuthorMonitored(r.Context(), id, false, req.ApplyMonitorModeToExisting); err != nil {
 				resp.Results[key] = bulkItemResult{Error: err.Error()}
 				continue
 			}
@@ -619,7 +623,7 @@ func (h *BulkHandler) WantedBulk(w http.ResponseWriter, r *http.Request) {
 
 // --- helpers -----------------------------------------------------------------
 
-func (h *BulkHandler) setAuthorMonitored(ctx context.Context, id int64, monitored bool) error {
+func (h *BulkHandler) setAuthorMonitored(ctx context.Context, id int64, monitored, applyExisting bool) error {
 	author, err := h.authors.GetByID(ctx, id)
 	if err != nil {
 		return err
@@ -628,7 +632,19 @@ func (h *BulkHandler) setAuthorMonitored(ctx context.Context, id int64, monitore
 		return errBulkAuthorNotOwned
 	}
 	author.Monitored = monitored
-	return h.authors.Update(ctx, author)
+	if err := h.authors.Update(ctx, author); err != nil {
+		return err
+	}
+	// Optional cascade, off by default (#2742). Until this existed the bulk
+	// unmonitor had no cascade at all, so a user who turned off 200 authors on
+	// the Authors page was left with every one of their books still monitored
+	// and no bulk way to change that. The single author path already offers
+	// the same choice behind the same unticked box, so this closes the gap
+	// rather than changing what the action does by default.
+	if !applyExisting {
+		return nil
+	}
+	return applyMonitorModeToExistingBooks(ctx, h.books, h.authors, h.series, author)
 }
 
 // setAuthorMonitorMode writes the author's monitor mode and, when the caller

@@ -1022,7 +1022,30 @@ func (h *BookHandler) ListWanted(w http.ResponseWriter, r *http.Request) {
 	for i := range books {
 		cleanBookDescription(&books[i])
 	}
+	h.markUnmonitoredAuthors(r.Context(), books)
 	writeJSON(w, http.StatusOK, books)
+}
+
+// markUnmonitoredAuthors flags the rows whose author is not monitored, so the
+// Wanted page can say why they are sitting there (#2742). One query for the
+// whole page, not one per row.
+//
+// Best effort: with no authors repo, or a read that fails, the rows are left
+// alone. Claiming "the author is not monitored" on a page that could not check
+// would be worse than saying nothing, because it accuses the setting the user
+// is most likely to go and change.
+func (h *BookHandler) markUnmonitoredAuthors(ctx context.Context, books []models.Book) {
+	if h.authors == nil || len(books) == 0 {
+		return
+	}
+	unmonitored, err := h.authors.UnmonitoredAuthorIDs(ctx)
+	if err != nil {
+		slog.Warn("wanted list: failed to load unmonitored authors", "error", err)
+		return
+	}
+	for i := range books {
+		books[i].AuthorUnmonitored = unmonitored[books[i].AuthorID]
+	}
 }
 
 // Rebind updates a book's foreign_id and metadata_provider, then re-fetches

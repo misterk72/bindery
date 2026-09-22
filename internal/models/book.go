@@ -71,6 +71,15 @@ type Book struct {
 
 	Excluded bool `json:"excluded"`
 
+	// AuthorUnmonitored says this book's author is not monitored, so Bindery
+	// will not search for it by itself (#2742). Transport only: there is no
+	// column, and only the Wanted list computes it, because that is the one
+	// page where a book that will never be grabbed automatically otherwise
+	// looks identical to one whose grab is merely slow. Omitted when false, so
+	// a response that never computed it says nothing rather than claiming
+	// every author is monitored.
+	AuthorUnmonitored bool `json:"authorUnmonitored,omitempty"`
+
 	// EbookFilePath and AudiobookFilePath are computed views over the book_files
 	// table (first path per format), kept for API backwards compatibility.
 	// Do not write to them directly; use BookRepo.AddBookFile instead.

@@ -630,6 +630,13 @@ func (s *Scheduler) searchAndGrabFormats(ctx context.Context, book models.Book, 
 			"book_id", book.ID, "title", book.Title)
 		return
 	}
+	// An unmonitored author's books are never grabbed automatically (#2742).
+	// Enforced here for the same reason the switch above is: this is the one
+	// place a grab is dispatched from, so a new automatic caller inherits the
+	// rule rather than having to know it exists.
+	if s.skipUnmonitoredAuthor(ctx, book, sweep) {
+		return
+	}
 	for _, mediaType := range formats {
 		s.searchAndGrabFormat(ctx, book, mediaType, sweep)
 	}
@@ -655,6 +662,17 @@ type sweepContext struct {
 	blocklistLoaded bool
 	delayProfiles   []models.DelayProfile
 	preferredLang   string
+	// unmonitoredAuthors is the set of author ids whose monitored flag is off
+	// (#2742). Loaded with the rest so the author monitoring rule costs one
+	// query per sweep rather than one per wanted book, which is the whole
+	// point of this type.
+	//
+	// unmonitoredAuthorsLoaded separates "every author is monitored" from
+	// "the authors table could not be read", the same distinction
+	// blocklistLoaded makes: only the first may suppress a grab, because a
+	// failed read must not silently stop the sweep grabbing anything.
+	unmonitoredAuthors       map[int64]bool
+	unmonitoredAuthorsLoaded bool
 }
 
 // newSweepContext loads the sweep-invariant tables once. It returns nil when
@@ -686,8 +704,77 @@ func (s *Scheduler) newSweepContext(ctx context.Context) *sweepContext {
 			sweep.delayProfiles = profiles
 		}
 	}
+	if s.authors != nil {
+		if ids, err := s.authors.UnmonitoredAuthorIDs(ctx); err != nil {
+			slog.Warn("wanted sweep: failed to load unmonitored authors, falling back to a per-book load", "error", err)
+		} else {
+			sweep.unmonitoredAuthors = ids
+			sweep.unmonitoredAuthorsLoaded = true
+		}
+	}
 	sweep.preferredLang = s.loadPreferredLanguage(ctx)
 	return sweep
+}
+
+// skipUnmonitoredAuthor reports whether this search must not run because the
+// book's author is not monitored, and logs the reason when it does.
+//
+// Two rules meet here, and both are load bearing:
+//
+//   - Only an automatic search is suppressed. SearchOrigin.Automatic draws
+//     that line, and a search the user asked for by name still runs, so
+//     unmonitoring an author never breaks "search this book now".
+//   - The author flag wins outright, whatever the book's own monitored flag
+//     says. That is the #2742 report: a bulk unmonitor on the Authors page
+//     wrote the author flag and never cascaded to the books, so every book
+//     under those 200 authors was still monitored and the sweep kept grabbing.
+//     Reading the author directly means a stale or partly cascaded state
+//     cannot grab either.
+//
+// It fails open, like autoGrabEnabled: no authors repo, an unreadable row, or
+// a book whose author has gone all keep searching. Closing on a failed read
+// would turn one bad query into a library that silently stops grabbing, which
+// is a worse failure than the one this fixes.
+func (s *Scheduler) skipUnmonitoredAuthor(ctx context.Context, book models.Book, sweep *sweepContext) bool {
+	if !indexer.SearchOriginFrom(ctx).Automatic() {
+		return false
+	}
+	name, unmonitored := s.authorMonitorState(ctx, book, sweep)
+	if !unmonitored {
+		return false
+	}
+	slog.Info("skipping automatic search: the author is not monitored",
+		"book_id", book.ID, "title", book.Title, "author", name,
+		"origin", string(indexer.SearchOriginFrom(ctx)), "issue", 2742)
+	return true
+}
+
+// authorMonitorState answers "is this book's author unmonitored", plus the
+// author name for the log line. The sweep snapshot answers it without a query
+// when there is one; a one-off search loads the single author it needs.
+func (s *Scheduler) authorMonitorState(ctx context.Context, book models.Book, sweep *sweepContext) (string, bool) {
+	name := ""
+	if book.Author != nil {
+		name = book.Author.Name
+	}
+	if sweep != nil && sweep.unmonitoredAuthorsLoaded {
+		return name, sweep.unmonitoredAuthors[book.AuthorID]
+	}
+	if s.authors == nil {
+		return name, false
+	}
+	author, err := s.authors.GetByID(ctx, book.AuthorID)
+	if err != nil {
+		slog.Warn("failed to load the author for a search, allowing it", "book_id", book.ID, "author_id", book.AuthorID, "error", err)
+		return name, false
+	}
+	if author == nil {
+		return name, false
+	}
+	if name == "" {
+		name = author.Name
+	}
+	return name, !author.Monitored
 }
 
 // sweepIndexers returns the indexer list for one search: the sweep snapshot

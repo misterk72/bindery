@@ -1133,8 +1133,13 @@ func applyMonitorModeToExistingBooks(ctx context.Context, booksRepo *db.BookRepo
 	today := dateOnly(time.Now().UTC())
 	for i := range books {
 		next := shouldMonitorBookForAuthor(author, books[i], latestKeys, today)
+		// Series mode recomputes next from membership alone, so it has to
+		// re-apply the one rule that outranks every mode: an unmonitored
+		// author monitors nothing (#2742). shouldMonitorBookForAuthor says so
+		// for the other four modes already, and without this a cascade over an
+		// unmonitored author in series mode monitored their books back on.
 		if author.MonitorMode == models.AuthorMonitorModeSeries {
-			next = bookInMonitoredSeries(books[i].ID, bookSeries, monitoredSet)
+			next = author.Monitored && bookInMonitoredSeries(books[i].ID, bookSeries, monitoredSet)
 		}
 		// Excluded wins over every mode — a user-excluded book must never
 		// flip back to monitored regardless of series membership.

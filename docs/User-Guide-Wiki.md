@@ -105,6 +105,20 @@ is left alone. Flip a single book from the switch next to the status badge on
 its own page, or many at once from the Books list (select, then **Monitor** /
 **Unmonitor**).
 
+Authors have their own monitored switch, and it outranks the books: **Bindery
+never searches for a book by itself while its author is unmonitored**, however
+that book's own switch is set. So unmonitoring an author is enough to stop the
+sweep grabbing their catalogue, and you do not have to get every book right
+first. Searches you start by hand still run, on the book page, from the Wanted
+page, from the author page, from series Fill and when you accept a
+recommendation, so an unmonitored author is still a library you can fetch from
+one book at a time. A Wanted row held back this way says so.
+
+Turning an author's switch off does not rewrite their books' own switches
+unless you ask it to. Both the author edit dialog and the Authors page bulk
+**Monitor** / **Unmonitor** offer an "apply to existing books" box, unticked by
+default; tick it to bring every book of those authors into line in one action.
+
 Two related labels:
 
 - **In Library** = status `imported` = Bindery can see the file on disk.

@@ -52,7 +52,8 @@
     "clearFilter": "Clear filter",
     "dismiss": "Dismiss",
     "showDetails": "Show details",
-    "hideDetails": "Hide details"
+    "hideDetails": "Hide details",
+    "apply": "Apply"
   },
   "monitorMode": {
     "all": "All books",
@@ -402,7 +403,9 @@
     "bulkSetMonitorModePartial": "Monitor mode was not updated for author {{id}}: {{error}}",
     "sortByColumn": "Sort by {{column}}",
     "moreActionsFor": "More actions for {{name}}",
-    "refreshMetadata": "Refresh metadata"
+    "refreshMetadata": "Refresh metadata",
+    "bulkApplyMonitoringToExisting": "Also apply to their existing books",
+    "bulkApplyMonitoringToExistingHint": "Rewrites every book of the selected authors to match. Leave it off to change the authors only."
   },
   "authorDetail": {
     "nav": {
@@ -598,7 +601,8 @@
     "colActions": "Actions",
     "noCover": "No cover",
     "authorUnknown": "Author unknown",
-    "changeFormat": "Change format for {{title}}"
+    "changeFormat": "Change format for {{title}}",
+    "authorNotMonitored": "Author not monitored, so this is not searched automatically"
   },
   "history": {
     "title": "History",
