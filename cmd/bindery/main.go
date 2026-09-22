@@ -432,18 +432,24 @@ func main() {
 	// The boot-time reads on the next two lines use ctxBoot because appCtx
 	// isn't constructed yet.
 	modeResolver := func() calibre.Mode { return api.LoadCalibreMode(appCtx, settingsRepo) }
+	// Both the mode and the client are resolved per push. The client used to
+	// be built once here from the boot-time mode, which meant switching mode
+	// in the UI, or correcting plugin_url, plugin_api_key or push_path_remap,
+	// did nothing until a restart, and the resulting no-op push was silent
+	// (#1355). The resolver caches by the settings that define the client, so
+	// an import run still reuses one connection pool.
+	calibreAdders := calibre.NewAdderResolver(func() calibre.Config {
+		return api.LoadCalibreConfig(appCtx, settingsRepo)
+	})
+	importScanner.WithCalibreResolver(modeResolver, func(m calibre.Mode) calibre.Adder {
+		return calibreAdders.For(m)
+	})
 	calibreCfg := api.LoadCalibreConfig(ctxBoot, settingsRepo)
-	currentMode := api.LoadCalibreMode(ctxBoot, settingsRepo)
-	if currentMode == calibre.ModePlugin {
-		pluginClient := calibre.NewPluginClient(calibreCfg.PluginURL, calibreCfg.PluginAPIKey).WithPushPathRemap(calibreCfg.PushPathRemap)
-		importScanner.WithCalibre(modeResolver, pluginClient)
+	switch api.LoadCalibreMode(ctxBoot, settingsRepo) {
+	case calibre.ModePlugin:
 		slog.Info("calibre integration enabled", "mode", "plugin", "url", calibreCfg.PluginURL)
-	} else {
-		calibreClient := calibre.New(calibreCfg)
-		importScanner.WithCalibre(modeResolver, calibreClient)
-		if currentMode == calibre.ModeCalibredb {
-			slog.Info("calibre integration enabled", "mode", "calibredb")
-		}
+	case calibre.ModeCalibredb:
+		slog.Info("calibre integration enabled", "mode", "calibredb")
 	}
 
 	// Library import (read side). Importer holds live progress state in
@@ -758,7 +764,8 @@ func main() {
 	logHandler := api.NewLogHandler(ring).WithLogRepo(logRepo).WithDBLogHandler(logDBHandler)
 	prowlarrHandler := api.NewProwlarrHandler(prowlarrRepo, indexerRepo).WithSettings(settingsRepo)
 	calibreHandler := api.NewCalibreHandler(settingsRepo).
-		WithLifetimeCtx(appCtx)
+		WithLifetimeCtx(appCtx).
+		WithLibraryRoot(cfg.LibraryDir)
 	grimmoryHandler := api.NewGrimmoryHandler(settingsRepo).WithVersion(version)
 	grimmorySyncer := grimmory.NewSyncer(bookRepo, grimmoryPusher).WithJobs(bgJobs) // drain mid-upload syncs on shutdown (#1458)
 	grimmorySyncHandler := api.NewGrimmorySyncHandler(grimmorySyncer, grimmoryLoadPushCfg).
@@ -775,7 +782,9 @@ func main() {
 		return api.LoadCalibreConfig(appCtx, settingsRepo)
 	})
 	calibreRunsHandler := api.NewCalibreRunsHandler(calibreImporter)
-	calibreSyncer := calibre.NewSyncer(bookRepo).WithMetadata(authorRepo, editionRepo)
+	calibreSyncer := calibre.NewSyncer(bookRepo).
+		WithMetadata(authorRepo, editionRepo).
+		WithSeries(seriesRepo)
 	calibreSyncHandler := api.NewCalibreSyncHandler(
 		calibreSyncer,
 		func() calibre.Config { return api.LoadCalibreConfig(appCtx, settingsRepo) },

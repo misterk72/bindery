@@ -854,8 +854,9 @@ function CalibreRollbackModal({
 
 // CalibreSyncModal renders the live progress of a bulk "Push all to
 // Calibre" job. Stays open while running; once finished, the user
-// dismisses it explicitly so they can read the per-book error list.
-function CalibreSyncModal({
+// dismisses it explicitly so they can read the per-book error and skip lists.
+// Exported for its own test.
+export function CalibreSyncModal({
   progress,
   error,
   onClose,
@@ -896,7 +897,7 @@ function CalibreSyncModal({
               <div className="h-1.5 bg-slate-200 dark:bg-zinc-800 rounded overflow-hidden">
                 <div className="h-full bg-sky-600 transition-[width] duration-300" style={{ width: `${pct}%` }} />
               </div>
-              <div className="grid grid-cols-3 gap-2 text-xs">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
                 <div className="rounded border border-slate-200 dark:border-zinc-800 px-2 py-1.5">
                   <div className="text-slate-600 dark:text-zinc-500">Pushed</div>
                   <div className="font-semibold text-emerald-600 dark:text-emerald-400">{stats?.pushed ?? 0}</div>
@@ -909,13 +910,23 @@ function CalibreSyncModal({
                   <div className="text-slate-600 dark:text-zinc-500">Failed</div>
                   <div className="font-semibold text-red-600 dark:text-red-400">{stats?.failed ?? 0}</div>
                 </div>
+                <div className="rounded border border-slate-200 dark:border-zinc-800 px-2 py-1.5">
+                  <div className="text-slate-600 dark:text-zinc-500">Skipped</div>
+                  <div
+                    data-testid="calibre-sync-skipped"
+                    className="font-semibold text-amber-600 dark:text-amber-400"
+                  >
+                    {stats?.skipped ?? 0}
+                  </div>
+                </div>
               </div>
               {!running && progress.error && (
                 <p className="text-xs text-red-600 dark:text-red-400">Sync failed: {progress.error}</p>
               )}
               {!running && progress.finishedAt && !progress.error && (
                 <p className="text-xs text-emerald-600 dark:text-emerald-400">
-                  Done — pushed {stats?.pushed ?? 0}, already in Calibre {stats?.alreadyInCalibre ?? 0}, failed {stats?.failed ?? 0}.
+                  Done. Pushed {stats?.pushed ?? 0}, already in Calibre {stats?.alreadyInCalibre ?? 0}, failed{' '}
+                  {stats?.failed ?? 0}, skipped {stats?.skipped ?? 0}.
                 </p>
               )}
               {progress.errors && progress.errors.length > 0 && (
@@ -932,6 +943,29 @@ function CalibreSyncModal({
                         <tr key={`${e.bookId}-${i}`} className="border-t border-slate-200 dark:border-zinc-800">
                           <td className="px-2 py-1 text-slate-800 dark:text-zinc-200">{e.title || `#${e.bookId}`}</td>
                           <td className="px-2 py-1 text-red-600 dark:text-red-400">{e.reason}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {progress.skips && progress.skips.length > 0 && (
+                <div
+                  data-testid="calibre-sync-skip-table"
+                  className="mt-2 max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-zinc-800"
+                >
+                  <table className="w-full text-xs">
+                    <thead className="bg-slate-100 dark:bg-zinc-800 sticky top-0">
+                      <tr>
+                        <th className="text-left px-2 py-1 text-slate-600 dark:text-zinc-400 font-medium">Not pushed</th>
+                        <th className="text-left px-2 py-1 text-slate-600 dark:text-zinc-400 font-medium">Why</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {progress.skips.map((s, i) => (
+                        <tr key={`skip-${s.bookId}-${i}`} className="border-t border-slate-200 dark:border-zinc-800">
+                          <td className="px-2 py-1 text-slate-800 dark:text-zinc-200">{s.title || `#${s.bookId}`}</td>
+                          <td className="px-2 py-1 text-amber-600 dark:text-amber-400">{s.reason}</td>
                         </tr>
                       ))}
                     </tbody>

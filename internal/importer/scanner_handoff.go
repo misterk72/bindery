@@ -533,37 +533,66 @@ func (s *Scanner) dropPlaceAudiobook(ctx context.Context, downloadPath string, b
 }
 
 // pushToCalibre mirrors a just-imported book into Calibre via calibredb add.
-// Failures are logged and swallowed — Calibre sync is best-effort and must
-// never roll back an otherwise-good Bindery import.
+// Failures are logged and swallowed: Calibre sync is best effort and must
+// never roll back an otherwise good Bindery import.
 func (s *Scanner) pushToCalibre(ctx context.Context, book *models.Book, author *models.Author, edition *models.Edition, seriesTitle, seriesNum, path string) {
 	if s.calibreMode == nil || book == nil {
 		return
 	}
 	mode := s.calibreMode()
-	if mode == calibre.ModeCalibredb || mode == calibre.ModePlugin {
-		s.pushCalibreAdd(ctx, book, s.calibreMetadata(ctx, book, author, edition, seriesTitle, seriesNum, mode), path, mode)
+	if mode != calibre.ModeCalibredb && mode != calibre.ModePlugin {
+		return
 	}
-}
-
-// pushCalibreAdd invokes the configured adder (calibredb CLI or plugin HTTP
-// client) and persists the resulting calibre_id. Failures are best-effort —
-// logged and swallowed so Bindery's own import stays good.
-func (s *Scanner) pushCalibreAdd(ctx context.Context, book *models.Book, meta calibre.Metadata, path string, mode calibre.Mode) {
-	if s.calibreAdder == nil {
+	if s.calibreAdderFor == nil {
+		slog.Debug("calibre: no adder resolver, skipping", "mode", mode, "bookId", book.ID)
+		return
+	}
+	adder := s.calibreAdderFor(mode)
+	if adder == nil {
 		slog.Debug("calibre: adder is nil, skipping", "mode", mode, "bookId", book.ID)
 		return
 	}
-	id, err := s.calibreAdder.Add(ctx, path, meta)
+	if isDirectory(path) {
+		// Both hand off paths take a single book file. The plugin derives the
+		// format from the extension and rejects a folder outright; calibredb
+		// scans the folder but its BOOK_EXTENSIONS list carries no audio
+		// format, so it finds nothing and reports no added id. The only call
+		// site that passes a folder is the audiobook import.
+		slog.Debug("calibre: not pushing a directory, the Calibre hand off takes one book file",
+			"mode", mode, "bookId", book.ID, "path", path)
+		return
+	}
+	meta := s.calibreMetadata(ctx, book, author, edition, seriesTitle, seriesNum, adder)
+	s.pushCalibreAdd(ctx, book, meta, path, mode, adder)
+}
+
+// isDirectory reports whether path is an existing directory. A stat failure
+// answers false so an unreadable or not yet visible path keeps today's
+// behaviour of being handed over and letting Calibre report the problem.
+func isDirectory(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+// pushCalibreAdd invokes the resolved adder (calibredb CLI or plugin HTTP
+// client) and persists the resulting calibre_id. Failures are best effort:
+// logged and swallowed so Bindery's own import stays good.
+func (s *Scanner) pushCalibreAdd(ctx context.Context, book *models.Book, meta calibre.Metadata, path string, mode calibre.Mode, adder calibreAdder) {
+	id, err := adder.Add(ctx, path, meta)
 	if err != nil {
 		if errors.Is(err, calibre.ErrDisabled) {
+			// The adder is now built from the same settings read that
+			// produced mode, so the two can only disagree because of a bug.
+			// It used to be the normal consequence of a boot time client
+			// outliving a settings change, and it returned silently.
+			slog.Warn("calibre: the adder reports the integration disabled while the configured mode is on; this is a wiring bug, please report it",
+				"mode", mode, "bookId", book.ID, "path", path)
 			return
 		}
 		if errors.Is(err, calibre.ErrAlreadyInCalibre) {
 			slog.Info("calibre: book already in library", "mode", mode, "bookId", book.ID, "path", path, "calibreId", id)
 			if id > 0 {
-				if perr := s.books.SetCalibreID(ctx, book.ID, id); perr != nil {
-					slog.Warn("calibre: persist calibre_id failed", "bookId", book.ID, "calibreId", id, "error", perr)
-				}
+				s.reconcileExistingCalibreBook(ctx, book, meta, id, mode, adder)
 			}
 			return
 		}
@@ -577,56 +606,93 @@ func (s *Scanner) pushCalibreAdd(ctx context.Context, book *models.Book, meta ca
 	slog.Info("calibre: book mirrored", "mode", mode, "bookId", book.ID, "calibreId", id, "path", path)
 }
 
-func (s *Scanner) calibreMetadata(ctx context.Context, book *models.Book, author *models.Author, edition *models.Edition, seriesTitle, seriesNum string, mode calibre.Mode) calibre.Metadata {
+// reconcileExistingCalibreBook handles a 409. It always records the linkage.
+// It only rewrites the Calibre row's metadata when Bindery already had that
+// exact id recorded, which means Bindery created the row itself and is
+// correcting its own earlier push.
+//
+// The first time Bindery meets a row it did not create, it writes nothing.
+// That row may be one the user curated in Calibre, and the protocol gives no
+// way to ask whether it was edited, so the safe reading of an unclaimed 409 is
+// "this is somebody else's row, link to it and leave it alone".
+func (s *Scanner) reconcileExistingCalibreBook(ctx context.Context, book *models.Book, meta calibre.Metadata, id int64, mode calibre.Mode, adder calibreAdder) {
+	owned := book.CalibreID != nil && *book.CalibreID == id
+	if perr := s.books.SetCalibreID(ctx, book.ID, id); perr != nil {
+		slog.Warn("calibre: persist calibre_id failed", "bookId", book.ID, "calibreId", id, "error", perr)
+	}
+	if !owned || meta.IsEmpty() {
+		return
+	}
+	updater, ok := adder.(calibreMetadataUpdater)
+	if !ok || !updater.SupportsMetadataUpdate(ctx) {
+		return
+	}
+	fields, err := updater.UpdateMetadata(ctx, id, meta)
+	if err != nil {
+		slog.Warn("calibre: metadata update failed, continuing", "mode", mode, "bookId", book.ID, "calibreId", id, "error", err)
+		return
+	}
+	if len(fields) == 0 {
+		slog.Debug("calibre: nothing to fill on a book Bindery had already pushed", "mode", mode, "bookId", book.ID, "calibreId", id)
+		return
+	}
+	slog.Info("calibre: filled empty fields on a book Bindery had already pushed",
+		"mode", mode, "bookId", book.ID, "calibreId", id, "fields", strings.Join(fields, ","))
+}
+
+// calibreMetadata builds the payload for one hand off. Everything except the
+// cover comes from calibre.BuildMetadata, which the bulk "Push all to Calibre"
+// job shares, so the two paths cannot drift apart again.
+func (s *Scanner) calibreMetadata(ctx context.Context, book *models.Book, author *models.Author, edition *models.Edition, seriesTitle, seriesNum string, adder calibreAdder) calibre.Metadata {
 	if book == nil {
 		return calibre.Metadata{}
 	}
-	meta := calibre.Metadata{
-		Title:         book.Title,
-		Description:   book.Description,
-		Genres:        book.Genres,
-		Language:      calibre.NormalizeLanguageForCalibre(book.Language),
-		Series:        seriesTitle,
-		SeriesIndex:   seriesNum,
-		PublishedDate: calibre.FormatPublishedDate(book.ReleaseDate),
-		Rating:        book.AverageRating,
-		Identifiers:   calibre.IdentifiersForBook(book, edition),
-	}
-	if author != nil {
-		meta.Authors = []string{author.Name}
-		meta.AuthorSort = author.SortName
-	}
-	imageURL := book.ImageURL
-	if edition != nil {
-		if strings.TrimSpace(edition.Publisher) != "" {
-			meta.Publisher = edition.Publisher
-		}
-		if edition.PublishDate != nil {
-			meta.PublishedDate = calibre.FormatPublishedDate(edition.PublishDate)
-		}
-		if strings.TrimSpace(edition.Language) != "" {
-			meta.Language = calibre.NormalizeLanguageForCalibre(edition.Language)
-		}
-		if strings.TrimSpace(edition.ImageURL) != "" {
-			imageURL = edition.ImageURL
-		}
-	}
-	if mode == calibre.ModeCalibredb {
-		if covers.IsRef(imageURL) {
-			// A cover Bindery stored itself (#2564): hand calibredb the
-			// file directly. MaterializeCover only knows how to fetch URLs.
-			if coverPath, _, ok := s.coverStore.Resolve(imageURL); ok {
-				meta.CoverPath = coverPath
-			}
-			return meta
-		}
-		if coverPath, err := calibre.MaterializeCover(ctx, s.calibreCoverCacheDir, imageURL); err != nil {
-			slog.Debug("calibre: cover materialization skipped", "bookId", book.ID, "error", err)
-		} else if coverPath != "" {
-			meta.CoverPath = coverPath
-		}
-	}
+	meta := calibre.BuildMetadata(calibre.MetadataSource{
+		Book:        book,
+		Author:      author,
+		Edition:     edition,
+		SeriesTitle: seriesTitle,
+		SeriesIndex: seriesNum,
+	})
+	meta.CoverPath = s.calibreCoverPath(ctx, book, calibre.CoverSourceFor(book, edition), adder)
 	return meta
+}
+
+// calibreCoverPath turns the book's cover reference or URL into a path the
+// target can open, or an empty string when there is nothing to send.
+//
+// The cover used to be gated on calibredb mode, so a plugin-mode book only
+// ever showed whatever artwork was embedded in the file. It is now sent in
+// both modes, subject to the target saying it can apply one. The plugin
+// client puts the path through the operator's push path remap, the same as
+// the book file, because a cover path is just as subject to the cross
+// container mount mismatch the remap exists to fix.
+func (s *Scanner) calibreCoverPath(ctx context.Context, book *models.Book, imageURL string, adder calibreAdder) string {
+	if strings.TrimSpace(imageURL) == "" {
+		return ""
+	}
+	if capable, ok := adder.(calibreCoverCapable); ok && !capable.SupportsCover(ctx) {
+		return ""
+	}
+	if covers.IsRef(imageURL) {
+		// A cover Bindery stored itself (#2564). A reference is not a
+		// filesystem path, so it has to be resolved before it goes anywhere.
+		// MaterializeCover only knows how to fetch URLs.
+		if s.coverStore == nil {
+			return ""
+		}
+		coverPath, _, ok := s.coverStore.Resolve(imageURL)
+		if !ok {
+			return ""
+		}
+		return coverPath
+	}
+	coverPath, err := calibre.MaterializeCover(ctx, s.calibreCoverCacheDir, imageURL)
+	if err != nil {
+		slog.Debug("calibre: cover materialization skipped", "bookId", book.ID, "error", err)
+		return ""
+	}
+	return coverPath
 }
 
 func firstString(values ...*string) string {

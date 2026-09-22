@@ -30,12 +30,23 @@ func waitUntil(t *testing.T, timeout time.Duration, pred func() bool) {
 // Captures SetCalibreID calls so we can assert that both fresh pushes and
 // 409-conflict responses persist the id when one is returned.
 type fakeBookLister struct {
+	// books is what ListByStatus returns (imported and monitored); all is
+	// what List returns (the whole visible catalogue). all defaults to books
+	// so the tests that predate the skip accounting need no change.
 	books []models.Book
+	all   []models.Book
 	mu    sync.Mutex
 	set   map[int64]int64 // bookID → calibreID
 }
 
 func (f *fakeBookLister) ListByStatus(_ context.Context, _ string) ([]models.Book, error) {
+	return f.books, nil
+}
+
+func (f *fakeBookLister) List(_ context.Context) ([]models.Book, error) {
+	if f.all != nil {
+		return f.all, nil
+	}
 	return f.books, nil
 }
 

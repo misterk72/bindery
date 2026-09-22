@@ -39,8 +39,26 @@ type grimmoryPusher interface {
 
 // calibreAdder mirrors a just-imported file into Calibre via calibredb or the
 // Bindery Bridge plugin. The scanner only invokes it when Calibre mode is on.
-type calibreAdder interface {
-	Add(ctx context.Context, filePath string, meta calibre.Metadata) (int64, error)
+// An alias rather than a second declaration of the same method set, so the
+// resolver main.go passes in satisfies this without a wrapper.
+type calibreAdder = calibre.Adder
+
+// calibreCoverCapable is implemented by an adder that can say whether a cover
+// path will be used. Only the plugin client implements it, because only the
+// plugin has a capability list; calibredb always takes `--cover`, so an adder
+// that does not implement this is assumed to accept one. Asking before
+// resolving matters: materialising a remote cover is a network fetch, and
+// doing it for a plugin that would drop the field is pure waste.
+type calibreCoverCapable interface {
+	SupportsCover(ctx context.Context) bool
+}
+
+// calibreMetadataUpdater is implemented by an adder that can write to a
+// Calibre row that already exists (PATCH /v1/books/{id}). It is what turns a
+// 409 from a dead end into a correction.
+type calibreMetadataUpdater interface {
+	SupportsMetadataUpdate(ctx context.Context) bool
+	UpdateMetadata(ctx context.Context, id int64, meta calibre.Metadata) ([]string, error)
 }
 
 // absNotifier is called after a successful audiobook import to trigger an
@@ -81,7 +99,7 @@ type Scanner struct {
 	series               *db.SeriesRepo
 	renamer              *Renamer
 	remapper             *Remapper
-	calibreAdder         calibreAdder
+	calibreAdderFor      func(calibre.Mode) calibreAdder
 	grimmory             grimmoryPusher
 	calibreMode          func() calibre.Mode
 	calibreCoverCacheDir string
@@ -288,11 +306,29 @@ func (s *Scanner) effectiveRootForFormat(ctx context.Context, author *models.Aut
 	return s.effectiveLibraryDir(ctx, author)
 }
 
-// WithCalibre attaches the Calibre integration. The mode resolver is consulted
-// on every import so the operator can switch modes in the UI without restarting.
+// WithCalibre attaches the Calibre integration with one fixed adder. The mode
+// resolver is still consulted on every import, but the adder is pinned, so a
+// mode change that would need a different client has no effect. Production
+// wiring uses WithCalibreResolver; this form is for tests and for a caller
+// that has already resolved which client it wants.
 func (s *Scanner) WithCalibre(mode func() calibre.Mode, adder calibreAdder) *Scanner {
+	return s.WithCalibreResolver(mode, func(calibre.Mode) calibreAdder { return adder })
+}
+
+// WithCalibreResolver attaches the Calibre integration with an adder built
+// per push from the current settings. Both the mode and the client are
+// resolved at push time, so switching mode in the UI, or correcting
+// plugin_url, plugin_api_key or push_path_remap, takes effect on the next
+// import rather than on the next restart.
+//
+// This used to be a single instance built once at boot from the boot-time
+// mode, while the scanner was handed a live mode resolver. The two disagreed
+// the moment anyone touched the settings: booting with mode=off and then
+// selecting plugin mode left the scanner calling calibredb's Add, which
+// returned ErrDisabled and was swallowed without a log line (#1355).
+func (s *Scanner) WithCalibreResolver(mode func() calibre.Mode, resolve func(calibre.Mode) calibreAdder) *Scanner {
 	s.calibreMode = mode
-	s.calibreAdder = adder
+	s.calibreAdderFor = resolve
 	return s
 }
 

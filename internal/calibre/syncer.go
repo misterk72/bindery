@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +21,35 @@ type SyncError struct {
 	Path   string `json:"path,omitempty"`
 	Reason string `json:"reason"`
 }
+
+// SyncSkip is a per-book record of a book the bulk push did not attempt.
+// Before these existed, a skipped book appeared in no counter, no error row
+// and no log line, so "Pushed 0, already in Calibre 0, failed 0" could mean
+// either "your library is already in Calibre" or "every book was dropped by a
+// filter you cannot see" (discussion #1592).
+type SyncSkip struct {
+	BookID int64  `json:"bookId"`
+	Title  string `json:"title"`
+	Reason string `json:"reason"`
+}
+
+// Skip reasons. Kept free of commas so they read correctly when the zero-case
+// message joins several of them into one sentence.
+const (
+	// SkipReasonNotImported is a book whose status is not "imported": there
+	// is nothing on disk to hand to Calibre yet.
+	SkipReasonNotImported = "not imported"
+	// SkipReasonNotMonitored is an imported book that is unmonitored. The
+	// bulk push has always inherited this filter from ListByStatus; it was
+	// simply invisible.
+	SkipReasonNotMonitored = "not monitored"
+	// SkipReasonNoFile is an imported book with no file path at all, which
+	// means the importer crashed or the file was deleted underneath Bindery.
+	SkipReasonNoFile = "no file on disk"
+	// SkipReasonAudiobookOnly is an imported book that only has an audiobook.
+	// The plugin endpoint takes one ebook file, so there is nothing to send.
+	SkipReasonAudiobookOnly = "audiobook only with no ebook"
+)
 
 // maxSyncErrors caps the per-book error list kept in SyncProgress.Errors (and
 // thus returned on every status poll). A run that fails on every book — e.g. a
@@ -38,6 +69,10 @@ type SyncStats struct {
 	Pushed           int `json:"pushed"`
 	AlreadyInCalibre int `json:"alreadyInCalibre"`
 	Failed           int `json:"failed"`
+	// Skipped counts books the run never attempted. It is deliberately not
+	// part of Total: Total is the denominator of the progress bar and only
+	// counts work the run is actually going to do.
+	Skipped int `json:"skipped"`
 }
 
 // SyncProgress is the polled shape for /calibre/sync/status. Running=false
@@ -51,6 +86,9 @@ type SyncProgress struct {
 	Error      string      `json:"error,omitempty"`
 	Stats      SyncStats   `json:"stats"`
 	Errors     []SyncError `json:"errors"`
+	// Skips samples the books the run did not attempt, capped the same way
+	// Errors is. Stats.Skipped always holds the full count.
+	Skips []SyncSkip `json:"skips"`
 }
 
 // pluginPusher captures the subset of *PluginClient the syncer needs, so
@@ -63,8 +101,19 @@ type pluginPusher interface {
 // BookLister is the subset of *db.BookRepo the syncer uses. Keeps the
 // dependency narrow for tests.
 type BookLister interface {
+	// List returns the whole visible catalogue. It exists only so the run can
+	// say why a book was left out; eligibility still comes from ListByStatus,
+	// so what gets pushed is unchanged.
+	List(ctx context.Context) ([]models.Book, error)
 	ListByStatus(ctx context.Context, status string) ([]models.Book, error)
 	SetCalibreID(ctx context.Context, id, calibreID int64) error
+}
+
+// SeriesGetter is the subset of *db.SeriesRepo used to attach series and
+// series index to a bulk-pushed book, which a live import has always sent and
+// the bulk push never did.
+type SeriesGetter interface {
+	GetPrimarySeriesForBook(ctx context.Context, bookID int64) (string, string, error)
 }
 
 // AuthorGetter is the subset of *db.AuthorRepo used to add author metadata
@@ -86,6 +135,7 @@ type Syncer struct {
 	books     BookLister
 	authors   AuthorGetter
 	editions  EditionLister
+	series    SeriesGetter
 	newClient func(cfg Config) pluginPusher
 
 	mu       sync.Mutex
@@ -111,6 +161,13 @@ func NewSyncer(books BookLister) *Syncer {
 func (s *Syncer) WithMetadata(authors AuthorGetter, editions EditionLister) *Syncer {
 	s.authors = authors
 	s.editions = editions
+	return s
+}
+
+// WithSeries attaches the series lookup so bulk-pushed books carry the same
+// series and series index a live import sends.
+func (s *Syncer) WithSeries(series SeriesGetter) *Syncer {
+	s.series = series
 	return s
 }
 
@@ -141,6 +198,9 @@ func (s *Syncer) Progress() SyncProgress {
 	if len(s.progress.Errors) > 0 {
 		snap.Errors = append([]SyncError(nil), s.progress.Errors...)
 	}
+	if len(s.progress.Skips) > 0 {
+		snap.Skips = append([]SyncSkip(nil), s.progress.Skips...)
+	}
 	return snap
 }
 
@@ -162,6 +222,7 @@ func (s *Syncer) Start(ctx context.Context, cfg Config, mode Mode) error {
 		StartedAt: time.Now().UTC(),
 		Message:   "listing imported books…",
 		Errors:    []SyncError{},
+		Skips:     []SyncSkip{},
 	}
 	s.mu.Unlock()
 
@@ -187,22 +248,67 @@ func (s *Syncer) run(ctx context.Context, cfg Config) {
 
 	// Restrict to books that actually have a file on disk. A book row with
 	// status=imported but empty file_path means the importer crashed or the
-	// file was deleted out from under us — nothing to push.
+	// file was deleted out from under us, so there is nothing to push.
 	eligible := make([]models.Book, 0, len(books))
-	for i := range books {
-		if pushPath(&books[i]) != "" {
-			eligible = append(eligible, books[i])
+	skips := make([]SyncSkip, 0)
+	skipCounts := map[string]int{}
+	recordSkip := func(b *models.Book, reason string) {
+		skipCounts[reason]++
+		if len(skips) < maxSyncErrors {
+			skips = append(skips, SyncSkip{BookID: b.ID, Title: b.Title, Reason: reason})
 		}
+	}
+	for i := range books {
+		b := &books[i]
+		switch {
+		case pushPath(b) != "":
+			eligible = append(eligible, *b)
+		case strings.TrimSpace(b.AudiobookFilePath) != "":
+			recordSkip(b, SkipReasonAudiobookOnly)
+		default:
+			recordSkip(b, SkipReasonNoFile)
+		}
+	}
+	// Books that never reached the eligible list at all. ListByStatus filters
+	// on status AND monitored, so both are reported separately rather than as
+	// one undifferentiated "not eligible".
+	if all, listErr := s.books.List(ctx); listErr != nil {
+		slog.Warn("calibre sync: full catalogue unavailable; skip reasons limited to the imported set", "error", listErr)
+	} else {
+		considered := make(map[int64]struct{}, len(books))
+		for i := range books {
+			considered[books[i].ID] = struct{}{}
+		}
+		for i := range all {
+			b := &all[i]
+			if _, ok := considered[b.ID]; ok {
+				continue
+			}
+			if b.Status == models.BookStatusImported {
+				recordSkip(b, SkipReasonNotMonitored)
+			} else {
+				recordSkip(b, SkipReasonNotImported)
+			}
+		}
+	}
+	skipped := 0
+	for _, n := range skipCounts {
+		skipped += n
 	}
 
 	s.setProgress(func(p *SyncProgress) {
 		p.Stats.Total = len(eligible)
+		p.Stats.Skipped = skipped
+		p.Skips = skips
 		if len(eligible) == 0 {
-			p.Message = "no imported books with files to push"
+			p.Message = nothingToPushMessage(skipCounts)
 		} else {
 			p.Message = "pushing books to Calibre…"
 		}
 	})
+	if skipped > 0 {
+		slog.Info("calibre sync: books skipped", "skipped", skipped, "reasons", skipSummary(skipCounts))
+	}
 
 	client := s.newClient(cfg)
 	sameLibrary := sameCalibreLibrary(ctx, cfg, client)
@@ -270,7 +376,11 @@ func (s *Syncer) run(ctx context.Context, cfg Config) {
 	}
 
 	s.setProgress(func(p *SyncProgress) {
-		p.Message = "done"
+		// A run with nothing to do keeps the message that named why, so the
+		// modal does not overwrite the only useful thing it has to say.
+		if p.Stats.Total > 0 {
+			p.Message = "done"
+		}
 	})
 	// Snapshot under lock — setProgress writes s.progress concurrently with the
 	// HTTP poller reading it, so read the stats through the locked getter.
@@ -280,6 +390,7 @@ func (s *Syncer) run(ctx context.Context, cfg Config) {
 		"pushed", final.Stats.Pushed,
 		"alreadyInCalibre", final.Stats.AlreadyInCalibre,
 		"failed", final.Stats.Failed,
+		"skipped", final.Stats.Skipped,
 		"distinctFailureReasons", len(loggedReasons))
 }
 
@@ -306,14 +417,67 @@ func (s *Syncer) metadataForBook(ctx context.Context, b *models.Book, path strin
 	if !sameLibrary && isCalibreOrigin(b) {
 		delete(identifiers, "calibre")
 	}
-	return Metadata{
-		Title:       b.Title,
+	seriesTitle, seriesIndex := s.primarySeries(ctx, b)
+	return BuildMetadata(MetadataSource{
+		Book:        b,
 		Authors:     authors,
 		AuthorSort:  authorSort,
-		Language:    NormalizeLanguageForCalibre(b.Language),
-		Genres:      b.Genres,
+		Edition:     edition,
+		SeriesTitle: seriesTitle,
+		SeriesIndex: seriesIndex,
 		Identifiers: identifiers,
-	}, nil
+	}), nil
+}
+
+// primarySeries mirrors the importer's lookup. A failure is not worth failing
+// the push over: the book still reaches Calibre, just without its series.
+func (s *Syncer) primarySeries(ctx context.Context, b *models.Book) (string, string) {
+	if s.series == nil || b == nil {
+		return "", ""
+	}
+	title, index, err := s.series.GetPrimarySeriesForBook(ctx, b.ID)
+	if err != nil {
+		slog.Debug("calibre sync: primary series lookup failed", "bookId", b.ID, "error", err)
+		return "", ""
+	}
+	return title, index
+}
+
+// nothingToPushMessage replaces the old generic "no imported books with files
+// to push" with the reasons the run actually found, so the #1592 report is
+// self-diagnosing.
+func nothingToPushMessage(counts map[string]int) string {
+	summary := skipSummary(counts)
+	if summary == "" {
+		return "no books to push: the library is empty"
+	}
+	return "no books to push: " + summary
+}
+
+// skipSummary renders the skip tally in a stable order, most common first.
+func skipSummary(counts map[string]int) string {
+	if len(counts) == 0 {
+		return ""
+	}
+	type entry struct {
+		reason string
+		n      int
+	}
+	entries := make([]entry, 0, len(counts))
+	for reason, n := range counts {
+		entries = append(entries, entry{reason, n})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].n != entries[j].n {
+			return entries[i].n > entries[j].n
+		}
+		return entries[i].reason < entries[j].reason
+	})
+	parts := make([]string, 0, len(entries))
+	for _, e := range entries {
+		parts = append(parts, strconv.Itoa(e.n)+" "+e.reason)
+	}
+	return strings.Join(parts, "; ")
 }
 
 func (s *Syncer) authorMetadata(ctx context.Context, b *models.Book) ([]string, string, error) {

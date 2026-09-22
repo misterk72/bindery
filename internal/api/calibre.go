@@ -55,6 +55,11 @@ type CalibreHandler struct {
 	// not block on SQLite. Falls back to context.Background() when not
 	// set; see #846 and recommendations.go.
 	lifetimeCtx context.Context
+
+	// libraryRoot is the directory Bindery stores imported books under. It
+	// is the path a push hands to the Calibre side, so it is what the "can
+	// you see this?" probe asks about. Empty disables the probe.
+	libraryRoot string
 }
 
 func NewCalibreHandler(settings *db.SettingsRepo) *CalibreHandler {
@@ -67,6 +72,15 @@ func (h *CalibreHandler) WithLifetimeCtx(ctx context.Context) *CalibreHandler {
 	if ctx != nil {
 		h.lifetimeCtx = ctx
 	}
+	return h
+}
+
+// WithLibraryRoot attaches the Bindery library directory so Test can ask the
+// plugin whether the Calibre process can actually see it. Without it the Test
+// button can only report that the plugin answered, which is the gap behind
+// every "Test says OK but nothing reaches Calibre" report (#1346, #1355).
+func (h *CalibreHandler) WithLibraryRoot(dir string) *CalibreHandler {
+	h.libraryRoot = strings.TrimSpace(dir)
 	return h
 }
 
@@ -175,19 +189,37 @@ func (h *CalibreHandler) Test(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "plugin_url is not configured"})
 			return
 		}
-		pc := calibre.NewPluginClient(cfg.PluginURL, cfg.PluginAPIKey)
-		version, err := pc.Health(r.Context())
+		pc := calibre.NewPluginClient(cfg.PluginURL, cfg.PluginAPIKey).WithPushPathRemap(cfg.PushPathRemap)
+		health, err := pc.HealthDetail(r.Context())
+		version := health.Version
 		if err != nil {
 			slog.Warn("calibre test failed: plugin health", "plugin_url", cfg.PluginURL, "error", err)
-			// Timeout against a LAN host → likely a VPN-container
+			// Timeout against a LAN host is likely a VPN container
 			// killswitch dropping LAN traffic; name it (#1474).
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": lanTimeoutHint(cfg.PluginURL, err)})
+			return
+		}
+		if health.Degraded {
+			// The bridge answers health but refuses every write. Reporting
+			// this as reachable is the false green that made the fail closed
+			// api_key change look like a network fault.
+			slog.Warn("calibre test failed: plugin is degraded", "plugin_url", cfg.PluginURL, "reason", health.Reason)
+			writeJSON(w, http.StatusBadGateway, map[string]string{
+				"error": "the plugin answered but is not serving the API: " + health.Reason,
+			})
+			return
+		}
+		message, probeErr := h.probeLibraryRoot(r.Context(), pc)
+		if probeErr != "" {
+			slog.Warn("calibre test failed: plugin cannot see the library root",
+				"plugin_url", cfg.PluginURL, "library_root", h.libraryRoot, "error", probeErr)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": probeErr})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{
 			"ok":      "true",
 			"version": version,
-			"message": "plugin reachable",
+			"message": message,
 		})
 		return
 	}
@@ -209,4 +241,38 @@ func (h *CalibreHandler) Test(w http.ResponseWriter, r *http.Request) {
 		"version": version,
 		"message": "calibredb reachable",
 	})
+}
+
+// probeLibraryRoot asks the plugin whether the Calibre process can open the
+// directory Bindery pushes from, using the same remap a real push would apply.
+// It returns the success message on the left and, on the right, an actionable
+// failure. A plugin that does not advertise `path_probe`, or a Bindery with no
+// library root configured, falls back to exactly the previous answer.
+//
+// The plugin's own `library` field from /v1/health is deliberately not used as
+// a substitute. It reports where Calibre keeps its library, which is a
+// different directory from the one Bindery pushes out of, so it answers a
+// question nobody asked. It stays in use where it belongs, in the bulk sync's
+// same-library check.
+func (h *CalibreHandler) probeLibraryRoot(ctx context.Context, pc *calibre.PluginClient) (message, failure string) {
+	if h.libraryRoot == "" || !pc.SupportsPathProbe(ctx) {
+		return "plugin reachable", ""
+	}
+	probe, err := pc.ProbePath(ctx, h.libraryRoot)
+	if err != nil {
+		// The probe is a diagnostic, not a gate. If it cannot run, say the
+		// plugin is reachable, which is the one thing that was proven.
+		slog.Debug("calibre test: path probe unavailable", "error", err)
+		return "plugin reachable", ""
+	}
+	wire := pc.PushPath(h.libraryRoot)
+	switch {
+	case !probe.Exists:
+		return "", fmt.Sprintf("plugin reachable, but the Calibre container cannot see %q. Bindery pushes book paths under %q and Calibre opens them on its own side, so set a push path remap in Settings then Calibre, or mount the library at the same path in both containers.", wire, h.libraryRoot)
+	case !probe.IsDir:
+		return "", fmt.Sprintf("plugin reachable, but %q is not a directory on the Calibre side. Check the push path remap in Settings then Calibre.", wire)
+	case !probe.Readable:
+		return "", fmt.Sprintf("plugin reachable, but the Calibre container cannot read %q. Check the volume permissions, and that both containers run as a user that can read the library.", wire)
+	}
+	return fmt.Sprintf("plugin reachable, and it can read %s", wire), ""
 }

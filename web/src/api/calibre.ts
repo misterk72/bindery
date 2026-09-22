@@ -61,6 +61,19 @@ export interface CalibreSyncStats {
   pushed: number
   alreadyInCalibre: number
   failed: number
+  // skipped counts books the run never attempted. Deliberately not part of
+  // total, which is the denominator of the progress bar.
+  skipped: number
+}
+
+// CalibreSyncSkip is one book the bulk push did not attempt, and why.
+// Before these existed a skipped book showed up nowhere at all, so an empty
+// report could mean either "already in Calibre" or "every book was dropped by
+// a filter you cannot see" (discussion #1592).
+export interface CalibreSyncSkip {
+  bookId: number
+  title: string
+  reason: string
 }
 
 // CalibreSyncProgress is the polled shape for /calibre/sync/status.
@@ -72,6 +85,9 @@ export interface CalibreSyncProgress {
   error?: string
   stats: CalibreSyncStats
   errors: CalibreSyncError[]
+  // skips samples the skipped books, capped the same way errors is.
+  // stats.skipped always holds the full count.
+  skips: CalibreSyncSkip[]
 }
 
 // CalibreImportRun is one persisted Calibre import run (issue #643). Used
