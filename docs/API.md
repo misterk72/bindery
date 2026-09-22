@@ -772,7 +772,7 @@ requires a session cookie or the API key and reading apps authenticate with
 HTTP Basic. See [third-party-data.md](third-party-data.md) for why covers are
 served this way.
 
-OPDS authenticates via HTTP Basic — any username, API key as the password. KOReader, Moon+ Reader, Aldiko, and other OPDS-capable apps work out of the box.
+OPDS authenticates via HTTP Basic with a Bindery username and that account's password, or with the API key in an `X-Api-Key` header or an `?apikey=` query parameter. The key is not accepted as the Basic password. KOReader, Moon+ Reader, Aldiko, and other OPDS-capable apps work out of the box.
 
 ## Examples
 

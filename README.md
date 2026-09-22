@@ -113,11 +113,11 @@ Clean-room Go rewrite, modern React UI, MIT-licensed, actively developed.
 ## Features
 
 **Library management**
-- Author monitoring via OpenLibrary's author-works endpoint, configurable author monitor modes for all/future/latest/none defaults, per-book monitor toggles, and a `wanted → imported` workflow with live download progress on the Queue page.
+- Author monitoring via OpenLibrary's author-works endpoint, configurable author monitor modes, all, future, latest or none as the install default plus a per-author mode that follows only the series you pick, per-book monitor toggles, and a `wanted → imported` workflow with live download progress on the Queue page.
 - Unattended release discovery: monitored authors are checked for new books on a schedule, so a followed author's next book joins the library without a click. It ships off; turn it on in **Settings, General, New release discovery** by picking Daily, Weekly or Monthly. Opt an author out with **Monitor new items: Don't add them**.
 - Dual-format books — each title holds an ebook *and* an audiobook in independent slots, with separate search, grab, and import pipelines, and the audiobook side moves multi-part `.m4b` / `.mp3` folders as one unit.
 - Series support with position tracking and search by series title, edition tracking (format / ISBN / publisher / page count), Calendar view of upcoming releases, and multiple library roots.
-- Library scan with four-tier matching: ASIN → title + author → series name + position → fuzzy title. Honours librarian sort-suffix form (`Title, The`) and series-annotated filenames (`[Mistborn, Book 1]`).
+- Library scan matching in five passes: exact ASIN, then a backwards `Author - Title` filename whose folder author the catalogue already knows, then the filename's title, then the book folder's title, and finally series name plus position. Every title pass is one fuzzy comparison that has to agree on the author as well. Honours librarian sort-suffix form (`Title, The`) and series-annotated filenames (`[Mistborn, Book 1]`).
 - **Library adoption**: whatever the scan could not match waits on the Import page as one row per book (an audiobook folder or disc set is one row), with suggested matches (one click Confirm only for a strong match), one "Add author" decision per missing author, and Undo. Files are registered where they are, never moved.
 - Author aliases (`RR Haywood` / `R.R. Haywood` / `R R Haywood` merge into one canonical row), and metadata re-bind to correct a wrong match without delete-and-re-add. On a book’s **File → Re-bind** dialog, search configured metadata providers and select an OpenLibrary work or Hardcover book, or enter an exact provider ID and press Enter. Results already in the library are marked and link to the existing book; records belonging to another library book cannot be selected. Each result’s **Links** menu opens its upstream page when available; OpenLibrary editions can be viewed but require a work ID for re-binding. Re-binding updates metadata and series without moving files; author mismatches require confirmation.
 - Explicit author-catalogue reconciliation with a selectable preview: remove chosen stale metadata-only Wanted rows after changing provider or metadata profile while always protecting imported books and every row with a tracked file.
@@ -128,13 +128,13 @@ Clean-room Go rewrite, modern React UI, MIT-licensed, actively developed.
 - Smart matching — four-tier query fallback (`t=book` → `surname+title` → `author+title` → title), word-boundary keyword matching, ordered title words with numeric qualifiers preserved, rejection of conflicting trailing author credits, dual-author-anchor for ambiguous short titles, subtitle-aware (`Title: Subtitle`). Title-only releases remain supported.
 - SABnzbd, NZBGet, qBittorrent, Transmission, Deluge, rTorrent/ruTorrent — with **Use SSL** and **URL Base** for reverse-proxy subpaths.
 - **Diagnose** on each saved download client: one click checks the connection, the category, where ebook and audiobook grabs actually land, the path remap, whether Bindery can read that folder, and whether imports can hardlink into each library folder, then names the first thing to fix. No shell needed, which matters in the distroless image.
-- Auto-grab sweep every 12h, immediate search on add or `wanted` flip, plus interactive per-book search and "Search all wanted" per author. Global kill-switch pauses auto-grab without losing your monitored list.
+- Auto-grab sweep on a configurable interval, 12h by default, immediate search on add or `wanted` flip, plus interactive per-book search and "Search all wanted" per author. Global kill-switch pauses auto-grab without losing your monitored list.
 - Quality profiles covering every format release parsing recognises (EPUB, MOBI, AZW3, PDF, plus AZW, DJVU, CBR, CBZ, FB2, LIT, RTF, TXT and the audio containers M4B, M4A, FLAC, MP3, OGG), language filter, regex-based custom formats, delay profiles, blocklist (consulted on every search; one-click add from History), and failure visibility in Queue and History.
 - Indexer-friendly by default: an optional per-indexer **Daily query limit** with usage shown on the Indexers tab, a rate-limited indexer is left alone for longer each time it refuses (one hour, then three, six, twelve and a day) and its row says when searches resume, an indexer that has stopped working is flagged in Settings, and a per-indexer *freeleech only* policy holds ratio-costing releases for manual approval.
 
 **Import & organize**
-- Completed downloads matched by NZO ID and placed in the library with configurable naming. Modes: **Auto** (default — hardlink when possible, else copy; seeding-safe), **Move**, **Copy** (keep source for seeding), **Hardlink** (zero extra disk; same filesystem required), **External** (hand off to a sibling tool).
-- Naming tokens — `{Author}`, `{SortAuthor}`, `{Title}`, `{Year}`, `{Series}`, `{SeriesNumber}`, `{Genre}`, `{Lang}`, `{ext}` — collapse cleanly for non-series books, with conditional literals (`{Title}{ - Series}` emits the dash only when a series exists) and zero-pad widths (`{SeriesNumber:2}` → `02`).
+- Completed downloads matched by NZO ID and placed in the library with configurable naming. Modes: **Auto** (default — hardlink when possible, else copy, so a torrent keeps seeding; a usenet grab is moved, since there is nothing to seed), **Move**, **Copy** (keep source for seeding), **Hardlink** (zero extra disk; same filesystem required), **External** (hand off to a sibling tool).
+- Naming tokens — `{Author}`, `{SortAuthor}`, `{Title}`, `{Year}`, `{Series}`, `{SeriesNumber}`, `{Genre}`, `{Lang}`, `{ASIN}`, `{ext}`, plus `{Part}` in the audiobook template — collapse cleanly for non-series books, with conditional literals (`{Title}{ - Series}` emits the dash only when a series exists) and zero-pad widths (`{SeriesNumber:2}` → `02`).
 - Cross-filesystem-safe moves: atomic rename when possible, copy + verify + delete for NFS / separate volumes. Full grab / import / failure history per book.
 - The **Import** page is where files you already have come in, two ways: **In your library** is the adoption list described above, and **From a folder** points at a folder anywhere Bindery can read, matches what it finds and imports it into the library, creating a book from a metadata search when nothing in the catalogue fits.
 - Calibre integration: three ways to hand a book over, plus a read side. Register each import with Calibre through the `calibredb` CLI or the [Bindery Bridge plugin](https://github.com/vavallee/bindery-plugins) (cross-container), mirror each ebook into a Calibre-Web-Automated ingest folder, or hand off through a drop folder so CWA or Calibre owns the library. Separately, read an existing Calibre library's `metadata.db` as Bindery's catalogue. See [docs/Calibre-Integration-Wiki.md](docs/Calibre-Integration-Wiki.md).
@@ -155,7 +155,7 @@ Clean-room Go rewrite, modern React UI, MIT-licensed, actively developed.
 
 Cover images are fetched and cached server-side under `<dataDir>/image-cache/` (30-day TTL). Every `imageURL` is rewritten to `/api/v1/images?url=...` before leaving the server — the browser never contacts third-party image hosts directly.
 
-**Discover** — personalised recommendations on the **Discover** page from multiple signals: next-in-series for what you're reading, new releases from monitored authors, genre similarity (≥ 20 books in library), OpenLibrary subject popular picks, and Hardcover wishlist cross-reference. Recency scoring is relative to the *median* publication year of your library, so backlist readers aren't penalised. Hard-filters owned, dismissed, excluded-author, wrong-language, fewer-than-50-ratings, sub-3.0-rated, and omnibus titles. Dismiss / exclude actions persist.
+**Discover** — personalised recommendations on the **Discover** page from multiple signals: next-in-series for what you're reading, new releases from monitored authors, genre similarity (≥ 20 books in library), OpenLibrary subject popular picks, and Hardcover wishlist cross-reference. Recency scoring is relative to the *median* publication year of your library, so backlist readers aren't penalised. Hard-filters owned, dismissed, excluded-author, wrong-language, sub-3.0-rated and omnibus titles, and drops anything under 50 ratings when nothing else vouches for it. Dismiss / exclude actions persist.
 
 **Migration** — upload `readarr.db` directly (authors resolved again against your primary metadata provider and its fallbacks since `bookinfo.club` is dead; indexers, download clients, and blocklist port structurally), or paste a newline-separated list of author names. CLI: `bindery migrate {csv,readarr} <path>` for first-time bulk imports without opening the UI.
 
@@ -164,9 +164,9 @@ Cover images are fetched and cached server-side under `<dataDir>/image-cache/` (
 - **OIDC** — native Authorization Code + PKCE with multi-provider support. Pre-configured for Google, GitHub (via Dex), Authelia, and Keycloak; identifies users by stable `(issuer, sub)` so email/username changes don't break logins.
 - **Multi-user mode** — per-user libraries, monitored authors, profiles, and downloads. Admin role manages indexers / download clients / users; standard users see only their own catalogue. Local, OIDC-provisioned, or forward-auth-mapped.
 - **Requests** (requester role). Give family and friends an account that can browse the library read only and ask for a book or an author, but cannot grab, download, delete or configure anything. Admins approve from a Requests queue with the usual add choices, and the added books belong to the person who asked. Requesters can follow each request to "available", and a webhook can announce new ones. See [docs/multi-user.md](docs/multi-user.md#requester).
-- **Webhook notifications** for grab / import / failure / new books found (pipe to Apprise, ntfy, Home Assistant, Discord, Slack via proxies). **On-demand SQLite backups.** **Persistent log viewer** in Settings → Logs with runtime DEBUG toggle.
+- **Webhook notifications** for grab, import, failure, new books found, new requests, health changes and a new Bindery release (pipe to Apprise, ntfy, Home Assistant, Discord, Slack via proxies). **On-demand SQLite backups.** **Persistent log viewer** in Settings → Logs with runtime DEBUG toggle.
 - **Download logs** from Settings → Logs as a text file for bug reports. **In-app update badge** when a newer release exists. `bindery db-check` and `bindery db-repair` report and repair orphaned database rows offline, for an instance that will not start ([details](docs/DEPLOYMENT.md)).
-- **Arr-compatible queue** at `GET /api/queue` for [Harpoon](https://github.com/harpoon-io/harpoon) and other *arr-aware tools — pagination, sort, live size, status, client, remote ID, protocol.
+- **Arr-compatible queue** at `GET /api/queue` for Harpoon and other *arr-aware tools — pagination, sort, live size, status, client, remote ID, protocol.
 
 **UI**
 - Modern React 19 + TypeScript + Tailwind CSS SPA with search-first author acquisition and deep-linkable routed `/book/:id` and `/author/:id` pages.
@@ -177,9 +177,9 @@ Cover images are fetched and cached server-side under `<dataDir>/image-cache/` (
 - Previous/Next navigation between authors on the author detail page, stepping through the list page you came from.
 - Previous/Next navigation between books, stepping through the list page you came from (Books, an author's own book list, or Wanted).
 - 8 languages — English, French, German, Dutch, Spanish, Filipino (Tagalog), Indonesian, Korean — auto-detected from the browser, override in Settings.
-- **OPDS 1.2 catalogue** at `/opds/` for KOReader, Moon+ Reader, and other reading apps. HTTP Basic auth with the API key as the password.
+- **OPDS 1.2 catalogue** at `/opds/` for KOReader, Moon+ Reader, and other reading apps. Sign in with your Bindery username and password over HTTP Basic, or pass your API key as an `X-Api-Key` header or an `?apikey=` query parameter.
 
-**Packaging** — single Go binary with the React frontend embedded via `go:embed`. Distroless container (non-root, read-only rootfs, all caps dropped, RuntimeDefault seccomp). Helm chart for ArgoCD / Flux. Pure-Go SQLite via `modernc.org/sqlite` — no CGO, no external database.
+**Packaging** — single Go binary with the React frontend embedded via `go:embed`. Distroless container, non-root by default, and a Helm chart that adds a read-only root filesystem, all capabilities dropped and a RuntimeDefault seccomp profile. Helm chart for ArgoCD / Flux. Pure-Go SQLite via `modernc.org/sqlite` — no CGO, no external database.
 
 ## Quick Start
 
@@ -204,6 +204,7 @@ services:
   bindery:
     image: ghcr.io/vavallee/bindery:latest
     container_name: bindery
+    user: "1000:1000"   # the uid:gid that owns your books and downloads
     ports:
       - 8787:8787
     volumes:
@@ -215,9 +216,11 @@ services:
     restart: unless-stopped
 ```
 
+The image is distroless and cannot switch users at runtime, so `user:` is how you set the UID that writes your library. `BINDERY_PUID` and `BINDERY_PGID` only assert that it came out right.
+
 ### Other install methods
 
-Pre-built binaries for Linux / macOS / Windows (amd64, arm64, armv7, armv6), Kubernetes (Helm chart at `charts/bindery/`), and the Unraid Community Applications template are all covered in **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — including UID/GID setup, path remapping for multi-container deployments, the full environment-variable reference, and per-version upgrade notes.
+Pre-built binaries for Linux (amd64, arm64, armv7, armv6), macOS and Windows (amd64, arm64), Kubernetes (Helm chart at `charts/bindery/`), and the Unraid Community Applications template are all covered in **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — including UID/GID setup, path remapping for multi-container deployments, the full environment-variable reference, and per-version upgrade notes.
 
 ## Configuration
 
@@ -234,7 +237,8 @@ Bindery is configured through the web UI under **Settings** — indexers, downlo
 | `BINDERY_AUDIOBOOK_DOWNLOAD_DIR` | inherits download dir | Separate watch folder for audiobook downloads |
 | `BINDERY_URL_BASE` | _(empty)_ | Reverse-proxy subpath (e.g. `/bindery`) |
 | `BINDERY_OUTBOUND_PROXY` | _(empty)_ | Route outbound HTTP (indexers, metadata, covers, notifications, telemetry) through an `http`/`https`/`socks5` proxy. LAN/loopback destinations bypass it by default — see [DEPLOYMENT.md](docs/DEPLOYMENT.md#environment-variables) |
-| `BINDERY_PUID` / `PGID` | _(unset)_ | Sanity-check assertions for the container UID/GID |
+| `BINDERY_LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn` or `error` |
+| `BINDERY_PUID` / `BINDERY_PGID` | _(unset)_ | Sanity-check assertions for the container UID/GID. They only assert; the distroless image does no runtime user switching, so set the UID with `--user` or Compose's `user:` as well |
 
 The full reference (path remapping, API-key seeding, telemetry, trusted-proxy, rate-limit knobs, cookie-Secure policy) is in **[docs/DEPLOYMENT.md#environment-variables](docs/DEPLOYMENT.md#environment-variables)**. OIDC and forward-auth proxy variables live in **[docs/auth-oidc.md](docs/auth-oidc.md)** and **[docs/auth-proxy.md](docs/auth-proxy.md)**.
 
@@ -339,7 +343,7 @@ Please keep security reports out of Discord and public issues — see [SECURITY.
   <a href="SECURITY.md"><img src="https://img.shields.io/badge/security-policy-blue" alt="Security policy" /></a>
 </p>
 
-Bindery holds API keys, reaches LAN services, and writes to disk — we take that seriously. Every push and weekly cron runs gosec, govulncheck, CodeQL, Semgrep, gitleaks, Hadolint, Checkov, Grype, Syft, ZAP baseline, and OpenSSF Scorecard, with findings published as SARIF in GitHub's Security tab. Release images ship with SLSA build provenance and Syft SBOMs. In-app: SSRF guards on every outbound URL, hardened response headers (CSP, frame-deny, referrer-policy, auto-HSTS), distroless non-root read-only rootfs container with all caps dropped, and digest-pinned base images.
+Bindery holds API keys, reaches LAN services, and writes to disk — we take that seriously. Every push and weekly cron runs govulncheck, CodeQL, Semgrep, gitleaks, Hadolint, Checkov, Grype, Syft, ZAP baseline, and OpenSSF Scorecard, with gosec enforced inside the blocking golangci-lint gate, and findings published as SARIF in GitHub's Security tab. Release images ship with SLSA build provenance and Syft SBOMs. In-app: SSRF guards on every outbound URL, hardened response headers (CSP, frame-deny, referrer-policy, auto-HSTS), distroless non-root read-only rootfs container with all caps dropped, and digest-pinned base images.
 
 To report a vulnerability, follow the process in **[SECURITY.md](SECURITY.md)**. The full threat model and verification recipes live on the [wiki Security page](https://github.com/vavallee/bindery/wiki/Security).
 
