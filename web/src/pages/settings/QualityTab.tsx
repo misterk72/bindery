@@ -289,6 +289,12 @@ function QualityProfileForm({
 
       <div>
         <label className={labelCls}>{t('settings.quality.formPreference')}</label>
+        {/* The hint states what the list does today: it is an allow list.
+            Its order is saved but read by nothing; releases are ranked by
+            models.QualityRank (#2733). The old hint promised the opposite and
+            contradicted itself, and two users asked on the same day which end
+            was "best". If the order is ever wired into ranking, change the
+            string with it. */}
         <p className="text-[11px] text-slate-500 dark:text-zinc-500 mb-2">
           {t('settings.quality.formPreferenceHint')}
         </p>

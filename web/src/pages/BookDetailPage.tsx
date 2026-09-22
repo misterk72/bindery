@@ -796,7 +796,7 @@ function BookDetailPageInner() {
             {(() => {
               const badge = bookStatusBadge(book.status, book.monitored, t)
               return (
-                <span className={`inline-flex items-center px-2 py-0.5 rounded font-medium ${badge.colorClass}`}>
+                <span className={`inline-flex items-center px-2 py-0.5 rounded font-medium ${badge.colorClass}`} title={badge.description}>
                   {badge.label}
                 </span>
               )

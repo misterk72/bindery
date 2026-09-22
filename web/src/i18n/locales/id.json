@@ -281,7 +281,6 @@
     "quality": {
       "heading": "Profil Kualitas",
       "newProfile": "+ New Profile",
-      "description": "A profile picks which file formats Bindery will grab. The list is ordered worst to best.",
       "empty": "Tidak ada profil kualitas terkonfigurasi.",
       "deleteConfirm": "Delete quality profile \"{{name}}\"?",
       "deleteFail": "Failed to delete profile",
@@ -289,7 +288,6 @@
       "formName": "Name",
       "formNamePlaceholder": "e.g. Ebook Preferred",
       "formPreference": "Allowed formats and preference order",
-      "formPreferenceHint": "Tick a format to allow it. Reorder worst → best — releases ranked higher in the list win.",
       "formAddFormat": "Add format:",
       "saveChanges": "Save changes",
       "createProfile": "Create profile",

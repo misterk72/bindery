@@ -941,6 +941,7 @@ export default function AuthorDetailPage() {
               onClick={handleRefresh}
               disabled={refreshing}
               className={`${btn.secondary} ${btnSize.sm}`}
+              title={t('authorDetail.actions.refreshHint', "Fetch this author's catalogue from the metadata provider again. Books you do not have are added according to Monitor new items. Nothing is downloaded until the next wanted search.")}
             >
               {refreshing ? t('authorDetail.actions.refreshing', 'Refreshing…') : t('authorDetail.actions.refresh', 'Refresh')}
             </button>

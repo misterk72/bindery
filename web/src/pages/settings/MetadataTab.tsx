@@ -128,7 +128,7 @@ export default function MetadataTab() {
               {t('settings.general.defaultMediaTypeLabel', 'Default media type')}
             </label>
             <p className="text-xs text-slate-600 dark:text-zinc-500 mb-2">
-              {t('settings.general.defaultMediaTypeHint', 'Applied to new authors when no explicit choice is made. Existing authors are unaffected — use the Authors page bulk action to migrate them.')}
+              {t('settings.general.defaultMediaTypeHint', 'Applied to new authors, and to books you add on their own, when no explicit choice is made. Existing rows are unaffected: change authors with the Authors page bulk action, and books from the Books page with Set ebook, Set audiobook or Set both, which also covers your wanted list once Books is filtered to Wanted.')}
             </p>
             <select
               value={settings['default.media_type'] ?? 'ebook'}
