@@ -52,7 +52,8 @@ Three roles exist: `admin`, `user` and `requester`.
 | Configure download clients | Yes | No | No |
 | Configure system-wide settings | Yes | No | No |
 | View admin settings tabs in UI | Yes | No | No |
-| Trigger system-level operations (backup, scan, migrate) | Yes | No | No |
+| Trigger a backup or a migration import | Yes | No | No |
+| Start a library scan | Yes | Yes | No |
 | See server filesystem paths (storage health, path settings, last library scan) | Yes | No | No |
 
 ## Requester
