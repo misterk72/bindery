@@ -19,10 +19,11 @@ docker run -d \
 | Tag | Meaning |
 |-----|---------|
 | `:latest` | Most recent tagged release |
-| `:vX.Y.Z` | Specific release — pin this for reproducible deploys |
+| `:X.Y.Z` / `:vX.Y.Z` | Specific release, both spellings are published. The Helm chart pins the un-prefixed form |
 | `:development` | Bleeding edge from the `development` branch |
-| `:sha-<hash>` | Per-commit main-branch image — pin for rollback |
-| `:dev-<hash>` | Per-commit development-branch image |
+| `:sha-<hash>` | Per-commit image, published for every branch and tag build. Pin for rollback |
+
+The same image is published to Docker Hub as `vavallee/bindery`, tag for tag, if you prefer that registry. Both are multi-arch manifests covering `linux/amd64` and `linux/arm64`, so Docker pulls the right one on a Pi 4 or 5, an arm64 NAS, or an x86 server without any tag suffix.
 
 ## Docker Compose
 
@@ -48,8 +49,15 @@ services:
 helm install bindery charts/bindery \
   --set image.tag=latest \
   --set persistence.config.storageClass=longhorn \
+  --set ingress.enabled=true \
   --set ingress.host=bindery.example.com
 ```
+
+Every ingress template is gated on `ingress.enabled`, which defaults to false, so setting only `ingress.host` renders nothing. `ingress.type` selects what gets rendered: `traefik` (the default) emits a Traefik `IngressRoute`, `standard` emits a portable `networking.k8s.io/v1` Ingress you configure with `ingress.className`, `ingress.annotations` and `ingress.tls`.
+
+### Health checks
+
+Bindery answers `GET /api/v1/health` with 200 once it is serving. The container image declares its own Docker `HEALTHCHECK` that calls the binary's `healthcheck` subcommand against that endpoint, so `docker ps` shows a health column and Compose `depends_on: { bindery: { condition: service_healthy } }` works with no extra configuration. The Helm chart points a startup, readiness and liveness probe at the same path, and `hooks.postsyncSmoke` adds an ArgoCD PostSync job that fails the sync if the endpoint does not answer. Under `BINDERY_URL_BASE` the path moves under the prefix, so update any probe you configure yourself.
 
 See [`charts/bindery/values.yaml`](../charts/bindery/values.yaml) for all configuration options.
 
@@ -80,10 +88,12 @@ https://raw.githubusercontent.com/vavallee/bindery/main/.github/unraid/bindery.x
 ```
 
 Defaults the template provides: bridge networking, port `8787`,
-`--user 99:100` (Unraid's `nobody:users`), and four mounts —
-`/mnt/user/appdata/bindery → /config`, `/mnt/user/Books → /books`,
-`/mnt/user/Audiobooks → /audiobooks` (optional), and
-`/mnt/user/downloads/bindery → /downloads`. If you change `BINDERY_PUID`
+`--user 99:100` (Unraid's `nobody:users`), and three prefilled mounts,
+`/mnt/user/appdata/bindery → /config`, `/mnt/user/Books → /books` and
+`/mnt/user/downloads/bindery → /downloads`, plus an optional `/audiobooks`
+mount with no default host path. Fill that one in and set
+`BINDERY_AUDIOBOOK_DIR=/audiobooks` if you want audiobooks kept apart from
+ebooks. If you change `BINDERY_PUID`
 or `BINDERY_PGID`, also change the matching half of `--user` in **Extra
 Parameters** — the container fail-fast-validates the pair on startup.
 
@@ -146,7 +156,7 @@ The frontend is embedded in the binary via `go:embed` — no separate static-fil
 
 ## Running as a specific UID/GID
 
-Bindery ships on a [distroless/static-debian12:nonroot](https://github.com/GoogleContainerTools/distroless) base. The image has no shell, no `gosu`, and no entrypoint hook — it cannot switch user at runtime the way LinuxServer.io images do. If you need the container to own files as your media-library user (e.g. `1000:1000`), launch it with that UID/GID directly.
+Bindery ships on a [distroless/static-debian13:nonroot](https://github.com/GoogleContainerTools/distroless) base. The image has no shell, no `gosu`, and no entrypoint hook — it cannot switch user at runtime the way LinuxServer.io images do. If you need the container to own files as your media-library user (e.g. `1000:1000`), launch it with that UID/GID directly.
 
 ### Docker
 
@@ -251,13 +261,16 @@ places its file in that same folder:
 
 ```
 /data/books/Ursula K. Le Guin/A Wizard of Earthsea (1968)/
-├── A Wizard of Earthsea.epub
-├── Part 001.m4b
+├── A Wizard of Earthsea - Ursula K. Le Guin.epub
+├── wizard_earthsea_01.m4b
 └── cover.jpg
 ```
 
-No extra configuration needed — just don't split the two dirs if you want the
-shared layout. (For handing files to Storyteller's *watch folder* instead,
+No extra configuration needed, just don't split the two dirs if you want the
+shared layout. Two settings opt out of it: **Flatten multi-disc audiobooks** and
+a per-file audiobook naming template both keep the historical behaviour and
+place the audiobook in a sibling `Title (2)` folder instead of merging.
+(For handing files to Storyteller's *watch folder* instead,
 see [Handing off to another library tool](#handing-off-to-another-library-tool-cwa-calibre-storyteller).)
 
 ### `BINDERY_DOWNLOAD_DIR` is not a watch folder
@@ -391,7 +404,7 @@ Bindery parks the download as *handed off* and reconciles the managed copy the e
 | `BINDERY_DOWNLOAD_PATH_REMAP` | _(empty)_ | Global comma-separated `from:to` pairs rewriting paths reported by download clients into paths Bindery can access. Per-client path remaps in Settings take precedence when they match. Longest-prefix match wins. See [Path remapping](#path-remapping-multi-container--multi-pod-setups). |
 | `BINDERY_PUID` | _(unset)_ | Sanity check — see [Running as a specific UID/GID](#running-as-a-specific-uidgid) |
 | `BINDERY_PGID` | _(unset)_ | Sanity check — same as `BINDERY_PUID` for the primary GID |
-| `BINDERY_COOKIE_SECURE` | `auto` | Session cookie `Secure` flag policy. `auto` (default) flips the flag on when TLS is detected directly or via `X-Forwarded-Proto: https`; `always` forces it on (use when your reverse proxy doesn't forward the header); `never` forces it off (legacy plain-HTTP installs). |
+| `BINDERY_COOKIE_SECURE` | `auto` | Session cookie `Secure` flag policy. `auto` (default) flips the flag on when TLS is detected directly or via `X-Forwarded-Proto: https`; `always` forces it on (use when your reverse proxy doesn't forward the header); `never` forces it off (legacy plain-HTTP installs). This also decides whether the OIDC login flow can use its `__Host-` cookie prefix, which browsers grant only to a `Secure` cookie and which is what stops someone else starting a login flow in your browser. If TLS terminates at a proxy that does not forward `X-Forwarded-Proto`, set `always` rather than leaving OIDC on the weaker cookie; `never` gives that protection up entirely. |
 | `BINDERY_NOTIFICATIONS_ALLOW_PRIVATE` | _(unset)_ | Set to `1` to flip outbound webhook SSRF policy from Strict to LAN, allowing RFC1918 targets. Use when ntfy / Home Assistant / Gotify live on your private network. Loopback, link-local, and cloud-metadata endpoints stay blocked. |
 | `BINDERY_DOWNLOAD_ALLOW_LOOPBACK` | _(unset)_ | Set to `1` to allow Bindery to fetch indexer-provided `.torrent` / `.nzb` download links that resolve to **loopback** (`127.0.0.1`, `::1`). Off by default because the download URL is chosen by the indexer's response (not an admin-typed value), so a malicious indexer could otherwise point it at a service on Bindery's own loopback. Turn this on when you legitimately run Prowlarr / an indexer co-located on loopback (e.g. `network_mode: host` with the companion bound only to `127.0.0.1`, [#1062](https://github.com/vavallee/bindery/discussions/1062)). RFC1918 LAN targets are allowed regardless; link-local and cloud-metadata stay blocked. |
 | `BINDERY_ALLOW_LAN_OIDC` | _(unset)_ | Set to `1`/`true` to disable the SSRF guard on the OIDC discovery probe, allowing LAN / loopback / private-range issuer URLs. Only enable when your OIDC provider runs on the Bindery host or a trusted private network. See [auth-oidc.md](auth-oidc.md). |
@@ -401,12 +414,13 @@ Bindery parks the download as *handed off* and reconciles the managed copy the e
 | `BINDERY_CONTACT` | _(falls back to project URL)_ | Contact pointer Bindery advertises in its `User-Agent` header. Accepts a `mailto:` URI, a bare email address (auto-prefixed with `mailto:`), or an `http(s)://` URL. **Set this when OpenLibrary author/title searches return HTTP 403** — OpenLibrary rate-limits per-UA and the default shared URL causes the whole Bindery fleet to count as one client. A per-instance contact differentiates each install and satisfies OpenLibrary's API policy (see [#848](https://github.com/vavallee/bindery/issues/848)). Example: `BINDERY_CONTACT=you@example.org`. Bindery never connects to the address; it goes only into the header. |
 | `BINDERY_RATE_LIMIT_MAX_FAILURES` | `5` | Maximum failed login attempts per IP before the account is locked for the rate-limit window. |
 | `BINDERY_RATE_LIMIT_WINDOW_MINUTES` | `15` | Duration in minutes of the per-IP login rate-limit window. After the window expires the failure counter resets. |
-| `BINDERY_SHUTDOWN_GRACE` | `10` | Seconds to drain in-flight HTTP requests after receiving SIGTERM or SIGINT before moving on to the background-job drain. Increase if your load balancer / Kubernetes sends long-lived SSE or WebSocket connections. |
-| `BINDERY_JOBS_DRAIN_GRACE` | `15` | Seconds to drain detached background jobs (ABS import, Grimmory sync, manual library scan, startup syncs) after the HTTP server has stopped and before the database is closed. These jobs are cancelled at drain start and given this window to wind down cleanly; any still running when it expires are logged and the process proceeds to shut down. Accepts a Go duration (e.g. `45s`, `2m`). This grace runs **after** `BINDERY_SHUTDOWN_GRACE`, so the two sum to the total shutdown budget: the defaults total 25s, under Kubernetes' default 30s `terminationGracePeriodSeconds`. If you raise either, raise `terminationGracePeriodSeconds` to match so drains finish before SIGKILL. |
-| `BINDERY_ENFORCE_TENANCY` | _(off)_ | Set to `true`/`1` to enforce per-user data isolation: each user sees only their own authors, books, profiles, and root folders, and the join-scoped queue / history / pending / OPDS feeds are scoped to the requesting user. **Defaults off**, in which case every authenticated user shares one library view (single-user behaviour). Admin-only configuration gating applies regardless of this flag. See [multi-user.md](multi-user.md). |
-| `BINDERY_LOG_RETENTION_DAYS` | `14` | Days to retain persisted log entries in the SQLite log store before they are pruned. |
+| `BINDERY_SHUTDOWN_GRACE` | `10s` | How long to drain in-flight HTTP requests after receiving SIGTERM or SIGINT before moving on to the background-job drain. Accepts a Go duration (e.g. `30s`, `2m`); a bare number is rejected and the default is kept. Increase if your load balancer / Kubernetes sends long-lived SSE or WebSocket connections. |
+| `BINDERY_JOBS_DRAIN_GRACE` | `15` | Seconds to drain detached background jobs (ABS import, Grimmory sync, manual library scan, startup syncs) after the HTTP server has stopped and before the database is closed. These jobs are cancelled at drain start and given this window to wind down cleanly; any still running when it expires are logged and the process proceeds to shut down. Accepts a Go duration (e.g. `45s`, `2m`). This grace runs **after** `BINDERY_SHUTDOWN_GRACE`, so the two sum to the total shutdown budget: the defaults total 25s, under Kubernetes' default 30s `terminationGracePeriodSeconds`. If you raise either, raise `terminationGracePeriodSeconds` to match so drains finish before SIGKILL. The bundled Helm chart sets `terminationGracePeriodSeconds: 30` in its Deployment template with no values key, so raising the graces past 25s in total means patching that template. |
+| `BINDERY_ENFORCE_TENANCY` | _(off)_ | Set to `true`/`1` to enforce per-user data isolation: each user sees only their own authors, books, profiles, and root folders, and the join-scoped queue / history / pending / OPDS feeds are scoped to the requesting user. **Defaults off**, in which case every authenticated user shares one library view (single-user behaviour). Admin-only configuration gating applies regardless of this flag. Accepted truthy values are `1`, `true`, `yes` and `on`. When more than one user account exists and the gate is off, Bindery logs one warning at startup naming the variable, because those accounts share a single library view. See [multi-user.md](multi-user.md). |
+| `BINDERY_LOG_RETENTION_DAYS` | `14` | Days to retain persisted log entries in the SQLite log store before they are pruned. The same value is editable at **Settings → Logs → Log Retention**. |
 | `BINDERY_TRUSTED_PROXY` | _(empty)_ | Comma-separated IP/CIDR list of reverse proxies trusted to set `X-Forwarded-*`. Used for two things: (1) resolving the real client IP (for local-only auth and the per-IP login rate-limiter) by walking the `X-Forwarded-For` chain and only trusting hops in this list — never a client-supplied leftmost entry; and (2) honouring `X-Forwarded-Proto` / `X-Forwarded-Host` for the public scheme/host, which drives the fully-qualified OPDS feed link URLs, the `BINDERY_COOKIE_SECURE=auto` decision, and the OIDC `redirect_uri`. Requests from any peer **not** in this list have all `X-Forwarded-*` stripped, so behind a TLS-terminating proxy (Traefik / Caddy / nginx) those links fall back to `http://` until the proxy's IP/CIDR is listed here — **set it even if you are not using proxy auth.** An entry like `0.0.0.0/0` trusts every peer and effectively disables per-IP decisions. **Required** when proxy auth mode is active — Bindery refuses to start without it. **It also matters for `local-only` auth mode:** local-only serves any client whose resolved IP is private, and with this list empty that decision falls back to the TCP peer. Behind a reverse proxy the peer is the proxy's own private address, so every proxied request qualifies as local. Set it whenever Bindery is reached through a proxy, or use `enabled` mode instead; Bindery logs a warning at startup and on a mode change when it sees local-only with this unset. |
 | `BINDERY_TELEMETRY_DISABLED` | _(unset)_ | Set to `true` to opt out of the daily anonymous telemetry ping before any DB setting exists (e.g. on first boot). Equivalent to `telemetry.enabled: false` in **Settings → Logs**, but takes effect before the first ping fires. |
+| `BINDERY_DEPLOY_METHOD` | _(auto-detected)_ | Overrides the deployment method reported in the daily telemetry ping, for cases the auto-detection cannot tell apart. `helm` is the one worth setting by hand, so a chart install is not counted as a bare manifest. Ignored entirely when telemetry is off. |
 | `BINDERY_DB_FK_CHECK` | _(unset)_ | Offline database integrity tool, for deployments where the container command can't be edited. `report` lists rows whose foreign keys point at a missing parent and exits without changing anything; `repair` cleans them up (see [Database foreign-key integrity](#database-foreign-key-integrity)) and exits. Either value stops Bindery from starting normally — unset it afterwards. Equivalent to the `db-check` / `db-repair --yes` subcommands. |
 | `BINDERY_FRAME_ANCESTORS` | _(empty)_ | Allow the UI to be embedded in an `<iframe>` by a dashboard such as Organizr ([#1367](https://github.com/vavallee/bindery/issues/1367)). Empty (the default) blocks all framing (`Content-Security-Policy: frame-ancestors 'none'` + `X-Frame-Options: DENY`). Set it to a CSP `frame-ancestors` source list to opt in — `'self'` for same-origin framing, or a specific origin like `https://organizr.example.com` (space-separate multiple origins). When set, `X-Frame-Options` is dropped so it can't override the allowlist. Only allow origins you trust: framing widens clickjacking exposure. |
 
@@ -481,11 +495,14 @@ On first launch Bindery bootstraps itself — **no environment variables are req
 - `local-only` — skip auth for requests from private IPs (`10/8`, `172.16/12`, `192.168/16`, loopback, IPv6 ULA, link-local). Useful for home networks where the risk profile doesn't warrant a login wall.
 
   **Pick this mode only when clients reach Bindery directly, or set `BINDERY_TRUSTED_PROXY`.** Behind a reverse proxy (Traefik, Caddy, nginx) or a Kubernetes ingress, the connecting peer is the proxy, and its address on the container network is private. Unless `BINDERY_TRUSTED_PROXY` names that proxy so the real client IP can be resolved from `X-Forwarded-For`, every request the proxy forwards is treated as a local client and served without a login. Set `BINDERY_TRUSTED_PROXY` to the proxy's IP or CIDR, or choose `enabled` mode. Bindery logs a warning at startup, and when the mode is changed, if it sees local-only with `BINDERY_TRUSTED_PROXY` unset.
+- `proxy` — identity comes from a trusted reverse proxy's header instead of a Bindery login. It refuses to start unless `BINDERY_TRUSTED_PROXY` names the proxy, and it is set with `PUT /api/v1/auth/mode` rather than the Settings dropdown, which offers only the other three. See [auth-proxy.md](auth-proxy.md).
 - `disabled` — no auth at all. Only safe behind a trusted reverse proxy that handles authentication upstream.
 
   Every request acts as the administrator, so the admin screens and admin API routes answer to anyone who can reach Bindery. A request with no session is attributed to the first admin account; a browser still holding a session from before authentication was turned off keeps that account's own id, so what it adds is owned by that account, but it gets the admin role like everyone else. Browser changes still need the page's own request header, which a cross site form cannot send.
 
   That includes reading the API key from Settings, adding admin accounts and resetting passwords, and all of it stays in place after you turn authentication back on. If anyone else could reach Bindery while it was off, regenerate the API key and check the Users page once authentication is back.
+
+If you use the `requester` role, pick `enabled` or `proxy`. In `disabled` and `local-only` mode a signed-out browser is served as the administrator, so a requester can step out of the role by signing out.
 
 ## Database foreign-key integrity
 
@@ -548,7 +565,7 @@ Versions before the #2564 fix stored each Calibre-imported book's cover as the l
 
 **Schema:** enhanced series data uses migration `035`, which creates `series_hardcover_links` and backfills links for existing series whose foreign ID already points at Hardcover. Take a normal SQLite backup before upgrading, then let Bindery apply the migration on startup.
 
-**Feature flag:** token-backed Hardcover series search, manual/automatic series linking, catalog diffs, and missing-book fill are available by default at deployment time, but still require a saved Hardcover API token in **Settings -> General** and the enhanced Hardcover series toggle in the same settings section. Set `BINDERY_ENHANCED_HARDCOVER_API=false` only when you need to disable the enhanced endpoints and hide the UI controls for an entire deployment. Existing local series data keeps working when the feature is disabled.
+**Feature flag:** token-backed Hardcover series search, manual/automatic series linking, catalog diffs, and missing-book fill are available by default at deployment time, but still require a saved Hardcover API token in **Settings → API Keys** and the **Enhanced Hardcover series** toggle beside it. Set `BINDERY_ENHANCED_HARDCOVER_API=false` only when you need to disable the enhanced endpoints and hide the UI controls for an entire deployment. Existing local series data keeps working when the feature is disabled.
 
 **Operational note:** the enhanced fill action can create wanted/monitored book rows from the linked Hardcover catalog and immediately queue indexer searches. Make sure outbound HTTPS to Hardcover and your configured indexers is allowed before enabling it for production users.
 
@@ -601,11 +618,11 @@ auth:
 
 ### From v0.8.x to v0.9.0 (Calibre modes, OPDS, auto-grab kill-switch)
 
-**Schema:** three additive migrations (`010_calibre_sync.sql`, `011_calibre_mode.sql`, new `editions` table). Drop-in safe.
+**Schema:** two additive migrations (`011_calibre_mode.sql` plus the new `editions` table). Drop-in safe.
 
 **Calibre mode defaults to Off.** Existing installs that used the v0.8.0 `calibre.enabled=true` boolean are automatically shown as **calibredb CLI** mode in the UI via a back-compat fallback — no re-configuration needed.
 
-**Auto-grab defaults to On** (existing behaviour). Toggle it off in Settings → General → Auto-grab if you prefer manual grabs, or when bulk-adding large author lists that would otherwise fire thousands of simultaneous indexer queries.
+**Auto-grab defaults to On** (existing behaviour). Toggle it off in Settings → Metadata Profiles → Auto-grab if you prefer manual grabs, or when bulk-adding large author lists that would otherwise fire thousands of simultaneous indexer queries.
 
 **OPDS** is available at `/opds/` — browse and download your library from KOReader / Moon+ Reader / Aldiko. Authenticates via Bindery username + password over HTTP Basic, or via `X-Api-Key` / `?apikey=` query parameter for scripts. See the [OPDS wiki page](https://github.com/vavallee/bindery/wiki/OPDS).
 
@@ -674,7 +691,7 @@ Always snapshot the SQLite database before a minor-version bump:
 curl -X POST -H "X-Api-Key: ..." http://bindery:8787/api/v1/backup
 ```
 
-or via the UI: **Settings → General → Backup → Create backup.** Backups land in `$BINDERY_DATA_DIR` (default `/config`).
+or via the UI: **Settings → Logs → Backup & Restore → Create Backup.** Backups land in `$BINDERY_DATA_DIR/backups` (default `/config/backups`).
 
 ### What a backup contains, and how to treat it
 
