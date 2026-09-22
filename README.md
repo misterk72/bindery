@@ -137,7 +137,7 @@ Clean-room Go rewrite, modern React UI, MIT-licensed, actively developed.
 - Naming tokens — `{Author}`, `{SortAuthor}`, `{Title}`, `{Year}`, `{Series}`, `{SeriesNumber}`, `{Genre}`, `{Lang}`, `{ext}` — collapse cleanly for non-series books, with conditional literals (`{Title}{ - Series}` emits the dash only when a series exists) and zero-pad widths (`{SeriesNumber:2}` → `02`).
 - Cross-filesystem-safe moves: atomic rename when possible, copy + verify + delete for NFS / separate volumes. Full grab / import / failure history per book.
 - The **Import** page is where files you already have come in, two ways: **In your library** is the adoption list described above, and **From a folder** points at a folder anywhere Bindery can read, matches what it finds and imports it into the library, creating a book from a metadata search when nothing in the catalogue fits.
-- Calibre integration in three modes: `calibredb` CLI hook on import, [Bindery Bridge plugin](https://github.com/vavallee/bindery-plugins) (cross-container), or direct read of an existing Calibre library's `metadata.db` as Bindery's catalogue.
+- Calibre integration: three ways to hand a book over, plus a read side. Register each import with Calibre through the `calibredb` CLI or the [Bindery Bridge plugin](https://github.com/vavallee/bindery-plugins) (cross-container), mirror each ebook into a Calibre-Web-Automated ingest folder, or hand off through a drop folder so CWA or Calibre owns the library. Separately, read an existing Calibre library's `metadata.db` as Bindery's catalogue. See [docs/Calibre-Integration-Wiki.md](docs/Calibre-Integration-Wiki.md).
 - **Audiobookshelf import** — pull an existing ABS server's book libraries in as Bindery's catalogue (metadata-first, dry-run, review queue for ambiguous matches, rollback), with an ABS library-scan trigger after every audiobook import. See [docs/ABS-Import-Wiki.md](docs/ABS-Import-Wiki.md).
 - **Grimmory push** (preview) — imported ebooks are sent to a self-hosted [Grimmory](https://grimmory.org) library via its BookDrop inbox, with a bulk **Push all** for existing files.
 - **`metadata.opf` sidecar** (opt-in) — write a Calibre-style `metadata.opf` next to each imported book, carrying Bindery's own canonical title/author/series/identifiers/etc. so a library app that reads sidecar metadata sees consistent data regardless of which source the file came from. Refreshed on Reorganize.
@@ -247,7 +247,7 @@ The full reference (path remapping, API-key seeding, telemetry, trusted-proxy, r
 | **Indexers** | Newznab (NZBGeek, NZBFinder, NZBPlanet, DrunkenSlug, …), Torznab (Prowlarr, Jackett, direct endpoints), with per-indexer category overrides |
 | **Metadata sources** | OpenLibrary, Google Books, Hardcover, DNB, Audnex, Audible |
 | **Import lists** | Hardcover lists, synced on a configurable interval |
-| **Library tools** | Calibre (`calibredb`, Bindery Bridge plugin, `metadata.db` import), Audiobookshelf (import and scan trigger), Grimmory (preview), post-import drop folder for Calibre-Web-Automated and similar |
+| **Library tools** | Calibre (`calibredb`, Bindery Bridge plugin, `metadata.db` import), Audiobookshelf (import and scan trigger), Grimmory (preview), post-import drop folder for Calibre-Web-Automated and similar ([guide](docs/Calibre-Integration-Wiki.md)) |
 | **Notifications** | Generic webhooks — pipe to Apprise / ntfy / Home Assistant / Slack / Discord |
 | **Authentication** | Local (argon2id), API key, OIDC (Google, GitHub via Dex, Authelia, Keycloak, …), forward-auth proxy |
 | **Reading apps** | OPDS 1.2 catalogue at `/opds/` (KOReader, Moon+ Reader, Aldiko, …) |
@@ -312,6 +312,7 @@ The full endpoint catalogue, authentication rules (API key, session cookie, loca
 | **ABS import (overview)** — what gets imported, setup, review queue, rollback | [docs/ABS-Import-Wiki.md](docs/ABS-Import-Wiki.md) |
 | **ABS import (reference)** — implementation detail, mapping rules, API surface | [docs/abs_import.md](docs/abs_import.md) |
 | **Enhanced Hardcover series** — token setup, series linking, catalog diffs, missing-book fill | [docs/Hardcover-Series-Wiki.md](docs/Hardcover-Series-Wiki.md) |
+| **Calibre and CWA**: the three hand off topologies, what each does on disk, troubleshooting | [docs/Calibre-Integration-Wiki.md](docs/Calibre-Integration-Wiki.md) |
 | **Storage & hardlinks** — single-mount layout, import modes, per-author audiobook root | [docs/Storage-And-Hardlinks-Wiki.md](docs/Storage-And-Hardlinks-Wiki.md) |
 | **Migrating from Readarr** — `readarr.db` import, Goodreads CSV import, library scan | [docs/Migrating-From-Readarr-Wiki.md](docs/Migrating-From-Readarr-Wiki.md) |
 | **Metadata editing** — manual edits, field locking, bulk genre overrides | [docs/Metadata-Editing-Wiki.md](docs/Metadata-Editing-Wiki.md) |

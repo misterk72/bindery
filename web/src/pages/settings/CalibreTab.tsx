@@ -219,6 +219,14 @@ function CalibreSection({
   return (
     <section>
       <h3 className="text-base font-semibold mb-3 text-slate-800 dark:text-zinc-200">Calibre</h3>
+      <p className="text-xs text-slate-600 dark:text-zinc-500 mb-3">
+        Calibre only knows about books recorded in its <code className="text-[11px] bg-slate-200 dark:bg-zinc-800 px-1 rounded">metadata.db</code>;
+        a file placed in its library folder is invisible to Calibre and to CWA. There are three ways to hand a book over:
+        register it with Calibre after import (Write integration below), copy it into a CWA ingest folder (the CWA section below),
+        or let CWA or Calibre own the library and feed it from a drop folder (Import Mode External, under File Naming on the General tab).
+        Neither the write integration nor the CWA mirror runs in External import mode.
+        The <a href="https://github.com/vavallee/bindery/blob/main/docs/Calibre-Integration-Wiki.md" target="_blank" rel="noopener noreferrer" className="text-emerald-700 dark:text-emerald-400 underline">Calibre integration guide</a> compares them.
+      </p>
       <div className="p-4 border border-slate-200 dark:border-zinc-800 rounded-lg bg-slate-100 dark:bg-zinc-900 space-y-4">
 
         {/* Shared library path — used by both write integration and library import */}
@@ -250,9 +258,9 @@ function CalibreSection({
           <label className="block text-sm font-medium text-slate-800 dark:text-zinc-200 mb-2 mt-3">Write integration</label>
           <div className="space-y-1.5">
             {([
-              { v: 'off',       label: 'Off',           desc: 'No Calibre call on import.' },
-              { v: 'calibredb', label: 'calibredb CLI', desc: 'Shell out to calibredb add --with-library. Requires calibredb reachable from the Bindery process.' },
-              { v: 'plugin',    label: 'Calibre Bridge plugin', desc: 'POST imported files to the Bindery Bridge plugin running inside Calibre. Use when Calibre runs in a separate container/pod.' },
+              { v: 'off',       label: 'Off',           desc: 'No Calibre call on import. The file lands in the Bindery library only.' },
+              { v: 'calibredb', label: 'calibredb CLI', desc: 'Run calibredb add --with-library after each import. Calibre copies the file into its own library, so it exists twice. Needs calibredb inside the Bindery container or process; the official distroless image does not ship it.' },
+              { v: 'plugin',    label: 'Calibre Bridge plugin', desc: 'POST each import to the Bindery Bridge plugin running inside Calibre, in another container or host. Only the path and metadata are sent, not the file, so both containers must see the Bindery library at the same path, or set a push path remap below.' },
             ] as const).map(opt => (
               <label key={opt.v} className="flex items-start gap-2 cursor-pointer">
                 <input
@@ -530,7 +538,9 @@ function CalibreSection({
         <p className="text-xs text-slate-600 dark:text-zinc-500 mb-4">
           When set, every successful ebook import is also copied into this directory so a sibling{' '}
           <a href="https://github.com/crocodilestick/Calibre-Web-Automated" target="_blank" rel="noopener noreferrer" className="text-emerald-700 dark:text-emerald-400 underline">CWA</a>{' '}
-          container can ingest it. Bindery keeps its own copy. Leave blank to disable.
+          container can ingest it. Bindery keeps its own copy. Audiobooks are not mirrored. This mirror is independent of the
+          write integration above, and it does nothing in External import mode; use the Drop folder on the General tab for that setup.
+          Leave blank to disable.
         </p>
         <div>
           <label className="block text-xs text-slate-600 dark:text-zinc-400 mb-1">Ingest folder path</label>

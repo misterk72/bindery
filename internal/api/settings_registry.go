@@ -272,7 +272,7 @@ var settingDescriptors = []SettingDescriptor{
 	},
 	{
 		Key: SettingCWAIngestPath, Type: SettingTypeString, Default: "",
-		Description: "Calibre Web Automated ingest directory that every successful import is mirrored into. Empty disables the mirror.",
+		Description: "Calibre Web Automated ingest directory that every successful ebook import is copied into. Audiobooks are not mirrored. Empty disables the mirror.",
 		State:       SettingStateActive,
 	},
 

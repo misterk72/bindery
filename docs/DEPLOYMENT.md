@@ -359,18 +359,19 @@ A remap is **not** needed just because a torrent's save path does not exist yet.
 
 ## Handing off to another library tool (CWA, Calibre, Storyteller)
 
-If a separate tool manages your library, there are two distinct topologies. Pick by who owns the library directory.
+Calibre only knows about books recorded in its `metadata.db`, so a file placed in the Calibre library folder is invisible to Calibre and to CWA. If a separate tool manages your library there are three distinct topologies. Pick by who owns the library directory. The [Calibre integration guide](Calibre-Integration-Wiki.md) compares them in detail and has the troubleshooting.
 
-**1. Bindery owns the library, mirror a copy to CWA.** Bindery places the imported file in its library (`hardlink`/`copy`/`move` mode), *and* additionally copies it into a Calibre-Web-Automated ingest folder. Set **Settings → Integrations → Calibre → CWA ingest path** (`cwa.ingest_path`). Use this when Bindery's library and CWA's library are the same directory and you just want CWA to also see new ebooks.
+**1. Bindery owns the library, register each import with Calibre.** Bindery places the imported file in its library (`hardlink`/`copy`/`move` mode) and then tells Calibre about it, either by running `calibredb add` or by posting to the Bindery Bridge plugin inside a Calibre container. Calibre copies the file into its own library, so it exists twice. Set **Settings, Calibre tab, Write integration** (`calibre.mode`). The official distroless image does not ship `calibredb`; the plugin needs the Bindery library mounted into the Calibre container too (or `calibre.push_path_remap`).
 
-**2. An external tool owns the library (drop folder).** Bindery does *not* write into the library; instead it renames the finished download into a drop folder and lets the other tool ingest it and produce the managed copy. This is the right setup for "Bindery → `/cwa-book-ingest` → CWA writes `/books`", for Calibre auto-ingest, and for Storyteller's watched folder. Configure under **Settings → General → File Naming** (visible when Import Mode is **External**):
+**2. Bindery owns the library, mirror a copy to CWA.** Bindery places the imported file in its library *and* additionally copies it into a Calibre-Web-Automated ingest folder, always a copy under the flat file name, ebooks only. Set **Settings, Calibre tab, Calibre-Web-Automated (CWA), Ingest folder path** (`cwa.ingest_path`). Use this when Bindery keeps its own library and you just want CWA to also see new ebooks. It is independent of topology 1 and does not run in `External` import mode.
 
-- Set **Import Mode** to `External`.
-- **Drop folder** — the watch folder the other tool ingests from (e.g. `/cwa-book-ingest`). Empty disables the drop and Bindery just hands off in place (the file stays in the download dir).
-- **Layout** — `flat` (a sanely-named file in the folder root, what most watch-folder tools expect) or `templated` (recreate the `{Author}/{Title (Year)}/…` tree inside the drop folder).
-- **Placement** — `copy` (default; safest, since the ingesting tool usually deletes what it consumes) or `hardlink` (disk-free, same filesystem only). The download source is never moved, so torrents keep seeding.
+**3. An external tool owns the library (drop folder).** Bindery does *not* write into the library; instead it renames the finished download into a drop folder and lets the other tool ingest it and produce the managed copy. This is the right setup for "Bindery, then `/cwa-book-ingest`, then CWA writes `/books`", for Calibre auto ingest, and for Storyteller's watched folder. Configure under **Settings, General tab, File Naming**, with **Import Mode** set to `External`; the drop folder fields appear underneath:
 
-Bindery parks the download as *handed off* and reconciles the managed copy the external tool lands in `BINDERY_LIBRARY_DIR` on the next **library scan** (so the library dir must still point at where the external tool ultimately writes). Single-format Storyteller works today by pointing the drop folder at Storyteller's watch folder; guaranteed ebook+audiobook pair-gating is tracked as a follow-up (#942).
+- **Drop folder**: the watch folder the other tool ingests from (e.g. `/cwa-book-ingest`). Empty disables the drop and Bindery just hands off in place (the file stays in the download dir).
+- **Layout**: `flat` (each book file the download carries, sanely named, in the folder root, what most watch folder tools expect) or `templated` (recreate the `{Author}/{Title (Year)}/…` tree inside the drop folder).
+- **Placement**: `copy` (default; safest, since the ingesting tool usually deletes what it consumes) or `hardlink` (disk free, same filesystem only). The download source is never moved, so torrents keep seeding.
+
+Bindery parks the download as *handed off* and reconciles the managed copy the external tool lands in `BINDERY_LIBRARY_DIR` on the next **library scan** (so the library dir must still point at where the external tool ultimately writes). For a book wanted in both formats, `import.drop_pair_gating` (off by default, `import.drop_pair_gating_timeout_hours` as the escape hatch) holds the first format until its sibling arrives so a paired reader such as Storyteller ingests them together (#942).
 
 ## Environment variables
 
@@ -617,7 +618,7 @@ auth:
 **Calibre (optional, off by default).** If you want the new `calibredb` post-import hook, you need the `calibredb` binary reachable from the Bindery process:
 
 - The distroless official image does **not** ship `calibredb`. Either bind-mount a calibre install into the container or run Bindery outside the distroless image until a `bindery-calibre` variant lands.
-- Enable via Settings → General → Calibre → set library path + binary path → Test connection.
+- Enable via Settings → Calibre → set library path + binary path → Test connection.
 - Existing imports continue to work unchanged while the toggle is off.
 
 **Author aliases — no auto-merge.** Duplicate author rows that existed before the upgrade are not merged automatically. Use the new **Merge authors** modal on the Authors page (or per-author Merge button) to reunite them — the decision needs a human eye.

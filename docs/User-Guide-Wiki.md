@@ -330,7 +330,8 @@ setting, which made the setting unreachable for authors added that way (#2166);
 correct one from the author's own edit dialog.
 After import, Bindery fans out to whatever integrations you enabled: Calibre,
 a CWA ingest folder, Grimmory's BookDrop, an Audiobookshelf library scan,
-webhooks.
+webhooks. The three ways of reaching Calibre or CWA are easy to mix up; the
+[Calibre integration guide](Calibre-Integration-Wiki.md) tells them apart.
 
 If the library app downstream reads sidecar metadata, turn on **Write a
 metadata.opf sidecar** in Settings → General (off by default). Bindery then
