@@ -535,7 +535,7 @@ func (s *Scanner) dropPlaceAudiobook(ctx context.Context, downloadPath string, b
 // pushToCalibre mirrors a just-imported book into Calibre via calibredb add.
 // Failures are logged and swallowed: Calibre sync is best effort and must
 // never roll back an otherwise good Bindery import.
-func (s *Scanner) pushToCalibre(ctx context.Context, book *models.Book, author *models.Author, edition *models.Edition, seriesTitle, seriesNum, path string) {
+func (s *Scanner) pushToCalibre(ctx context.Context, book *models.Book, author *models.Author, edition *models.Edition, seriesTitle, seriesNum, path, mediaType string) {
 	if s.calibreMode == nil || book == nil {
 		return
 	}
@@ -552,26 +552,21 @@ func (s *Scanner) pushToCalibre(ctx context.Context, book *models.Book, author *
 		slog.Debug("calibre: adder is nil, skipping", "mode", mode, "bookId", book.ID)
 		return
 	}
-	if isDirectory(path) {
-		// Both hand off paths take a single book file. The plugin derives the
-		// format from the extension and rejects a folder outright; calibredb
-		// scans the folder but its BOOK_EXTENSIONS list carries no audio
-		// format, so it finds nothing and reports no added id. The only call
-		// site that passes a folder is the audiobook import.
-		slog.Debug("calibre: not pushing a directory, the Calibre hand off takes one book file",
-			"mode", mode, "bookId", book.ID, "path", path)
+	if mediaType != models.MediaTypeEbook {
+		// The Calibre write integration is ebook only. An audiobook import
+		// hands over a folder, and neither target can do anything with one:
+		// the plugin derives the format from the file extension and rejects a
+		// folder outright, and `calibredb add` scans the folder against
+		// Calibre's own BOOK_EXTENSIONS, which carries no audio format, so it
+		// finds nothing and prints no added id. Bindery used to send it
+		// anyway, which in plugin mode cost two rejected requests and one
+		// misleading "add failed" warning per audiobook import.
+		slog.Debug("calibre: skipping a non ebook import, the Calibre hand off takes one ebook file",
+			"mode", mode, "bookId", book.ID, "mediaType", mediaType, "path", path)
 		return
 	}
 	meta := s.calibreMetadata(ctx, book, author, edition, seriesTitle, seriesNum, adder)
 	s.pushCalibreAdd(ctx, book, meta, path, mode, adder)
-}
-
-// isDirectory reports whether path is an existing directory. A stat failure
-// answers false so an unreadable or not yet visible path keeps today's
-// behaviour of being handed over and letting Calibre report the problem.
-func isDirectory(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
 }
 
 // pushCalibreAdd invokes the resolved adder (calibredb CLI or plugin HTTP

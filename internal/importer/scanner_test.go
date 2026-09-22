@@ -153,7 +153,7 @@ func TestPushToCalibre_ModeOff(t *testing.T) {
 	fc := &fakeCalibreAdder{nextID: 99}
 	s.WithCalibre(modeFn(calibre.ModeOff), fc)
 
-	s.pushToCalibre(ctx, book, author, nil, "", "", "/library/book.epub")
+	s.pushToCalibre(ctx, book, author, nil, "", "", "/library/book.epub", models.MediaTypeEbook)
 
 	if len(fc.calls) != 0 {
 		t.Errorf("Add must not be called when mode=off, got %v", fc.calls)
@@ -169,7 +169,7 @@ func TestPushToCalibre_ModeCalibredbHappyPath(t *testing.T) {
 	fc := &fakeCalibreAdder{nextID: 1234}
 	s.WithCalibre(modeFn(calibre.ModeCalibredb), fc)
 
-	s.pushToCalibre(ctx, book, author, nil, "", "", "/library/book.epub")
+	s.pushToCalibre(ctx, book, author, nil, "", "", "/library/book.epub", models.MediaTypeEbook)
 
 	if len(fc.calls) != 1 || fc.calls[0] != "/library/book.epub" {
 		t.Errorf("Add calls = %v", fc.calls)
@@ -190,7 +190,7 @@ func TestPushToCalibre_CalibredbFailDoesNotPoison(t *testing.T) {
 	fc := &fakeCalibreAdder{err: errors.New("exec: calibredb: not found")}
 	s.WithCalibre(modeFn(calibre.ModeCalibredb), fc)
 
-	s.pushToCalibre(ctx, book, author, nil, "", "", "/library/book.epub")
+	s.pushToCalibre(ctx, book, author, nil, "", "", "/library/book.epub", models.MediaTypeEbook)
 
 	got, _ := bookRepo.GetByID(ctx, book.ID)
 	if got.CalibreID != nil {
@@ -207,7 +207,7 @@ func TestPushToCalibre_ErrDisabledDoesNotPersistAnID(t *testing.T) {
 	fc := &fakeCalibreAdder{err: calibre.ErrDisabled}
 	s.WithCalibre(modeFn(calibre.ModeCalibredb), fc)
 
-	s.pushToCalibre(ctx, book, author, nil, "", "", "/library/book.epub")
+	s.pushToCalibre(ctx, book, author, nil, "", "", "/library/book.epub", models.MediaTypeEbook)
 
 	got, _ := bookRepo.GetByID(ctx, book.ID)
 	if got.CalibreID != nil {
@@ -230,7 +230,7 @@ func TestPushToCalibre_ModePluginHappyPath(t *testing.T) {
 	client := calibre.NewPluginClient(srv.URL, "test-key")
 	s.WithCalibre(modeFn(calibre.ModePlugin), client)
 
-	s.pushToCalibre(ctx, book, author, nil, "", "", "/library/book.epub")
+	s.pushToCalibre(ctx, book, author, nil, "", "", "/library/book.epub", models.MediaTypeEbook)
 
 	got, _ := bookRepo.GetByID(ctx, book.ID)
 	if got.CalibreID == nil || *got.CalibreID != 5678 {
@@ -244,7 +244,7 @@ func TestPushToCalibre_ModePluginHappyPath(t *testing.T) {
 func TestPushToCalibre_NilResolver(t *testing.T) {
 	s, _, book, author, ctx := importScannerFixture(t)
 	// No WithCalibre call.
-	s.pushToCalibre(ctx, book, author, nil, "", "", "/library/book.epub") // must not panic
+	s.pushToCalibre(ctx, book, author, nil, "", "", "/library/book.epub", models.MediaTypeEbook) // must not panic
 }
 
 func TestCalibreMetadata_PrefersEditionFieldsAndMapsSeries(t *testing.T) {

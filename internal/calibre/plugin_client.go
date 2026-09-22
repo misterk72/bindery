@@ -410,8 +410,8 @@ func (c *PluginClient) ProbePath(ctx context.Context, path string) (PathProbe, e
 		return PathProbe{}, fmt.Errorf("plugin client: path probe: server error %d: %s",
 			resp.StatusCode, pluginResult{Error: result.Error, Code: result.Code}.message())
 	}
-	if result.PathProbe.Path == "" {
-		result.PathProbe.Path = wire
+	if result.Path == "" {
+		result.Path = wire
 	}
 	return result.PathProbe, nil
 }

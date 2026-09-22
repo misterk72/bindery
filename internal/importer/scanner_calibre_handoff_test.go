@@ -73,9 +73,9 @@ func TestPushToCalibre_ResolverBuildsAdderPerPush(t *testing.T) {
 		return cli
 	})
 
-	s.pushToCalibre(ctx, book, author, nil, "", "", "/library/a.epub")
+	s.pushToCalibre(ctx, book, author, nil, "", "", "/library/a.epub", models.MediaTypeEbook)
 	mode = calibre.ModePlugin
-	s.pushToCalibre(ctx, book, author, nil, "", "", "/library/b.epub")
+	s.pushToCalibre(ctx, book, author, nil, "", "", "/library/b.epub", models.MediaTypeEbook)
 
 	if len(cli.calls) != 1 || len(plugin.calls) != 1 {
 		t.Fatalf("calibredb calls = %v, plugin calls = %v; want one each", cli.calls, plugin.calls)
@@ -96,18 +96,20 @@ func TestPushToCalibre_WarnsWhenAdderDisabledWithModeOn(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	s.WithCalibre(modeFn(calibre.ModeCalibredb), &fakeCalibreAdder{err: calibre.ErrDisabled})
-	s.pushToCalibre(ctx, book, author, nil, "", "", "/library/a.epub")
+	s.pushToCalibre(ctx, book, author, nil, "", "", "/library/a.epub", models.MediaTypeEbook)
 
 	if !strings.Contains(buf.String(), "reports the integration disabled") {
 		t.Errorf("log = %q, want a warning naming the mismatch", buf.String())
 	}
 }
 
-// TestPushToCalibre_RefusesADirectory is review item 7. The audiobook call
+// TestPushToCalibre_RefusesAnAudiobook is review item 7. The audiobook call
 // site hands pushToCalibre a folder. The plugin rejects it with 400 and the
 // legacy retry rule then sent it a second time, producing two doomed requests
-// and one misleading warning per audiobook import.
-func TestPushToCalibre_RefusesADirectory(t *testing.T) {
+// and one misleading warning per audiobook import. calibredb is no better: it
+// scans the folder against Calibre's BOOK_EXTENSIONS, which carries no audio
+// format, so both modes are guarded.
+func TestPushToCalibre_RefusesAnAudiobook(t *testing.T) {
 	for _, mode := range []calibre.Mode{calibre.ModePlugin, calibre.ModeCalibredb} {
 		t.Run(string(mode), func(t *testing.T) {
 			s, _, book, author, ctx := importScannerFixture(t)
@@ -115,10 +117,10 @@ func TestPushToCalibre_RefusesADirectory(t *testing.T) {
 			fc := &fakeCalibreAdder{nextID: 1}
 			s.WithCalibre(modeFn(mode), fc)
 
-			s.pushToCalibre(ctx, book, author, nil, "", "", dir)
+			s.pushToCalibre(ctx, book, author, nil, "", "", dir, models.MediaTypeAudiobook)
 
 			if len(fc.calls) != 0 {
-				t.Errorf("Add called with a directory: %v", fc.calls)
+				t.Errorf("Add called for an audiobook: %v", fc.calls)
 			}
 		})
 	}
@@ -133,7 +135,7 @@ func TestPushToCalibre_StillPushesARegularFile(t *testing.T) {
 	fc := &fakeCalibreAdder{nextID: 1}
 	s.WithCalibre(modeFn(calibre.ModePlugin), fc)
 
-	s.pushToCalibre(ctx, book, author, nil, "", "", path)
+	s.pushToCalibre(ctx, book, author, nil, "", "", path, models.MediaTypeEbook)
 
 	if len(fc.calls) != 1 {
 		t.Errorf("Add calls = %v, want one", fc.calls)
@@ -159,7 +161,7 @@ func TestCalibreMetadata_SendsCoverInPluginMode(t *testing.T) {
 
 	adder := &recordingAdder{nextID: 1, supportsCover: true}
 	s.WithCalibre(modeFn(calibre.ModePlugin), adder)
-	s.pushToCalibre(ctx, book, author, nil, "", "", tempEbook(t, "a.epub"))
+	s.pushToCalibre(ctx, book, author, nil, "", "", tempEbook(t, "a.epub"), models.MediaTypeEbook)
 
 	if len(adder.metas) != 1 {
 		t.Fatalf("metas = %v", adder.metas)
@@ -194,7 +196,7 @@ func TestCalibreMetadata_OmitsCoverWithoutTheCapability(t *testing.T) {
 
 	adder := &recordingAdder{nextID: 1, supportsCover: false}
 	s.WithCalibre(modeFn(calibre.ModePlugin), adder)
-	s.pushToCalibre(ctx, book, author, nil, "", "", tempEbook(t, "a.epub"))
+	s.pushToCalibre(ctx, book, author, nil, "", "", tempEbook(t, "a.epub"), models.MediaTypeEbook)
 
 	if adder.metas[0].CoverPath != "" {
 		t.Errorf("coverPath = %q, want it omitted", adder.metas[0].CoverPath)
@@ -214,7 +216,7 @@ func TestPushToCalibre_409UpdatesARowBinderyOwns(t *testing.T) {
 
 	adder := &recordingAdder{nextID: 55, err: calibre.ErrAlreadyInCalibre, supportsPatch: true}
 	s.WithCalibre(modeFn(calibre.ModePlugin), adder)
-	s.pushToCalibre(ctx, book, author, nil, "Dune Chronicles", "1", tempEbook(t, "a.epub"))
+	s.pushToCalibre(ctx, book, author, nil, "Dune Chronicles", "1", tempEbook(t, "a.epub"), models.MediaTypeEbook)
 
 	if adder.updateCount() != 1 {
 		t.Fatalf("update calls = %d, want 1", adder.updateCount())
@@ -233,7 +235,7 @@ func TestPushToCalibre_409LeavesAnUnknownRowAlone(t *testing.T) {
 	adder := &recordingAdder{nextID: 77, err: calibre.ErrAlreadyInCalibre, supportsPatch: true}
 	s.WithCalibre(modeFn(calibre.ModePlugin), adder)
 
-	s.pushToCalibre(ctx, book, author, nil, "", "", tempEbook(t, "a.epub"))
+	s.pushToCalibre(ctx, book, author, nil, "", "", tempEbook(t, "a.epub"), models.MediaTypeEbook)
 
 	if adder.updateCount() != 0 {
 		t.Errorf("update calls = %d, want 0 for a row Bindery has not claimed", adder.updateCount())
@@ -253,7 +255,7 @@ func TestPushToCalibre_409SkipsUpdateWithoutTheCapability(t *testing.T) {
 	adder := &recordingAdder{nextID: 55, err: calibre.ErrAlreadyInCalibre, supportsPatch: false}
 	s.WithCalibre(modeFn(calibre.ModePlugin), adder)
 
-	s.pushToCalibre(ctx, book, author, nil, "", "", tempEbook(t, "a.epub"))
+	s.pushToCalibre(ctx, book, author, nil, "", "", tempEbook(t, "a.epub"), models.MediaTypeEbook)
 
 	if adder.updateCount() != 0 {
 		t.Errorf("update calls = %d, want 0 against a plugin that cannot update", adder.updateCount())
@@ -273,5 +275,3 @@ func tempEbook(t *testing.T, name string) string {
 func jpegBytes() []byte {
 	return append([]byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00}, bytes.Repeat([]byte{0x00}, 32)...)
 }
-
-var _ = models.Book{}

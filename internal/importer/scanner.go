@@ -1972,7 +1972,7 @@ func (s *Scanner) tryImportInternal(ctx context.Context, dl *models.Download, do
 			return dl.Title
 		}(), "path", destDir)
 
-		s.pushToCalibre(ctx, book, author, edition, seriesTitle, seriesNum, destDir)
+		s.pushToCalibre(ctx, book, author, edition, seriesTitle, seriesNum, destDir, models.MediaTypeAudiobook)
 		s.pushToABS(ctx)
 		s.writeOPFSidecar(ctx, destDir, []string{audiobookRoot}, book, author, edition, seriesTitle, seriesNum)
 
@@ -2135,7 +2135,7 @@ func (s *Scanner) tryImportInternal(ctx context.Context, dl *models.Download, do
 		// landed. The terminal state is decided once, after the loop.
 		slog.Info("book imported", "title", book.Title, "path", destPath)
 
-		s.pushToCalibre(ctx, book, author, edition, seriesTitle, seriesNum, destPath)
+		s.pushToCalibre(ctx, book, author, edition, seriesTitle, seriesNum, destPath, models.MediaTypeEbook)
 		s.pushToCWA(ctx, destPath)
 		s.pushToGrimmory(ctx, book, destPath)
 
