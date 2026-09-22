@@ -15,17 +15,18 @@ holds the reasoning and the sources.
 
 ## The alphabets
 
-Six reductions exist. They differ **on purpose**; what was wrong before was that
+Seven reductions exist. They differ **on purpose**; what was wrong before was that
 the difference was accidental and undocumented.
 
 | # | Function | Case | Marks | Non-decomposable Latin (ø ł ß æ) | Compatibility (NFKC) | Apostrophe | `&` | Stored? |
 |---|----------|------|-------|-----------------------------------|----------------------|-----------|-----|---------|
 | 1 | `textutil.FoldForTitleMatch` | lower | kept | kept | no | deleted | separator | no |
+| 1a | `indexer.CanonicalDedupKey` / `NormalizeTitleForDedup` | lower | kept | kept | no | deleted | `" and "` | `books.dedup_key` |
 | 2 | `textutil.NormalizeAuthorName` | lower | stripped | kept | no | separator | separator | no |
 | 3 | `db.authorSortKey` / `db.bookSortKey` | lower | stripped | folded | no | separator | separator | `authors.sort_key`, `authors.name_sort_key`, `books.sort_key` |
 | 4 | `textutil.FoldForSlug` | lower | stripped for Latin/Greek only | folded | no | kept | kept | foreign IDs |
 | 5 | `newznab.TransliterateQuery` | as-is | kept | kept | no | kept | kept | no (outgoing query) |
-| 6 | `textutil.FoldForSearch` | **case-folded** | stripped for Latin/Greek only | folded | **yes** | deleted | `" and "` | `books.search_key`, `authors.search_key`, `author_aliases.search_key` |
+| 6 | `textutil.FoldForSearch` | **case-folded** | stripped for Latin/Greek only | folded | **yes** | deleted | `" and "` | `books.search_key`, `authors.search_key`, `author_aliases.search_key`, `unmatched_units.search_key` |
 
 Alphabet 1 expands German umlauts (ö→oe) because that is what German NZB
 indexers write in release names. Alphabet 2 strips them (ö→o) because author
@@ -35,9 +36,11 @@ per human. That divergence is deliberate and is asserted by
 
 **Alphabets 3, 4 and 6 are lossy and must never decide identity.** 6 in
 particular is a *recall* key: two distinct works may share a `search_key`, which
-only means both are offered to someone who typed either spelling.
+only means both are offered to someone who typed either spelling. The `unmatched_units` key is rebuilt whenever a scan re-upserts the row, so unlike the other three it is not part of the `FoldForSearchRev` backfill.
 
-Everything that folds a string for comparison should reach one of these six.
+Alphabet 1a is alphabet 1 with one deliberate disagreement: an ampersand expands to `" and "` here and is a separator in 1. Dedup asks whether two records are the same book, and providers send both spellings, so the two must reach one key. Alphabet 1 feeds `indexer.ContainsPhrase`, whose keyword side drops "and" as a stop word while the haystack side does not, so expanding there loses the hit. `TestDedupAndTitleMatchAlphabetsDifferOnAmpersand` pins the difference.
+
+Everything that folds a string for comparison should reach one of these seven.
 Two that did not, and what they cost:
 
 - `metadata.canonicalAuthorKey` kept only letters and digits. A combining mark
@@ -85,6 +88,12 @@ We store it in a column. The alternatives were considered and rejected:
 but neither could the query it replaces — this is a scan that got shorter, not a
 scan that got added.
 
+One search path deliberately does not store a key. The header search folds
+series titles in Go over the id and title pairs rather than in SQL, because the
+series table has no `search_key` column and series counts are small next to
+books, so a migration plus a backfill for one typeahead costs more than the
+scan. It ranks through the same tiers.
+
 ### NFKC, then full case folding
 
 NFKC folds the compatibility distinctions NFC keeps: full-width `ＴＯＫＹＯ`,
@@ -97,7 +106,9 @@ explicit that "a case folded string is not necessarily lowercase" and that
 folding, not case conversion, is what caseless matching needs; `CaseFolding.txt`
 is where ß→ss, ẞ→ss and ς→σ come from. `strings.ToLower` leaves ß alone, so
 *Straße* and *STRASSE* would never meet. We use `golang.org/x/text/cases.Fold`,
-built per call because a `Caser` is stateful (the same trap as #1374).
+handed out from a `sync.Pool` because a `Caser` is stateful (the same trap as
+#1374) and rebuilding one per call made this fold four times the cost of
+`FoldForTitleMatch`, on a path that runs for every write and every keystroke.
 
 Turkic tailorings (`I`→`ı`) are deliberately **not** applied: they are a
 locale-specific tailoring, and SQLite's own ICU `LIKE` makes the same call.
@@ -165,8 +176,10 @@ mean anything.
 alphabet 1 feeds `indexer.ContainsPhrase`, which requires keywords to be
 contiguous, so injecting an `and` token there would break every phrase hit on a
 release named `Foundation.&.Empire`. The expansion is therefore in alphabet 6
-only. Extending it to the dedup key is tracked separately, because that changes
-stored keys and needs a revision bump.
+and in the edition dedup key, alphabet 1a. The dedup key does expand because
+providers send both spellings for one book and both must produce one key. That
+change bumped `indexer.CanonicalDedupKeyRev` to 2, and the startup backfill
+rewrites `books.dedup_key` once on the boot after the bump.
 
 ### Ranking: exact word beats prefix
 
@@ -177,6 +190,12 @@ converge on, with one distinction a naive prefix/substring ladder misses:
 matching a **complete word** is stronger evidence than matching the start of a
 longer one. `thor` should offer Brad Thor before Thornton Wilder, even though
 only the latter is a prefix of the field.
+
+A query contributes at most eight words to the WHERE clause (`maxSearchTokens`).
+Each token adds a LIKE pair, so cost grows with the length of the input rather
+than the size of the library, and a pasted paragraph used to run for over a
+minute of SQLite time before failing on the expression depth limit. Ranking
+still uses the whole folded query; only the matching is capped.
 
 Within a tier the shorter title wins, which is what BM25's length normalisation
 (`b`) does and for the same reason. FTS5's `bm25()` is not used: its `k1` and
@@ -203,7 +222,7 @@ column and the fold applied to the query cannot drift apart. Every row carries
 the issue it came from: #1610 (Phönix), #1642 (Nesbø, 刘慈欣), #1645
 (ハリー・ポッター, ハード, कमला), #2042 (Poseidon's Arrow, Foundation & Empire),
 #1347 (Östergaard), #1646 (decomposed spellings), #1660 (the compatibility and
-case-folding rows).
+case-folding rows), #2447 (spacing marks after a Latin letter).
 
 `internal/normdrift` then asserts the *properties* across every registered fold:
 Unicode-form invariance, idempotence, keyword-findability, and that distinct
@@ -229,10 +248,11 @@ rediscovered as a bug.**
 
 The server is self-consistent. It folds the query and the stored `search_key`
 with the same Go function, so library search is correct for every one of these.
-The divergence reaches only the three filters that fold in the browser and never
-ask the server: `WantedPage.tsx`, `AddSeriesBookModal.tsx` and
-`addAuthorTitleGuard.ts`. A polytonic Greek title can therefore be findable in
-the Books list and not findable in the Wanted list's local filter.
+The divergence reaches only the places that fold in the browser and never ask
+the server: the Wanted list filter, the series-book picker, the Series page
+title filter, the add-author title guard and the add-to-library author
+grouping. A polytonic Greek title can therefore be findable in the Books list
+and not findable in the Wanted list's local filter.
 
 Two fixes were considered and both cost more than the defect.
 

@@ -8,7 +8,7 @@ This page is the user-facing companion to the deployment notes in [`docs/DEPLOYM
 
 When enhanced Hardcover series data is enabled, Bindery can:
 
-- create, rename, monitor, and delete local series from the Series page
+- create, rename, shortlist, and delete local series from the Series page
 - add existing Bindery books to a local series with a position number
 - search Hardcover for the matching catalog series
 - link or unlink a local series to a Hardcover series
@@ -79,7 +79,7 @@ Catalog entries whose titles name a box set rather than a book ("box set", "boxe
 
 The fill action may create new authors and books from Hardcover metadata when the catalog entry is not already in Bindery. Those books are linked back to the series with the catalog position.
 
-The format dropdown beside **add all** sets the media type of every book the fill creates. Pick **Ebook** and the created books are ebook only, even when Hardcover lists an audiobook edition of the same work, so only one search is queued per book. Pick **Both** if you want Bindery to look for both formats. Books that are already in the series keep whatever media type they were added with, so change those on the book itself.
+The format dropdown beside **add all** sets the media type of every book the fill creates. Pick **Ebook** and the created books are ebook only, even when Hardcover lists an audiobook edition of the same work, so only one search is queued per book. Pick **Audiobook** for audio only. Pick **Both** if you want Bindery to look for both formats. Books that are already in the series keep whatever media type they were added with, so change those on the book itself.
 
 ## Known Behavior
 
@@ -87,6 +87,7 @@ The format dropdown beside **add all** sets the media type of every book the fil
 - The fill action can also contact configured indexers because it queues searches immediately. Switching **Auto-grab** off in `Settings -> General` stops that, for fill as well as for the scheduled sweep.
 - A linked series can still have local-only or uncertain entries when local metadata does not cleanly match the Hardcover catalog.
 - **View on Hardcover** is built from the series slug, which is the only identifier hardcover.app routes series pages on. Series linked before Bindery started recording the slug have none stored, so their link appears the next time the catalog diff is loaded. If Hardcover reports a series with no slug at all, Bindery shows no link rather than one that leads to a missing page.
+- **Shortlisting** a series only marks it so you can find it again. No job checks a shortlisted series for new books, and Fill gaps ignores the flag.
 - Removing a Hardcover link does not delete the local series or local books.
 - Deleting a local series does not delete linked books from your library.
 

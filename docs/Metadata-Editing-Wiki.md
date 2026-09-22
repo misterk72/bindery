@@ -49,4 +49,5 @@ Both are idempotent; re-applying with a different list simply replaces it.
 field. Send `lockedFields` (an array of those names) to replace the lock set
 explicitly; an empty array unlocks everything. Bulk endpoints:
 `PUT /api/v1/author/{id}/genres` and `PUT /api/v1/series/{id}/genres` with
-`{"genres": ["Fantasy"]}`.
+`{"genres": ["Fantasy"]}`. `DELETE /api/v1/series/{id}/genres` removes a series
+override.
