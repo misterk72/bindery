@@ -157,6 +157,40 @@ func TestUnmonitoredAuthorGuard_FailsOpenWithoutAuthors(t *testing.T) {
 	}
 }
 
+// TestUnmonitoredAuthorGuard_MissingAuthorRowStillSearches covers the other
+// fail open branch: the book's author row has gone (an orphan left by a delete
+// racing the sweep). Nothing says the author is unmonitored, so nothing should
+// stop the search.
+func TestUnmonitoredAuthorGuard_MissingAuthorRowStillSearches(t *testing.T) {
+	s, ss, book := unmonitoredAuthorFixture(t, false)
+	book.AuthorID = 9999 // no such row
+
+	s.searchAndGrabFormats(indexer.WithSearchOrigin(context.Background(), indexer.OriginScheduled), book, neededFormats(&book), nil)
+
+	if got := int(ss.calls.Load()); got != 1 {
+		t.Fatalf("guard closed for a book with no author row: got %d searches, want 1 (fail open)", got)
+	}
+}
+
+// The log line names the author, because "a book was skipped" on its own does
+// not tell a user which switch to go and flip. The name comes from the joined
+// projection when the caller already loaded one, and from the author row
+// otherwise; both paths are exercised here through the one they feed.
+func TestUnmonitoredAuthorGuard_UsesTheJoinedAuthorName(t *testing.T) {
+	s, ss, book := unmonitoredAuthorFixture(t, false)
+	book.Author = &models.Author{ID: book.AuthorID, Name: "P. G. Wodehouse"}
+
+	ctx := indexer.WithSearchOrigin(context.Background(), indexer.OriginScheduled)
+	if name, unmonitored := s.authorMonitorState(ctx, book, nil); name != "P. G. Wodehouse" || !unmonitored {
+		t.Fatalf("authorMonitorState = (%q, %v), want (\"P. G. Wodehouse\", true)", name, unmonitored)
+	}
+
+	s.searchAndGrabFormats(ctx, book, neededFormats(&book), nil)
+	if got := int(ss.calls.Load()); got != 0 {
+		t.Fatalf("got %d searches, want 0", got)
+	}
+}
+
 // TestSweepContext_AnswersAuthorMonitoringFromOneLoad is the #2370 invariant
 // applied to the new table: the sweep must not add a query per book. With the
 // authors repo detached, a snapshot that still answers correctly can only be
