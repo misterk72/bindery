@@ -135,3 +135,51 @@ func TestFilterPathsAgreeOnElision(t *testing.T) {
 		}
 	}
 }
+
+// A colon makes the searcher consider the title PRIMARY half too
+// (primaryTitle: "Dune: Messiah" -> "Dune"), and that half needs the same
+// elision reading: a release routinely names the book without its subtitle,
+// so the primary reading is the only one that can match it. Both filters
+// carry the fallback; this pins the subtitle path in the debug filter, which
+// is the one the search panel and auto-grab read.
+func TestFilterRelevantMatchesElidedPrimaryTitle(t *testing.T) {
+	cases := []struct {
+		name    string
+		title   string
+		author  string
+		release string
+		want    bool
+	}{
+		{
+			name:    "elided primary title, release without the subtitle",
+			title:   "L'Institut: roman",
+			author:  "Stephen King",
+			release: "Stephen.King.L.Institut.2019.FRENCH.[ePub]-NOTAG",
+			want:    true,
+		},
+		{
+			name:    "control: the primary reading must not swallow another book",
+			title:   "L'Institut: roman",
+			author:  "Stephen King",
+			release: "Stephen.King.Le.Fleau.1993.FR.[EPUB]-NoTag",
+			want:    false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rs := []newznab.SearchResult{{Title: tc.release}}
+			plain := len(filterRelevant(rs, tc.title, tc.author, nil)) > 0
+			debugged, _ := filterRelevantDebug(rs, tc.title, tc.author, nil)
+			viaDebug := len(debugged) > 0
+
+			if plain != viaDebug {
+				t.Fatalf("paths diverge for title=%q release=%q: filterRelevant=%v filterRelevantDebug=%v",
+					tc.title, tc.release, plain, viaDebug)
+			}
+			if plain != tc.want {
+				t.Fatalf("title=%q release=%q: matched=%v, want %v", tc.title, tc.release, plain, tc.want)
+			}
+		})
+	}
+}
